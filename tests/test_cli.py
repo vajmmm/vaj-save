@@ -118,3 +118,17 @@ def test_cli_watch_keyboard_interrupt(monkeypatch, capsys):
     assert exit_code == 0
     captured = capsys.readouterr()
     assert "Stopped volume watcher" in captured.out
+
+
+def test_cli_app_command(monkeypatch):
+    called = []
+
+    def mock_app_main():
+        called.append(True)
+        return 0
+
+    monkeypatch.setattr("vajsave.app.main", mock_app_main)
+    exit_code = main(["app"])
+    assert exit_code == 0
+    assert called == [True]
+

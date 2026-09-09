@@ -22,6 +22,12 @@ vajsave scan
 
 # 监听插拔，新卷出现时自动扫描
 vajsave watch
+# 启动桌面图形界面 App
+vajsave-app
+# 或
+python -m vajsave.app
+# 或
+vajsave app
 ```
 
 ## 支持的挂载方式
@@ -43,7 +49,7 @@ vajsave watch
 ## 本轮不做
 
 - **Switch DBI / Checkpoint MTP**：macOS 上 MTP 不稳定。请用 Hekate UMS 挂整张 SD，或拔卡。
-- 存档解密、重签、写回、编辑器、GUI。
+- 存档解密、重签、写回、编辑器。只读管理。
 
 ## JKSV 布局假设
 

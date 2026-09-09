@@ -14,6 +14,7 @@ from .backend import (
     MountedVolumeBackend,
     FakeStorageBackend,
 )
+from .app_state import AppState
 
 __version__ = "0.1.0"
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "StorageBackend",
     "MountedVolumeBackend",
     "FakeStorageBackend",
+    "AppState",
 ]

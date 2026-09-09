@@ -28,6 +28,7 @@ dev = [
 
 [project.scripts]
 vajsave = "vajsave.cli:main"
+vajsave-app = "vajsave.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -37,3 +38,11 @@ minversion = "7.0"
 addopts = "-ra --cov=vajsave --cov-report=term-missing --cov-branch"
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.coverage.run]
+omit = [
+    "*/app_ui.py",
+    "*/app.py",
+    "src/vajsave/app_ui.py",
+    "src/vajsave/app.py",
+]

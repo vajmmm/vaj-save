@@ -101,6 +101,11 @@ def handle_watch(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_app(args: argparse.Namespace) -> int:
+    from .app import main as app_main
+    return app_main()
+
+
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vajsave",
@@ -135,6 +140,9 @@ def create_parser() -> argparse.ArgumentParser:
         help="Output volume events as JSON lines.",
     )
 
+    # app subcommand
+    subparsers.add_parser("app", help="Launch the graphical desktop application.")
+
     return parser
 
 
@@ -149,6 +157,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return handle_scan(args)
     elif args.command == "watch":
         return handle_watch(args)
+    elif args.command == "app":
+        return handle_app(args)
     return 0
 
 
