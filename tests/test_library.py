@@ -712,3 +712,59 @@ def test_import_selected_empty_sets_status(tmp_path: Path):
     state = AppState(library_root=tmp_path / "lib")
     assert state.import_selected_saves([]) == []
     assert "没有可备份" in state.status_text
+
+
+# --- app config (application settings) tests ---
+
+
+def test_config_path_respects_override_and_platform(tmp_path: Path, monkeypatch):
+    from vajsave import library as libmod
+
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "custom.json"))
+    assert libmod.config_path() == tmp_path / "custom.json"
+
+    monkeypatch.delenv("VAJSAVE_CONFIG_PATH", raising=False)
+    monkeypatch.setattr(libmod.sys, "platform", "linux")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    assert libmod.config_path() == tmp_path / "xdg" / "vaj-save" / "config.json"
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    assert libmod.config_path() == Path.home() / ".config" / "vaj-save" / "config.json"
+
+    monkeypatch.setattr(libmod.sys, "platform", "darwin")
+    assert libmod.config_path() == Path.home() / "Library" / "Application Support" / "vaj-save" / "config.json"
+
+    monkeypatch.setattr(libmod.sys, "platform", "win32")
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    assert libmod.config_path() == tmp_path / "appdata" / "vaj-save" / "config.json"
+
+
+def test_app_config_roundtrip(tmp_path: Path, monkeypatch):
+    cfg = tmp_path / "nested" / "config.json"
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(cfg))
+    from vajsave.library import config_path, load_app_config, save_app_config
+
+    assert config_path() == cfg
+    assert load_app_config() == {}
+
+    lib_root = tmp_path / "My Library"
+    save_app_config({"library_root": str(lib_root)})
+    loaded = load_app_config()
+    assert loaded["library_root"] == str(lib_root)
+    assert cfg.is_file()
+    # atomic write must not leave a temp file behind
+    assert not cfg.with_suffix(".json.tmp").exists()
+
+
+def test_app_config_missing_and_bad_json_degrades(tmp_path: Path, monkeypatch):
+    from vajsave.library import load_app_config
+
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "missing.json"))
+    assert load_app_config() == {}
+
+    cfg = tmp_path / "config.json"
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(cfg))
+    for bad in ("{not json", "[]", "null", '"text"'):
+        cfg.write_text(bad, encoding="utf-8")
+        assert load_app_config() == {}
+    cfg.write_bytes(b"\xff\xfe\x00bad")
+    assert load_app_config() == {}

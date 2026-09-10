@@ -240,11 +240,10 @@ class MountedVolumeProvider:
 
         for volume in volumes:
             platform = _detect_volume_platform(volume.mount_point)
-            if not platform:
-                continue
-            if volume.extra is None:
-                volume.extra = {}
-            volume.extra.setdefault("platform", platform)
+            if platform:
+                if volume.extra is None:
+                    volume.extra = {}
+                volume.extra.setdefault("platform", platform)
         return volumes
 
 

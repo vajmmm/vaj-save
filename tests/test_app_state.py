@@ -1,3 +1,4 @@
+import json
 import os
 import queue
 import time
@@ -783,3 +784,250 @@ def test_import_selected_saves(tmp_path: Path, psp_sfo_bytes: bytes):
 
 
 
+
+
+# --- application config / library root selection ---
+
+
+def test_app_state_reads_library_root_from_config(tmp_path: Path, monkeypatch):
+    from vajsave.library import save_app_config
+
+    cfg = tmp_path / "config.json"
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(cfg))
+    configured = tmp_path / "configured-lib"
+    save_app_config({"library_root": str(configured)})
+
+    state = AppState()
+    assert state.library_root == configured
+
+
+def test_app_state_falls_back_to_default_library_root(tmp_path: Path, monkeypatch):
+    from vajsave.library import default_library_root
+
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "missing.json"))
+    state = AppState()
+    assert state.library_root == default_library_root()
+
+
+def test_app_state_invalid_config_library_root_falls_back(tmp_path: Path, monkeypatch):
+    from vajsave.library import default_library_root
+
+    cfg = tmp_path / "config.json"
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(cfg))
+    cfg.write_text(json.dumps({"library_root": 12345}), encoding="utf-8")
+    state = AppState()
+    assert state.library_root == default_library_root()
+
+
+def test_set_library_root_persists_and_invalidates_cache(tmp_path: Path, monkeypatch, psp_sfo_bytes: bytes):
+    from vajsave.library import load_app_config
+
+    cfg = tmp_path / "config.json"
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(cfg))
+
+    root = tmp_path / "PSP_VOL"
+    save_dir = root / "PSP" / "SAVEDATA" / "ULJM05800"
+    save_dir.mkdir(parents=True)
+    (save_dir / "PARAM.SFO").write_bytes(psp_sfo_bytes)
+    (save_dir / "DATA.BIN").write_bytes(b"same")
+
+    old_lib = tmp_path / "old_lib"
+    entry = SaveEntry(
+        platform="psp",
+        source_id="psp",
+        display_name="Monster Hunter Portable 3rd",
+        path=str(save_dir),
+        title_id="ULJM05800",
+    )
+    backup_save(entry, old_lib, datetime(2026, 1, 1, 10, 0, 0))
+
+    state = AppState(library_root=old_lib)
+    state.select_mount(root)
+    scanned = state.all_saves()[0]
+    assert state.save_status(scanned).status == "unchanged"
+
+    new_lib = tmp_path / "new_lib"
+    state.set_library_root(new_lib)
+    assert state.library_root == new_lib
+    assert load_app_config()["library_root"] == str(new_lib)
+    # cache invalidated and recomputed against the new (empty) library
+    assert state.save_status(scanned).status == "new"
+
+
+def test_set_library_root_without_scan(tmp_path: Path, monkeypatch):
+    from vajsave.library import load_app_config
+
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
+    state = AppState(library_root=tmp_path / "before")
+    new_lib = tmp_path / "after"
+    state.set_library_root(new_lib)
+    assert state.library_root == new_lib
+    assert load_app_config()["library_root"] == str(new_lib)
+
+
+# --- app UI structure ---
+
+
+@pytest.fixture(scope="module")
+def tk_root():
+    """A single Tk root shared by every UI test in this module.
+
+    macOS Tk cannot reliably tear down and recreate its interpreter inside one
+    process: calling ``tk.Tk()`` again after ``root.destroy()`` leaves the second
+    root's ``update()`` spinning forever in the Cocoa event loop. Sharing one
+    root keeps the UI tests hermetic without that hang.
+    """
+    try:
+        import tkinter as tk
+
+        root = tk.Tk()
+    except Exception:
+        pytest.skip("Tkinter display not available")
+    root.withdraw()
+    yield root
+    try:
+        root.destroy()
+    except Exception:
+        pass
+
+
+def _dispose_app(app, root) -> None:
+    """Stop an app's background work and drop its widgets, keeping `root` alive."""
+    try:
+        app._stop_background()
+    except Exception:
+        pass
+    for child in list(root.winfo_children()):
+        try:
+            child.destroy()
+        except Exception:
+            pass
+
+
+def test_app_ui_detail_scroll_and_volume_index(tk_root, tmp_path: Path, psp_sfo_bytes: bytes):
+    import tkinter as tk
+
+    from vajsave.app_ui import build_app
+
+    vol_dir = tmp_path / "VOL"
+    psp_dir = vol_dir / "PSP" / "SAVEDATA" / "ULJM05800"
+    psp_dir.mkdir(parents=True)
+    (psp_dir / "PARAM.SFO").write_bytes(psp_sfo_bytes)
+    (psp_dir / "DATA.BIN").write_bytes(b"data")
+
+    # name deliberately contains the old "  ·  " separator; index mapping must win
+    vol = VolumeInfo(name="WEIRD  ·  NAME", mount_point=vol_dir)
+    state = AppState(provider=FakeVolumeProvider([vol]), library_root=tmp_path / "lib")
+    state.refresh_volumes()
+    app = build_app(state=state, root=tk_root)
+    try:
+        assert hasattr(app, "on_settings_clicked")
+        # detail region is a scrollable canvas; actions frame is pinned to bottom
+        assert app.detail_canvas is not None
+        assert str(app.actions_frame.pack_info().get("side")) == "bottom"
+
+        assert len(app._volumes_index) == 1
+        tk_root.update_idletasks()
+        app.vol_list.selection_clear(0, tk.END)
+        app.vol_list.selection_set(0)
+        app.on_volume_selected()
+        assert state.current_mount == vol_dir
+    finally:
+        _dispose_app(app, tk_root)
+
+
+def test_settings_dialog_applies_library_root(tk_root, tmp_path: Path, monkeypatch):
+    import tkinter as tk
+
+    from vajsave.app_ui import build_app
+    from vajsave.library import load_app_config
+
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    app = build_app(state=state, root=tk_root)
+    try:
+        app.on_settings_clicked()
+        # update_idletasks lays out widgets without pumping the full Cocoa event loop.
+        tk_root.update_idletasks()
+        tops = [w for w in tk_root.winfo_children() if isinstance(w, tk.Toplevel)]
+        assert tops
+        # save path of the dialog
+        app._apply_library_root(str(tmp_path / "newlib"))
+        assert state.library_root == tmp_path / "newlib"
+        assert load_app_config()["library_root"] == str(tmp_path / "newlib")
+    finally:
+        _dispose_app(app, tk_root)
+
+
+# --- default device selection ---
+
+
+def _stub_scan(root):
+    """Selection tests exercise ordering, not filesystem scanning."""
+    return ScanResult(root_path=str(root), platform="unknown", sources=[], saves=[], warnings=[])
+
+
+def _drives():
+    """C/D/E fixed drives plus a removable USB stick on F, as Windows would report."""
+    return [
+        VolumeInfo(name="C: 本地磁盘", mount_point=Path("C:\\"), is_removable=False),
+        VolumeInfo(name="D: 本地磁盘", mount_point=Path("D:\\"), is_removable=False),
+        VolumeInfo(name="E: 本地磁盘", mount_point=Path("E:\\"), is_removable=False),
+        VolumeInfo(name="F: KINGSTON", mount_point=Path("F:\\"), is_removable=True),
+    ]
+
+
+def _drive_state(volumes):
+    return AppState(provider=FakeVolumeProvider(volumes), scan_fn=_stub_scan)
+
+
+def test_preferred_volume_prefers_removable_over_fixed():
+    state = _drive_state(_drives())
+    state.refresh_volumes()
+    assert state.preferred_volume().mount_point == Path("F:\\")
+
+
+def test_ensure_mount_selected_falls_back_to_highest_letter():
+    state = _drive_state(_drives()[:3])  # no removable device attached
+    state.refresh_volumes()
+    chosen = state.ensure_mount_selected()
+    assert chosen.mount_point == Path("E:\\")  # never the C: system drive
+    assert state.current_mount == Path("E:\\")
+
+
+def test_startup_burst_settles_on_removable_drive():
+    state = _drive_state([])
+    # The watcher reports devices one at a time; the removable F: arrives last.
+    for vol in _drives():
+        state.apply_watch_event("appeared", vol)
+    assert state.current_mount == Path("F:\\")
+
+
+def test_user_selection_survives_later_removable_arrival():
+    state = _drive_state(_drives()[:3])
+    state.refresh_volumes()
+    state.select_mount(Path("D:\\"))  # explicit user choice
+    state.apply_watch_event("appeared", _drives()[3])
+    assert state.current_mount == Path("D:\\")
+
+
+def test_auto_selection_upgrades_to_better_removable():
+    state = _drive_state([_drives()[2]])  # only E: fixed, auto-selected
+    state.refresh_volumes()
+    assert state.ensure_mount_selected().mount_point == Path("E:\\")
+
+    state.apply_watch_event("appeared", _drives()[3])  # USB stick on F:
+    assert state.current_mount == Path("F:\\")
+
+
+def test_watch_disappeared_current_falls_back_to_remaining():
+    usb = _drives()[3]
+    state = _drive_state([usb])
+    state.refresh_volumes()
+    assert state.ensure_mount_selected().mount_point == Path("F:\\")
+
+    state.apply_watch_event("disappeared", usb)
+    assert state.current_mount is None
+
+    state.apply_watch_event("appeared", _drives()[2])  # E: still attached
+    assert state.current_mount == Path("E:\\")

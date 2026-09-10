@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
+import sys
 import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -17,6 +19,9 @@ from .models import SaveEntry
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 CATALOG_NAME = "catalog.json"
 SETTINGS_NAME = "settings.json"
+APP_CONFIG_NAME = "config.json"
+APP_DIR_NAME = "vaj-save"
+APP_CONFIG_ENV = "VAJSAVE_CONFIG_PATH"
 DEFAULT_KEEP_LAST = 10
 _HASH_CHUNK = 1024 * 1024
 _HASH_CACHE_MAX = 2048
@@ -26,6 +31,52 @@ _hash_cache_lock = threading.Lock()
 
 def default_library_root() -> Path:
     return Path.home() / "Documents" / "vaj-save"
+
+
+def config_path() -> Path:
+    """Location of the application config file (never inside the library root).
+
+    ``VAJSAVE_CONFIG_PATH`` overrides everything (used by tests).
+    """
+    override = os.environ.get(APP_CONFIG_ENV)
+    if override:
+        return Path(override)
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA")
+        base_path = Path(base) if base else Path.home() / "AppData" / "Roaming"
+        return base_path / APP_DIR_NAME / APP_CONFIG_NAME
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / APP_DIR_NAME / APP_CONFIG_NAME
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    base_path = Path(xdg) if xdg else Path.home() / ".config"
+    return base_path / APP_DIR_NAME / APP_CONFIG_NAME
+
+
+def load_app_config() -> Dict[str, Any]:
+    """Read the app config. Missing/corrupt/unreadable files degrade to {}."""
+    path = config_path()
+    try:
+        if not path.is_file():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def save_app_config(config: Dict[str, Any]) -> bool:
+    """Persist the app config atomically. Returns False on write failure."""
+    path = config_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        return False
+    return True
 
 
 def sanitize_name(name: str, fallback: str = "untitled") -> str:

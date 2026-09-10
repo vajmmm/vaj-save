@@ -3,9 +3,36 @@
 掌机存档实验室：备份、版本槽位、收藏和导出。识别 PSP / Vita / Switch / 3DS / NDS / GBA 的 USB 或 SD 导出目录。
 
 - 卡带柜按机种分类（PSP / Vita / Switch / 3DS / NDS / GBA）
-- 备份到 `~/Documents/vaj-save/`，相同内容去重，变化则新开 SAVE SLOT
+- 备份到 `~/Documents/vaj-save/`（可在「设置」里改），相同内容去重，变化则新开 SAVE SLOT
 - 收藏、备注、搜索；版本可恢复到文件夹或导出 ZIP
 - 扫描设备只读；写回请把恢复目标选成 Checkpoint / JKSV / SAVEDATA 目录
+
+
+## 设备检测（Windows）
+
+用 Win32 `GetLogicalDrives` / `GetDriveTypeW` / `GetVolumeInformationW` 枚举盘符，不再硬编码 D..Z 或依赖目录是否存在：
+
+- 列出可移动盘与固定盘，跳过光驱、网络映射盘、无根目录的盘
+- 显示卷标，例如 `F: KINGSTON`；空卷标显示为 `E: 可移动磁盘`
+- 可移动盘排在固定盘前面；同组按盘符字母序
+- 对每个盘做**浅层**指纹识别（只看根目录和少数固定子目录，不做全盘递归），能认出来就在卷信息里标注机种
+
+**默认选中**：启动和点「刷新」时，优先选**可移动盘**，同组里选**盘符靠后**的那个。所以 C/D/E 内置盘 + U 盘 F: 的场景会默认选中 F:；没有可移动盘时回退到字母最大的盘（不会选 C:）。你自己点选的设备不会被自动选中逻辑替换。
+
+U 盘，以及以 USB 大容量存储（UMS）方式直连的掌机（Hekate UMS 挂整张 SD、读卡器、PSP/Vita 的 USB 连接模式）都会得到一个盘符，因此都能被检测到。
+
+
+## 备份路径设置
+
+工具栏「设置」里可以改本地备份库路径，选择后会立即生效并记住（下次启动沿用）：
+
+| 平台 | 配置文件位置 |
+|------|--------------|
+| Windows | `%APPDATA%\vaj-save\config.json` |
+| macOS | `~/Library/Application Support/vaj-save/config.json` |
+| Linux | `$XDG_CONFIG_HOME/vaj-save/config.json`（或 `~/.config/vaj-save/config.json`） |
+
+配置读写失败会安全回退到默认路径（`~/Documents/vaj-save/`），不影响启动。
 
 
 ## macOS App（双击打开）
@@ -70,6 +97,7 @@ vajsave watch
 ## 本轮不做
 
 - **Switch DBI / Checkpoint MTP**：macOS 上 MTP 不稳定。请用 Hekate UMS 挂整张 SD，或拔卡。
+- **MTP / WPD 直连探测**：以 MTP 模式直连的掌机（如部分 Switch DBI 连接）不分配盘符，本工具的盘符枚举看不到它，需要一个单独的 WPD 协议栈才能枚举；目前不做。
 - 存档解密、重签、写回、编辑器。只读管理。
 
 ## JKSV / JKSM 布局假设

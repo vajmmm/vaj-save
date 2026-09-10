@@ -17,8 +17,10 @@ from .library import (
     export_snapshot_zip,
     game_key,
     hash_tree,
+    load_app_config,
     load_catalog,
     restore_snapshot,
+    save_app_config,
     set_game_meta,
     versions_for,
 )
@@ -72,6 +74,23 @@ def _build_status_text(result: ScanResult, counts: Optional[Dict[str, int]] = No
     )
 
 
+def _mount_sort_key(volume: VolumeInfo) -> Tuple[int, int]:
+    """Ranking key for auto-selecting a device.
+
+    Removable volumes (USB sticks, handhelds exposing themselves as UMS drives)
+    come before fixed disks, and inside a group the highest Windows drive letter
+    wins, because a freshly attached device is normally handed the next free
+    letter. Volumes without a drive letter keep their provider order.
+    """
+    text = str(volume.mount_point)
+    letter = -1
+    if len(text) >= 2 and text[1] == ":":
+        char = text[0].upper()
+        if "A" <= char <= "Z":
+            letter = ord(char)
+    return (0 if volume.is_removable else 1, -letter)
+
+
 class AppState:
     """Pure Python state machine for the vaj-save Desktop App."""
 
@@ -85,13 +104,14 @@ class AppState:
         self.provider: VolumeProvider = provider or MountedVolumeProvider()
         self.scan_fn: Callable[[Union[Path, str]], ScanResult] = scan_fn or scan
         self.backend: Optional[StorageBackend] = backend
-        self.library_root: Path = Path(library_root) if library_root else default_library_root()
+        self.library_root: Path = self._resolve_library_root(library_root)
         self.last_import_path: Optional[Path] = None
         self.last_backup: Optional[BackupResult] = None
 
         self.volumes: List[VolumeInfo] = []
         self.current_mount: Optional[Path] = None
         self.current_result: Optional[ScanResult] = None
+        self._auto_selected_mount: bool = False
         self.status_text: str = "就绪"
         self.warnings: List[str] = []
         self.selected_platform: str = "all"
@@ -104,6 +124,36 @@ class AppState:
         self.is_watching: bool = False
         self._watch_thread: Optional[threading.Thread] = None
         self._stop_event: Optional[threading.Event] = None
+
+    @staticmethod
+    def _resolve_library_root(library_root: Optional[Union[Path, str]]) -> Path:
+        """Explicit argument wins; otherwise the persisted app config, then default."""
+        if library_root:
+            return Path(library_root).expanduser()
+        configured = load_app_config().get("library_root")
+        if isinstance(configured, str) and configured.strip():
+            return Path(configured).expanduser()
+        return default_library_root()
+
+    def set_library_root(self, library_root: Union[Path, str]) -> Path:
+        """Switch the local backup library and persist it to the app config.
+
+        Clears the cached backup statuses; when a scan result is present the
+        statuses are recomputed against the new library.
+        """
+        self.library_root = Path(library_root).expanduser()
+        self._backup_statuses = {}
+        config = load_app_config()
+        config["library_root"] = str(self.library_root)
+        save_app_config(config)
+        if self.current_result is not None:
+            self.refresh_backup_statuses()
+            self.status_text = _build_status_text(
+                self.current_result, counts=self.backup_status_counts()
+            )
+        else:
+            self.status_text = f"备份库路径已更新: {self.library_root}"
+        return self.library_root
 
     def all_saves(self) -> List[SaveEntry]:
         if not self.current_result:
@@ -348,10 +398,15 @@ class AppState:
             self.volumes = []
         return self.volumes
 
-    def select_mount(self, mount_point: Union[Path, str]) -> ScanResult:
-        """Select a volume or path to scan and update current result."""
+    def select_mount(self, mount_point: Union[Path, str], auto: bool = False) -> ScanResult:
+        """Select a volume or path to scan and update current result.
+
+        ``auto`` marks a selection the app made on the user's behalf; only those
+        may later be replaced by a better device (see ``ensure_mount_selected``).
+        """
         path = Path(mount_point)
         self.current_mount = path
+        self._auto_selected_mount = auto
         try:
             res = self.scan_fn(path)
         except Exception as e:
@@ -383,6 +438,30 @@ class AppState:
             )
         return self.select_mount(custom_path)
 
+    def preferred_volume(self) -> Optional[VolumeInfo]:
+        """The device the app should default to, or None when nothing is mounted."""
+        if not self.volumes:
+            return None
+        return min(self.volumes, key=_mount_sort_key)
+
+    def ensure_mount_selected(self) -> Optional[VolumeInfo]:
+        """Pick a default device when none is chosen, or upgrade an automatic choice.
+
+        Called after enumerating volumes so a just-attached USB stick or handheld
+        on a high drive letter (F:) is preferred over built-in C:/D:/E: drives.
+        A device the user picked themselves is never replaced.
+        """
+        preferred = self.preferred_volume()
+        if preferred is None:
+            return None
+        if self.current_mount is not None:
+            if not self._auto_selected_mount:
+                return None
+            if Path(preferred.mount_point) == Path(self.current_mount):
+                return None
+        self.select_mount(preferred.mount_point, auto=True)
+        return preferred
+
     def apply_watch_event(self, event_type: str, volume: VolumeInfo) -> None:
         """Handle volume appearance or disappearance."""
         v_mount = Path(volume.mount_point)
@@ -393,9 +472,11 @@ class AppState:
             else:
                 self.volumes[idx] = volume
 
-            if self.current_mount is None:
-                self.select_mount(v_mount)
-            else:
+            # Re-evaluate instead of accepting whichever volume arrived first, so
+            # the startup burst of events settles on the preferred device.
+            before = self.current_mount
+            self.ensure_mount_selected()
+            if self.current_mount == before:
                 self.status_text = f"发现新设备: {volume.name}"
 
         elif event_type == "disappeared":
@@ -403,9 +484,12 @@ class AppState:
             if self.current_mount == v_mount:
                 self.current_mount = None
                 self.current_result = None
+                self._auto_selected_mount = False
                 self._backup_statuses = {}
                 self.warnings = []
                 self.status_text = f"卷 {volume.name} 已卸载"
+                # Fall back to another attached device instead of showing nothing.
+                self.ensure_mount_selected()
             else:
                 self.status_text = f"设备/卷已拔出: {volume.name}"
 

@@ -4,6 +4,18 @@ from pathlib import Path
 from typing import Any, Dict
 
 
+@pytest.fixture(autouse=True)
+def _isolate_app_config(tmp_path_factory, monkeypatch):
+    """Keep the app config file out of the real user profile.
+
+    ``AppState()`` now reads a persisted library path, so without this every test
+    that builds a default AppState would depend on the developer's own config.
+    """
+    config_dir = tmp_path_factory.mktemp("app-config")
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(config_dir / "config.json"))
+    yield
+
+
 def build_sfo(entries: Dict[str, Any]) -> bytes:
     """Helper to generate standard binary PARAM.SFO (PSF) bytes."""
     sorted_items = sorted(entries.items(), key=lambda x: x[0])

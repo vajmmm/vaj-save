@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Union
 
 from .app_state import BACKUP_STATUS_LABELS, PLATFORM_LABELS, PLATFORM_ORDER, AppState
 from .library import Snapshot
-from .models import SaveEntry
+from .models import SaveEntry, VolumeInfo
 
 
 BG = "#1c1c1e"
@@ -61,6 +61,7 @@ class VajSaveApp:
         self._selected_save: Optional[SaveEntry] = None
         self._selected_snapshot: Optional[Snapshot] = None
         self._saves_index: List[SaveEntry] = []
+        self._volumes_index: List[VolumeInfo] = []
         self._versions_index: List[Snapshot] = []
         self._platform_rows: Dict[str, dict] = {}
         self._watch_var = tk.BooleanVar(value=True)
@@ -71,7 +72,11 @@ class VajSaveApp:
         self._apply_theme()
         self._create_widgets()
         self._bind_events()
-        self.refresh_volumes_ui()
+        # Enumerate right away so the device list is populated on first paint and a
+        # sensible default device is chosen (removable first, then latest letter).
+        self.state.refresh_volumes()
+        self.state.ensure_mount_selected()
+        self.refresh_volumes_ui(select_path=self.state.current_mount)
         self.refresh_platform_ui()
         self.refresh_saves_ui()
         self.refresh_stats()
@@ -135,6 +140,7 @@ class VajSaveApp:
         ttk.Button(toolbar, text="刷新", command=self.on_refresh_clicked).pack(side=tk.LEFT, padx=(12, 6))
         ttk.Button(toolbar, text="打开文件夹", command=self.on_open_folder_clicked).pack(side=tk.LEFT, padx=6)
         ttk.Button(toolbar, text="打开本地库", command=self.on_open_library_clicked).pack(side=tk.LEFT, padx=6)
+        ttk.Button(toolbar, text="设置", command=self.on_settings_clicked).pack(side=tk.LEFT, padx=6)
         ttk.Checkbutton(toolbar, text="监听插拔", variable=self._watch_var, command=self.on_watch_toggle).pack(side=tk.LEFT, padx=(12, 0))
         self._hide_unchanged_var.set(bool(self.state.hide_unchanged))
         ttk.Checkbutton(
@@ -190,14 +196,53 @@ class VajSaveApp:
         right.pack(side=tk.LEFT, fill=tk.Y)
         right.pack_propagate(False)
         tk.Label(right, text="详情", bg=SIDE, fg=MUTED, font=ui_font(12)).pack(anchor="w", padx=16, pady=(16, 8))
+
+        # Action buttons are packed to the BOTTOM first so a long detail text or
+        # a tiny window can never push them off-screen; the scrollable detail
+        # region below then fills whatever space is left.
+        actions = tk.Frame(right, bg=SIDE)
+        actions.pack(side=tk.BOTTOM, fill=tk.X, padx=12, pady=16)
+        self.actions_frame = actions
+        ttk.Button(actions, text="备份", style="Accent.TButton", command=self.on_save_local_clicked).pack(fill=tk.X, pady=3)
+        ttk.Button(actions, text="备份所选", command=self.on_save_selected_clicked).pack(fill=tk.X, pady=3)
+        ttk.Button(actions, text="备份当前列表", command=self.on_save_visible_clicked).pack(fill=tk.X, pady=3)
+        ttk.Button(actions, text="恢复这个版本…", command=self.on_restore_clicked).pack(fill=tk.X, pady=3)
+        ttk.Button(actions, text="导出 ZIP", command=self.on_export_zip_clicked).pack(fill=tk.X, pady=3)
+        ttk.Button(actions, text="收藏", command=self.on_star_clicked).pack(fill=tk.X, pady=3)
+        finder = "在访达中显示" if sys.platform == "darwin" else "在文件管理器中显示"
+        ttk.Button(actions, text=finder, command=self.on_show_in_finder_clicked).pack(fill=tk.X, pady=3)
+        ttk.Button(actions, text="只看收藏", command=self.on_starred_filter).pack(fill=tk.X, pady=3)
+
+        # Vertically scrollable detail region (detail text + versions + note).
+        scroll_shell = tk.Frame(right, bg=SIDE)
+        scroll_shell.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.detail_canvas = tk.Canvas(scroll_shell, bg=SIDE, highlightthickness=0, bd=0)
+        detail_scroll = ttk.Scrollbar(scroll_shell, orient=tk.VERTICAL, command=self.detail_canvas.yview)
+        self.detail_canvas.configure(yscrollcommand=detail_scroll.set)
+        detail_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.detail_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        detail_inner = tk.Frame(self.detail_canvas, bg=SIDE)
+        self.detail_inner = detail_inner
+        self._detail_window = self.detail_canvas.create_window((0, 0), window=detail_inner, anchor="nw")
+
+        def _on_inner_configure(_event=None):
+            self.detail_canvas.configure(scrollregion=self.detail_canvas.bbox("all"))
+
+        def _on_canvas_configure(event):
+            self.detail_canvas.itemconfigure(self._detail_window, width=event.width)
+
+        detail_inner.bind("<Configure>", _on_inner_configure)
+        self.detail_canvas.bind("<Configure>", _on_canvas_configure)
+
         self.detail_name = tk.StringVar(value="未选择游戏")
         self.detail_meta = tk.StringVar(value="从中间列表点选一条存档")
-        tk.Label(right, textvariable=self.detail_name, bg=SIDE, fg=TEXT, font=ui_font(16, "bold"), wraplength=300, justify="left").pack(anchor="w", padx=16)
-        tk.Label(right, textvariable=self.detail_meta, bg=SIDE, fg=MUTED, font=ui_font(12), wraplength=300, justify="left").pack(anchor="w", padx=16, pady=(4, 12))
+        tk.Label(detail_inner, textvariable=self.detail_name, bg=SIDE, fg=TEXT, font=ui_font(16, "bold"), wraplength=280, justify="left").pack(anchor="w", padx=16)
+        tk.Label(detail_inner, textvariable=self.detail_meta, bg=SIDE, fg=MUTED, font=ui_font(12), wraplength=280, justify="left").pack(anchor="w", padx=16, pady=(4, 12))
 
-        tk.Label(right, text="版本", bg=SIDE, fg=MUTED, font=ui_font(12)).pack(anchor="w", padx=16, pady=(4, 6))
+        tk.Label(detail_inner, text="版本", bg=SIDE, fg=MUTED, font=ui_font(12)).pack(anchor="w", padx=16, pady=(4, 6))
         self.version_list = tk.Listbox(
-            right,
+            detail_inner,
             bg=CARD,
             fg=TEXT,
             selectbackground=BLUE,
@@ -209,26 +254,17 @@ class VajSaveApp:
             activestyle="none",
             height=8,
         )
-        self.version_list.pack(fill=tk.BOTH, expand=True, padx=12)
+        self.version_list.pack(fill=tk.X, padx=12)
 
-        tk.Label(right, text="备注", bg=SIDE, fg=MUTED, font=ui_font(12)).pack(anchor="w", padx=16, pady=(12, 6))
+        tk.Label(detail_inner, text="备注", bg=SIDE, fg=MUTED, font=ui_font(12)).pack(anchor="w", padx=16, pady=(12, 6))
         self.note_var = tk.StringVar()
-        note = ttk.Entry(right, textvariable=self.note_var)
-        note.pack(fill=tk.X, padx=12)
+        note = ttk.Entry(detail_inner, textvariable=self.note_var)
+        note.pack(fill=tk.X, padx=12, pady=(0, 12))
         note.bind("<FocusOut>", self.on_note_commit)
         note.bind("<Return>", self.on_note_commit)
 
-        actions = tk.Frame(right, bg=SIDE)
-        actions.pack(fill=tk.X, padx=12, pady=16)
-        ttk.Button(actions, text="备份", style="Accent.TButton", command=self.on_save_local_clicked).pack(fill=tk.X, pady=3)
-        ttk.Button(actions, text="备份所选", command=self.on_save_selected_clicked).pack(fill=tk.X, pady=3)
-        ttk.Button(actions, text="备份当前列表", command=self.on_save_visible_clicked).pack(fill=tk.X, pady=3)
-        ttk.Button(actions, text="恢复这个版本…", command=self.on_restore_clicked).pack(fill=tk.X, pady=3)
-        ttk.Button(actions, text="导出 ZIP", command=self.on_export_zip_clicked).pack(fill=tk.X, pady=3)
-        ttk.Button(actions, text="收藏", command=self.on_star_clicked).pack(fill=tk.X, pady=3)
-        finder = "在访达中显示" if sys.platform == "darwin" else "在文件管理器中显示"
-        ttk.Button(actions, text=finder, command=self.on_show_in_finder_clicked).pack(fill=tk.X, pady=3)
-        ttk.Button(actions, text="只看收藏", command=self.on_starred_filter).pack(fill=tk.X, pady=3)
+        self._bind_detail_scroll(self.detail_canvas)
+        self._bind_detail_scroll(detail_inner)
 
         self.path_entry_var = tk.StringVar(value="")
         path = ttk.Entry(self.root, textvariable=self.path_entry_var)
@@ -300,8 +336,10 @@ class VajSaveApp:
 
     def on_refresh_clicked(self) -> None:
         self.state.refresh_volumes()
-        self.refresh_volumes_ui()
+        self.state.ensure_mount_selected()
+        self.refresh_volumes_ui(select_path=self.state.current_mount)
         self.refresh_platform_ui()
+        self.refresh_saves_ui()
         self.refresh_stats()
 
     def on_open_folder_clicked(self) -> None:
@@ -325,11 +363,16 @@ class VajSaveApp:
         selection = self.vol_list.curselection()
         if not selection:
             return
-        raw = self.vol_list.get(selection[0])
-        if "  ·  " not in raw:
+        index = selection[0]
+        if index >= len(self._volumes_index):
             return
-        mount = Path(raw.split("  ·  ", 1)[1])
-        self.state.select_mount(mount)
+        # Index mapping avoids mis-parsing volume names that contain the label
+        # separator ("  ·  ") used to render the listbox row.
+        volume = self._volumes_index[index]
+        if self.state.current_mount == volume.mount_point and self.state.current_result is not None:
+            # Re-selecting the active device keeps its scan; "刷新" forces a rescan.
+            return
+        self.state.select_mount(volume.mount_point)
         self.refresh_platform_ui()
         self.refresh_saves_ui()
 
@@ -473,6 +516,74 @@ class VajSaveApp:
         self.update_status(f"本地库：{self.state.library_root}" if ok else msg)
         self.update_warning("" if ok else msg)
 
+    def _apply_library_root(self, path: str) -> None:
+        """Apply a new library root chosen in the settings dialog."""
+        self.state.set_library_root(path)
+        self.refresh_saves_ui()
+        self.refresh_stats()
+        self.update_status(f"备份库已切换到 {self.state.library_root}")
+        self.update_warning("")
+
+    def on_settings_clicked(self) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("设置")
+        dialog.configure(bg=BG)
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+
+        tk.Label(dialog, text="本地备份库路径", bg=BG, fg=TEXT, font=ui_font(13, "bold")).pack(anchor="w", padx=16, pady=(16, 6))
+        path_var = tk.StringVar(value=str(self.state.library_root))
+        entry = ttk.Entry(dialog, textvariable=path_var, width=52)
+        entry.pack(fill=tk.X, padx=16)
+
+        def browse() -> None:
+            chosen = filedialog.askdirectory(
+                title="选择备份库目录",
+                parent=dialog,
+                initialdir=path_var.get() or None,
+            )
+            if chosen:
+                path_var.set(chosen)
+
+        def save() -> None:
+            chosen = path_var.get().strip()
+            if not chosen:
+                return
+            dialog.destroy()
+            self._apply_library_root(chosen)
+
+        def cancel() -> None:
+            dialog.destroy()
+
+        btn_row = tk.Frame(dialog, bg=BG)
+        btn_row.pack(fill=tk.X, padx=16, pady=16)
+        ttk.Button(btn_row, text="浏览…", command=browse).pack(side=tk.LEFT)
+        ttk.Button(btn_row, text="取消", command=cancel).pack(side=tk.RIGHT)
+        ttk.Button(btn_row, text="保存", style="Accent.TButton", command=save).pack(side=tk.RIGHT, padx=(0, 8))
+
+        dialog.grab_set()
+        entry.focus_set()
+
+    def _bind_detail_scroll(self, widget) -> None:
+        """Route wheel events anywhere in the detail region to the canvas."""
+        widget.bind("<MouseWheel>", self._on_detail_mousewheel)
+        widget.bind("<Button-4>", self._on_detail_mousewheel_linux)
+        widget.bind("<Button-5>", self._on_detail_mousewheel_linux)
+        for child in widget.winfo_children():
+            self._bind_detail_scroll(child)
+
+    def _on_detail_mousewheel(self, event) -> str:
+        if sys.platform == "darwin":
+            delta = -1 * event.delta
+        else:
+            delta = -1 * int(event.delta / 120)
+        self.detail_canvas.yview_scroll(delta, "units")
+        return "break"
+
+    def _on_detail_mousewheel_linux(self, event) -> str:
+        self.detail_canvas.yview_scroll(-1 if event.num == 4 else 1, "units")
+        return "break"
+
     def _poll_events(self) -> None:
         drained = self.state.drain_events()
         if drained > 0:
@@ -489,10 +600,12 @@ class VajSaveApp:
 
     def refresh_volumes_ui(self, select_path: Optional[Path] = None) -> None:
         self.vol_list.delete(0, tk.END)
+        self._volumes_index = []
         target = select_path or self.state.current_mount
         selected = None
         for index, vol in enumerate(self.state.volumes):
             self.vol_list.insert(tk.END, f"{vol.name}  ·  {vol.mount_point}")
+            self._volumes_index.append(vol)
             if target and Path(vol.mount_point) == Path(target):
                 selected = index
         if selected is not None:
@@ -549,13 +662,23 @@ class VajSaveApp:
     def update_warning(self, text: str) -> None:
         self.warning_label_var.set(text)
 
-    def on_close(self) -> None:
-        if hasattr(self, "_poll_job") and self._poll_job:
+    def _stop_background(self) -> None:
+        """Cancel the poll loop and stop the volume watcher, leaving the window alone.
+
+        Split out from ``on_close`` so tests can tear down an app while reusing a
+        single shared Tk root (destroying and recreating Tk in one process is not
+        reliable on macOS and hangs the event loop).
+        """
+        if getattr(self, "_poll_job", None):
             try:
                 self.root.after_cancel(self._poll_job)
             except Exception:
                 pass
+            self._poll_job = None
         self.state.stop_watch(timeout=0.5)
+
+    def on_close(self) -> None:
+        self._stop_background()
         self.root.destroy()
 
 
