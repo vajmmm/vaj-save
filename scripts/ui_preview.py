@@ -7,12 +7,14 @@ interaction, no filesystem scan, no ``mainloop``) and writes preview images to
 
 Two independent renderers are used so the script always leaves something behind:
 
-* ``home-preview.png`` is drawn with Pillow straight from the same ``ui_theme``
-  tokens and ``tile_face`` data the live app uses. It needs no Ghostscript.
-* ``save-grid.eps`` / ``detail.eps`` are captured from the live Tk canvases via
-  ``Canvas.postscript`` and converted to PNG through Pillow/Ghostscript when a
-  working ``gs`` is available. When Ghostscript is missing or broken the ``.eps``
-  files are kept and the script still exits 0.
+* ``home-preview.png`` is an **illustrative schematic** drawn with Pillow from the
+  same ``ui_theme`` tokens and ``tile_face`` data the live app uses — it is *not*
+  a screenshot of the running widgets. It needs no Ghostscript and is stamped
+  with a "示意图 · 非真实截图" badge so it can never be mistaken for one.
+* ``save-grid.eps`` / ``detail.eps`` are the real captures, taken from the live Tk
+  canvases via ``Canvas.postscript`` and converted to PNG through
+  Pillow/Ghostscript when a working ``gs`` is available. When Ghostscript is
+  missing or broken the ``.eps`` files are kept and the script still exits 0.
 
 Run with::
 
@@ -175,8 +177,10 @@ def render_home_preview(out_dir: Path, state: AppState) -> Path:
     draw = ImageDraw.Draw(image)
     font_title = _load_font(20, bold=True)
     font_body = _load_font(13)
+    font_body_bold = _load_font(13, bold=True)
     font_small = _load_font(11)
     font_badge = _load_font(16, bold=True)
+    font_mono = _load_font(30, bold=True)
 
     # Top status bar.
     draw.rectangle([0, 0, width, top_h], fill=SWITCH["surface"])
@@ -184,6 +188,12 @@ def render_home_preview(out_dir: Path, state: AppState) -> Path:
     draw.text((pad + 18, 32), "v", font=font_badge, fill=SWITCH["on_accent"], anchor="mm")
     draw.text((pad + 48, 20), "vaj-save", font=font_title, fill=SWITCH["text"], anchor="la")
     draw.text((pad + 48, 44), "把掌机存档备份下来，按版本管理", font=font_small, fill=SWITCH["muted"], anchor="la")
+
+    # This drawing is a mock, not a rasterization of the live widgets: say so.
+    note = "示意图 · 非真实截图"
+    note_w = 20 + 11 * len(note)
+    _rounded(draw, [width / 2 - note_w / 2, 18, width / 2 + note_w / 2, 46], 14, SWITCH["surface_alt"], SWITCH["line"])
+    draw.text((width / 2, 32), note, font=font_small, fill=SWITCH["muted"], anchor="mm")
     stats = state.collection_stats()
     draw.text((width - pad, 22), time.strftime("%H:%M"), font=font_title, fill=SWITCH["text"], anchor="ra")
     draw.text(
@@ -230,10 +240,23 @@ def render_home_preview(out_dir: Path, state: AppState) -> Path:
         x1 = col * (tile_w + gap)
         y1 = 40 + row * (tile_h + gap)
         x2, y2 = x1 + tile_w, y1 + tile_h
-        _rounded(layer_draw, [x1, y1, x2, y2], 20, SWITCH["card"], SWITCH["line"])
-        _rounded(layer_draw, [x1 + 14, y1 + 14, x1 + 56, y1 + 56], 12, face["accent"])
-        layer_draw.text((x1 + 35, y1 + 35), face["monogram"], font=font_badge, fill=SWITCH["on_accent"], anchor="mm")
-        layer_draw.text((x1 + tile_w / 2, y1 + 72), face["title"], font=font_body, fill=SWITCH["text"], anchor="ma")
+        # Pastel platform face, big centred monogram, full-width bottom bar.
+        _rounded(layer_draw, [x1, y1, x2, y2], 20, face.get("face", SWITCH["card"]))
+        layer_draw.text(
+            (x1 + tile_w / 2, y1 + tile_h * 0.40),
+            face["monogram"],
+            font=font_mono,
+            fill=face["accent"],
+            anchor="mm",
+        )
+        layer_draw.rectangle([x1, y2 - 4, x2, y2], fill=face["accent"])
+        layer_draw.text(
+            (x1 + tile_w / 2, y1 + tile_h * 0.62),
+            face["title"],
+            font=font_body_bold,
+            fill=SWITCH["text"],
+            anchor="ma",
+        )
         pill = face["pill"]
         pill_w = min(tile_w - 30, 18 + 13 * len(pill["label"]))
         px1 = x1 + (tile_w - pill_w) / 2

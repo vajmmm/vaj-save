@@ -14,28 +14,43 @@ from typing import Any, Dict, Optional
 
 # Switch Basic White surface ramp: light gray page > soft panel > subtle alt,
 # white cards on top, near-black ink, system blue accent with a brighter ring.
+# The functional colours stay on the Apple system palette (`success`/`warning`/
+# `danger`) so status pills read the same as the rest of the OS chrome.
 SWITCH: Dict[str, str] = {
     "bg": "#ebebeb",
     "surface": "#f2f2f2",
     "surface_alt": "#e7e7e7",
     "card": "#ffffff",
     "text": "#2d2d2d",
-    "muted": "#6f6f6f",
+    "muted": "#8b8b8b",
     "line": "#d6d6d6",
+    "line_strong": "#b0b0b0",
+    "hover": "#e2e2e2",
     "accent": "#0a84ff",
+    "accent_hover": "#409cff",
     "ring": "#00a2ff",
+    "ring_tint": "#d6ecff",
+    "star": "#ffcc00",
     "on_accent": "#ffffff",
-    "success": "#34c759",
-    "warning": "#ff9500",
-    "danger": "#ff3b30",
+    "success": "#30d158",
+    "warning": "#ff9f0a",
+    "danger": "#ff453a",
 }
+
+# Module-level aliases keep the token names greppable from the UI code without
+# reaching through the dict every time.
+HOVER = SWITCH["hover"]
+LINE_STRONG = SWITCH["line_strong"]
+STAR = SWITCH["star"]
+ACCENT_HOVER = SWITCH["accent_hover"]
+RING_TINT = SWITCH["ring_tint"]
 
 # Canonical handheld platform identity colors (shared with DESIGN.md).
 PLATFORM_COLORS: Dict[str, str] = {
     "all": "#0a84ff",
     "psp": "#64d2ff",
     "vita": "#63e6be",
-    "switch": "#ff453a",
+    "switch": "#ff3c28",
     "3ds": "#ffd60a",
     "nds": "#bf5af2",
     "gba": "#30d158",
@@ -43,6 +58,14 @@ PLATFORM_COLORS: Dict[str, str] = {
 
 DEFAULT_TILE_WIDTH = 156
 DEFAULT_TILE_GAP = 14
+
+# Selected save tiles grow by ``TILE_SELECT_SCALE`` px and wear a ``TILE_RING_WIDTH``
+# px selection ring sitting ``TILE_RING_GAP`` px outside the tile.
+TILE_SELECT_SCALE = 8
+TILE_RING_GAP = 6
+TILE_RING_WIDTH = 3
+TILE_RADIUS = 18
+TILE_BAR_HEIGHT = 4
 
 _STATUS_PILL_SPECS: Dict[str, Dict[str, str]] = {
     "new": {"label": "新", "fg": SWITCH["accent"]},
@@ -67,6 +90,47 @@ def _parse_hex(color: str) -> tuple[int, int, int]:
         return int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
     except ValueError as exc:  # non-hex characters
         raise ValueError(f"invalid hex color: {color!r}") from exc
+
+
+def hex_to_rgb(color: str) -> tuple[int, int, int]:
+    """Parse ``#rgb``/``#rrggbb`` into an ``(r, g, b)`` tuple."""
+    return _parse_hex(color)
+
+
+def rgb_to_hex(rgb: Any) -> str:
+    """Render an ``(r, g, b)`` sequence as a lowercase ``#rrggbb`` string.
+
+    Channel values are clamped to ``0..255`` so saturating blends never raise.
+    """
+    red, green, blue = rgb
+
+    def _clamp(value: Any) -> int:
+        return max(0, min(255, int(round(float(value)))))
+
+    return "#{:02x}{:02x}{:02x}".format(_clamp(red), _clamp(green), _clamp(blue))
+
+
+def lighten(color: str, amount: float = 0.1) -> str:
+    """Blend ``color`` toward white by ``amount`` (0..1)."""
+    return mix(color, "#ffffff", amount)
+
+
+def darken(color: str, amount: float = 0.1) -> str:
+    """Blend ``color`` toward black by ``amount`` (0..1)."""
+    return mix(color, "#000000", amount)
+
+
+def ring_size(width: float, height: Optional[float] = None, *, grow: float = TILE_SELECT_SCALE) -> tuple[float, float]:
+    """Size of a selected tile after it grows by ``grow`` px overall.
+
+    ``width``/``height`` may also be passed as a single ``(width, height)`` box.
+    """
+    if height is None:
+        if isinstance(width, (tuple, list)):
+            width, height = width
+        else:
+            height = width
+    return float(width) + grow, float(height) + grow
 
 
 def mix(color_a: str, color_b: str, t: float) -> str:
@@ -165,11 +229,14 @@ def tile_face(entry: Any, status: Any, *, starred: bool = False) -> Dict[str, An
     status_key = getattr(status, "status", status) or "new"
     title = entry.display_name or entry.path
     subtitle_bits = [bit for bit in (entry.title_id, entry.slot, entry.user) if bit]
+    accent = PLATFORM_COLORS.get(entry.platform, SWITCH["accent"])
     return {
         "title": title,
         "subtitle": " · ".join(subtitle_bits),
         "monogram": monogram(entry.display_name),
-        "accent": PLATFORM_COLORS.get(entry.platform, SWITCH["accent"]),
+        "accent": accent,
+        # Pastel platform tint used as the tile face (never the plain white card).
+        "face": mix(accent, SWITCH["card"], 0.86),
         "platform": entry.platform,
         "status": status_key,
         "pill": status_pill(status_key),

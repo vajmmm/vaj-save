@@ -2,6 +2,7 @@ import subprocess
 import sys
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import filedialog, ttk
 from typing import Dict, List, Optional, Tuple, Union
@@ -14,6 +15,12 @@ from .ui_theme import (
     DEFAULT_TILE_WIDTH,
     PLATFORM_COLORS,
     SWITCH,
+    TILE_BAR_HEIGHT,
+    TILE_RADIUS,
+    TILE_RING_GAP,
+    TILE_RING_WIDTH,
+    TILE_SELECT_SCALE,
+    darken,
     grid_columns,
     mix,
     tile_face,
@@ -73,6 +80,214 @@ def _rounded_points(x1: float, y1: float, x2: float, y2: float, r: float) -> Lis
     ]
 
 
+class CanvasButton(tk.Canvas):
+    """A flat rounded button drawn on a Canvas.
+
+    Replaces every ``ttk`` button/checkbutton in the app so the Basic White
+    surfaces never fall back to the platform's native chrome. Exposes the
+    ``idle``/``hover``/``pressed`` interaction states, an ``accent`` variant, a
+    ``selected`` toggle state, and an optional left status dot. The requested
+    width is measured from the label font, and the height defaults to the
+    bottom system bar's 34px with a 36px variant for the right action stack.
+    """
+
+    BOTTOM_HEIGHT = 34
+    ACTION_HEIGHT = 36
+    RADIUS = 9
+    PADDING = 14
+    DOT_SPAN = 18
+    MIN_WIDTH = 48
+
+    def __init__(
+        self,
+        master,
+        text: str = "",
+        command=None,
+        *,
+        variant: str = "neutral",
+        accent: Optional[bool] = None,
+        height: int = BOTTOM_HEIGHT,
+        font=None,
+        padding: int = PADDING,
+        dot: Optional[str] = None,
+        selected: bool = False,
+        **kwargs,
+    ) -> None:
+        self._text = text
+        self._command = command
+        if accent is True:
+            variant = "accent"
+        self.variant = variant
+        self.accent = variant == "accent"
+        self.selected = bool(selected)
+        self._interaction = "idle"
+        self.enabled = True
+        self._dot_color = dot
+        self._font_spec = font or ui_font(12)
+        self._padding = int(padding)
+        self._height = int(height)
+        self._font = tkfont.Font(root=master.winfo_toplevel(), font=self._font_spec)
+        kwargs.setdefault("bg", self._parent_bg(master))
+        kwargs.setdefault("highlightthickness", 0)
+        kwargs.setdefault("bd", 0)
+        super().__init__(master, height=self._height, width=self._measure_width(), **kwargs)
+        self.configure(takefocus=1)
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<ButtonPress-1>", self._on_press)
+        self.bind("<ButtonRelease-1>", self._on_release)
+        self.bind("<Return>", lambda _e: self.invoke())
+        self.bind("<space>", lambda _e: self.invoke())
+        self.bind("<Configure>", lambda _e: self._render())
+        self._render()
+
+    # -- state ---------------------------------------------------------------
+
+    @property
+    def state(self) -> str:
+        """One of ``idle``/``hover``/``pressed``/``selected``/``accent``.
+
+        Pointer interaction wins over the persistent selected/accent styling so a
+        hovered or pressed button always reports its transient state.
+        """
+        if self._interaction != "idle":
+            return self._interaction
+        if self.selected:
+            return "selected"
+        if self.accent:
+            return "accent"
+        return "idle"
+
+    # -- configuration -------------------------------------------------------
+
+    @staticmethod
+    def _parent_bg(master) -> str:
+        try:
+            return str(master.cget("bg"))
+        except Exception:  # noqa: BLE001 - fall back to the neutral bar surface
+            return SWITCH["surface"]
+
+    def _measure_width(self) -> int:
+        width = self._font.measure(self._text) + self._padding * 2
+        if self._dot_color:
+            width += self.DOT_SPAN
+        return max(self.MIN_WIDTH, int(width))
+
+    def _current_width(self) -> int:
+        width = self.winfo_width()
+        if width <= 1:
+            try:
+                width = int(self.cget("width"))
+            except (TypeError, ValueError):
+                width = self._measure_width()
+        return max(1, width)
+
+    def _current_height(self) -> int:
+        height = self.winfo_height()
+        if height <= 1:
+            height = self._height
+        return max(1, height)
+
+    def set_text(self, text: str) -> None:
+        self._text = text
+        self.configure(width=self._measure_width())
+        self._render()
+
+    def set_selected(self, selected: bool) -> None:
+        selected = bool(selected)
+        if selected == self.selected:
+            return
+        self.selected = selected
+        self._render()
+
+    def invoke(self):
+        """Run the bound command exactly like a real click."""
+        if not self.enabled or self._command is None:
+            return None
+        return self._command()
+
+    # -- interactions --------------------------------------------------------
+
+    def _on_enter(self, _event=None) -> None:
+        self._interaction = "hover"
+        self._render()
+
+    def _on_leave(self, _event=None) -> None:
+        self._interaction = "idle"
+        self._render()
+
+    def _on_press(self, _event=None) -> None:
+        self.focus_set()
+        self._interaction = "pressed"
+        self._render()
+
+    def _on_release(self, event=None) -> None:
+        was_pressed = self._interaction == "pressed"
+        self._interaction = "hover"
+        self._render()
+        if was_pressed and event is not None:
+            inside = 0 <= event.x <= self.winfo_width() and 0 <= event.y <= self.winfo_height()
+            if inside:
+                self.invoke()
+
+    # -- rendering -----------------------------------------------------------
+
+    def _palette(self) -> Tuple[str, str, str]:
+        colors = SWITCH
+        interaction = self._interaction
+        if self.accent:
+            if interaction == "pressed":
+                return darken(colors["accent"], 0.12), colors["on_accent"], ""
+            if interaction == "hover":
+                return colors["accent_hover"], colors["on_accent"], ""
+            return colors["accent"], colors["on_accent"], ""
+        if interaction == "pressed":
+            return colors["line"], colors["text"], ""
+        if interaction == "hover":
+            return colors["hover"], colors["text"], ""
+        if self.selected:
+            return mix(colors["accent"], colors["card"], 0.84), colors["accent"], colors["ring"]
+        return colors["surface_alt"], colors["text"], ""
+
+    def _render(self) -> None:
+        self.delete("all")
+        width = self._current_width()
+        height = self._current_height()
+        fill, foreground, outline = self._palette()
+        self.create_polygon(
+            _rounded_points(1, 1, width - 1, height - 1, self.RADIUS),
+            smooth=True,
+            splinesteps=24,
+            fill=fill,
+            outline=outline,
+            width=1,
+            tags=("button-bg",),
+        )
+        text_x = width / 2
+        if self._dot_color:
+            center_x = self._padding + 4
+            center_y = height / 2
+            dot_fill = self._dot_color if self.selected else mix(self._dot_color, fill, 0.35)
+            self.create_oval(
+                center_x - 4,
+                center_y - 4,
+                center_x + 4,
+                center_y + 4,
+                fill=dot_fill,
+                outline="",
+                tags=("button-dot",),
+            )
+            text_x = (center_x + 4 + self.DOT_SPAN / 2 + width) / 2
+        self.create_text(
+            text_x,
+            height / 2,
+            text=self._text,
+            fill=foreground,
+            font=self._font_spec,
+            tags=("button-text",),
+        )
+
+
 class SaveTileGrid(tk.Canvas):
     """A Switch HOME style grid of save tiles drawn on a Canvas.
 
@@ -109,9 +324,13 @@ class SaveTileGrid(tk.Canvas):
         self._selected: set = set()
         self._anchor: Optional[int] = None
         self._active: Optional[int] = None
+        self._hover: Optional[int] = None
         self._cols = 1
         self._laying_out = False
 
+        self.bind("<Enter>", self._on_pointer_enter)
+        self.bind("<Leave>", self._on_pointer_leave)
+        self.bind("<Motion>", self._on_pointer_motion)
         self.bind("<Button-1>", self._on_button)
         self.bind("<Control-Button-1>", lambda e: self._on_button(e, ctrl=True))
         self.bind("<Command-Button-1>", lambda e: self._on_button(e, ctrl=True))
@@ -134,6 +353,7 @@ class SaveTileGrid(tk.Canvas):
         self._selected = set()
         self._anchor = None
         self._active = None
+        self._hover = None
         self._layout()
 
     def size(self) -> int:
@@ -141,6 +361,19 @@ class SaveTileGrid(tk.Canvas):
 
     def columns(self) -> int:
         return self._cols
+
+    @property
+    def hover_index(self) -> Optional[int]:
+        return self._hover
+
+    def set_hover(self, index: Optional[int]) -> None:
+        """Highlight the tile under the pointer (``None`` clears it)."""
+        if index is not None and not (0 <= index < len(self._tiles)):
+            index = None
+        if index == self._hover:
+            return
+        self._hover = index
+        self._layout()
 
     def curselection(self) -> Tuple[int, ...]:
         return tuple(sorted(self._selected))
@@ -224,6 +457,18 @@ class SaveTileGrid(tk.Canvas):
             self.yview_moveto(min(1.0, max(0.0, (y2 - view_h) / total)))
 
     # -- events --------------------------------------------------------------
+
+    def _on_pointer_enter(self, event) -> str:
+        self.set_hover(self._index_at(event.x, event.y))
+        return "break"
+
+    def _on_pointer_leave(self, _event=None) -> str:
+        self.set_hover(None)
+        return "break"
+
+    def _on_pointer_motion(self, event) -> str:
+        self.set_hover(self._index_at(event.x, event.y))
+        return "break"
 
     def _on_button(self, event, ctrl: bool = False, shift: bool = False) -> str:
         self.focus_set()
@@ -320,47 +565,83 @@ class SaveTileGrid(tk.Canvas):
     def _draw_tile(self, index: int, face: dict, x1: float, y1: float, x2: float, y2: float) -> None:
         colors = self.colors
         selected = index in self._selected
-        outline = colors["ring"] if selected else colors["line"]
+        hovered = index == self._hover
+
+        # The selected tile grows outward; the base box stays for hit testing.
+        if selected:
+            grow = TILE_SELECT_SCALE / 2
+            x1, y1, x2, y2 = x1 - grow, y1 - grow, x2 + grow, y2 + grow
+            gap = TILE_RING_GAP
+            self.create_polygon(
+                _rounded_points(x1 - gap, y1 - gap, x2 + gap, y2 + gap, TILE_RADIUS + gap),
+                smooth=True,
+                splinesteps=24,
+                fill="",
+                outline=colors["ring"],
+                width=TILE_RING_WIDTH,
+                tags=("tile-ring", f"ring{index}"),
+            )
+
+        if hovered and not selected:
+            fill = colors["hover"]
+            outline = colors["line"]
+        else:
+            fill = face.get("face", colors["card"])
+            outline = ""
         self.create_polygon(
-            _rounded_points(x1, y1, x2, y2, 18),
+            _rounded_points(x1, y1, x2, y2, TILE_RADIUS),
             smooth=True,
             splinesteps=24,
-            fill=colors["card"],
+            fill=fill,
             outline=outline,
-            width=3 if selected else 1,
+            width=1,
+            tags=("tile", f"tile{index}"),
         )
 
-        bx1, by1 = x1 + 14, y1 + 14
-        bx2, by2 = bx1 + 42, by1 + 42
-        self.create_polygon(
-            _rounded_points(bx1, by1, bx2, by2, 12),
-            smooth=True,
-            splinesteps=24,
-            fill=face.get("accent", colors["accent"]),
+        accent = face.get("accent", colors["accent"])
+        center = (x1 + x2) / 2
+        span = y2 - y1
+
+        # Full-width platform colour bar hugging the bottom edge.
+        self.create_rectangle(
+            x1,
+            y2 - TILE_BAR_HEIGHT,
+            x2,
+            y2,
+            fill=accent,
             outline="",
+            tags=("tile-bar", f"bar{index}"),
         )
+
+        # Big centred monogram on the pastel face.
         self.create_text(
-            (bx1 + bx2) / 2,
-            (by1 + by2) / 2,
+            center,
+            y1 + span * 0.40,
             text=face.get("monogram", "?"),
-            fill=colors["on_accent"],
-            font=ui_font(15, "bold"),
+            fill=accent,
+            font=ui_font(30, "bold"),
+            tags=("tile-mono", f"mono{index}"),
         )
         if face.get("starred"):
             self.create_text(
-                x2 - 20, y1 + 22, text="★", fill=colors["warning"], font=ui_font(14, "bold")
+                x2 - 22,
+                y1 + 24,
+                text="★",
+                fill=colors["star"],
+                font=ui_font(14, "bold"),
+                tags=("tile-star", f"star{index}"),
             )
 
-        center = (x1 + x2) / 2
         self.create_text(
             center,
-            y1 + 68,
+            y1 + span * 0.62,
             text=face.get("title", ""),
             fill=colors["text"],
-            font=ui_font(13, "bold"),
+            font=ui_font(13, "bold" if selected else "normal"),
             width=self.TILE_W - 26,
             anchor="n",
             justify="center",
+            tags=("tile-title", f"title{index}"),
         )
         if face.get("subtitle"):
             self.create_text(
@@ -372,6 +653,7 @@ class SaveTileGrid(tk.Canvas):
                 width=self.TILE_W - 26,
                 anchor="n",
                 justify="center",
+                tags=("tile-sub", f"sub{index}"),
             )
 
         pill = face.get("pill") or {}
@@ -386,6 +668,7 @@ class SaveTileGrid(tk.Canvas):
                 splinesteps=24,
                 fill=pill.get("bg", colors["surface_alt"]),
                 outline="",
+                tags=("tile-pill", f"pill{index}"),
             )
             self.create_text(
                 center,
@@ -393,6 +676,7 @@ class SaveTileGrid(tk.Canvas):
                 text=label,
                 fill=pill.get("fg", colors["muted"]),
                 font=ui_font(11, "bold"),
+                tags=("tile-pill-label", f"pilltext{index}"),
             )
 
 
@@ -459,12 +743,8 @@ class VajSaveApp:
             pass
         style.configure("TFrame", background=BG)
         style.configure("TLabel", background=BG, foreground=TEXT, font=ui_font(13))
-        style.configure("TButton", background=SURFACE_ALT, foreground=TEXT, borderwidth=0, padding=(14, 7), font=ui_font(12))
-        style.map("TButton", background=[("active", mix(SURFACE_ALT, CARD, 0.5)), ("pressed", LINE)])
-        style.configure("Accent.TButton", background=BLUE, foreground=ON_ACCENT)
-        style.map("Accent.TButton", background=[("active", mix(BLUE, CARD, 0.18))])
-        style.configure("TCheckbutton", background=SIDE, foreground=TEXT, font=ui_font(12))
-        style.map("TCheckbutton", background=[("active", SIDE)])
+        # Buttons/checkbuttons are drawn by ``CanvasButton``; only the inputs and
+        # scrollbars still rely on ttk chrome.
         style.configure("TEntry", fieldbackground=CARD, foreground=TEXT, insertcolor=TEXT, bordercolor=LINE, padding=6)
         style.configure(
             "Treeview",
@@ -561,15 +841,29 @@ class VajSaveApp:
         actions = tk.Frame(right, bg=SIDE)
         actions.pack(side=tk.BOTTOM, fill=tk.X, padx=12, pady=16)
         self.actions_frame = actions
-        ttk.Button(actions, text="备份", style="Accent.TButton", command=self.on_save_local_clicked).pack(fill=tk.X, pady=3)
-        ttk.Button(actions, text="备份所选", command=self.on_save_selected_clicked).pack(fill=tk.X, pady=3)
-        ttk.Button(actions, text="备份当前列表", command=self.on_save_visible_clicked).pack(fill=tk.X, pady=3)
-        ttk.Button(actions, text="恢复这个版本…", command=self.on_restore_clicked).pack(fill=tk.X, pady=3)
-        ttk.Button(actions, text="导出 ZIP", command=self.on_export_zip_clicked).pack(fill=tk.X, pady=3)
-        ttk.Button(actions, text="收藏", command=self.on_star_clicked).pack(fill=tk.X, pady=3)
+        self._action_buttons: List[CanvasButton] = []
+
+        def _action_button(text: str, command, *, accent: bool = False) -> CanvasButton:
+            button = CanvasButton(
+                actions,
+                text=text,
+                command=command,
+                variant="accent" if accent else "neutral",
+                height=CanvasButton.ACTION_HEIGHT,
+            )
+            button.pack(fill=tk.X, pady=3)
+            self._action_buttons.append(button)
+            return button
+
+        _action_button("备份", self.on_save_local_clicked, accent=True)
+        _action_button("备份所选", self.on_save_selected_clicked)
+        _action_button("备份当前列表", self.on_save_visible_clicked)
+        _action_button("恢复这个版本…", self.on_restore_clicked)
+        _action_button("导出 ZIP", self.on_export_zip_clicked)
+        _action_button("收藏", self.on_star_clicked)
         finder = "在访达中显示" if sys.platform == "darwin" else "在文件管理器中显示"
-        ttk.Button(actions, text=finder, command=self.on_show_in_finder_clicked).pack(fill=tk.X, pady=3)
-        ttk.Button(actions, text="只看收藏", command=self.on_starred_filter).pack(fill=tk.X, pady=3)
+        _action_button(finder, self.on_show_in_finder_clicked)
+        _action_button("只看收藏", self.on_starred_filter)
 
         # Vertically scrollable detail region (detail text + versions + note).
         scroll_shell = tk.Frame(right, bg=SIDE)
@@ -631,18 +925,32 @@ class VajSaveApp:
         # Bottom system bar: quick actions + monitoring toggles.
         bottombar = tk.Frame(self.root, bg=SIDE)
         bottombar.pack(fill=tk.X, padx=24, pady=(0, 8))
-        ttk.Button(bottombar, text="刷新", command=self.on_refresh_clicked).pack(side=tk.LEFT, padx=(12, 6), pady=8)
-        ttk.Button(bottombar, text="打开文件夹", command=self.on_open_folder_clicked).pack(side=tk.LEFT, padx=6, pady=8)
-        ttk.Button(bottombar, text="打开本地库", command=self.on_open_library_clicked).pack(side=tk.LEFT, padx=6, pady=8)
-        ttk.Button(bottombar, text="设置", command=self.on_settings_clicked).pack(side=tk.LEFT, padx=6, pady=8)
-        ttk.Checkbutton(bottombar, text="监听插拔", variable=self._watch_var, command=self.on_watch_toggle).pack(side=tk.LEFT, padx=(12, 0))
+        self._bottombar = bottombar
+        self._bottom_buttons: List[CanvasButton] = []
+
+        def _bar_button(text: str, command, padx, *, dot: Optional[str] = None) -> CanvasButton:
+            button = CanvasButton(
+                bottombar,
+                text=text,
+                command=command,
+                height=CanvasButton.BOTTOM_HEIGHT,
+                dot=dot,
+            )
+            button.pack(side=tk.LEFT, padx=padx, pady=8)
+            self._bottom_buttons.append(button)
+            return button
+
+        _bar_button("刷新", self.on_refresh_clicked, (12, 6))
+        _bar_button("打开文件夹", self.on_open_folder_clicked, (6, 6))
+        _bar_button("打开本地库", self.on_open_library_clicked, (6, 6))
+        _bar_button("设置", self.on_settings_clicked, (6, 6))
+        self._watch_button = _bar_button("监听插拔", self.on_watch_button_clicked, (12, 0), dot=BLUE)
+        self._watch_button.set_selected(bool(self._watch_var.get()))
         self._hide_unchanged_var.set(bool(self.state.hide_unchanged))
-        ttk.Checkbutton(
-            bottombar,
-            text="隐藏已备份",
-            variable=self._hide_unchanged_var,
-            command=self.on_hide_unchanged_toggle,
-        ).pack(side=tk.LEFT, padx=(12, 0))
+        self._hide_unchanged_button = _bar_button(
+            "隐藏已备份", self.on_hide_unchanged_button_clicked, (12, 0), dot=GREEN
+        )
+        self._hide_unchanged_button.set_selected(bool(self._hide_unchanged_var.get()))
 
         statusrow = tk.Frame(self.root, bg=BG)
         statusrow.pack(fill=tk.X, padx=24, pady=(0, 14))
@@ -659,26 +967,44 @@ class VajSaveApp:
         self._build_platform_rows()
 
     def _build_platform_rows(self) -> None:
-        for child in self.platform_box.winfo_children():
-            child.destroy()
-        self._platform_rows.clear()
-        counts = self.state.platform_counts()
-        total = len(self.state.all_saves())
+        """Create the platform filter rows exactly once, then keep updating them.
+
+        Rebuilding on every refresh churned widget ids and made the left panel
+        flicker; the static set of platform keys never changes, so the rows are
+        only created on the first call. ``_update_platform_rows`` re-colours the
+        rows and rewrites the count badges in place.
+        """
+        if self._platform_rows:
+            self._update_platform_rows()
+            return
         for key in PLATFORM_ORDER:
-            count = total if key == "all" else counts.get(key, 0)
-            selected = key == self.state.selected_platform
-            row_bg = SELECTED_ROW if selected else SIDE
-            row = tk.Frame(self.platform_box, bg=row_bg, cursor="hand2")
+            row = tk.Frame(self.platform_box, bg=SIDE, cursor="hand2")
             row.pack(fill=tk.X, pady=1)
             pip = tk.Frame(row, bg=PLATFORM_COLORS.get(key, BLUE), width=3)
             pip.pack(side=tk.LEFT, fill=tk.Y)
-            name = tk.Label(row, text=PLATFORM_LABELS.get(key, key), bg=row_bg, fg=TEXT, font=ui_font(13), anchor="w")
+            name = tk.Label(row, text=PLATFORM_LABELS.get(key, key), bg=SIDE, fg=TEXT, font=ui_font(13), anchor="w")
             name.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10, pady=8)
-            badge = tk.Label(row, text=str(count), bg=row_bg, fg=MUTED, font=ui_font(12))
+            badge = tk.Label(row, text="0", bg=SIDE, fg=MUTED, font=ui_font(12))
             badge.pack(side=tk.RIGHT, padx=12)
             for widget in (row, pip, name, badge):
                 widget.bind("<Button-1>", lambda _e, platform=key: self.on_platform_clicked(platform))
             self._platform_rows[key] = {"row": row, "name": name, "badge": badge, "pip": pip}
+        self._update_platform_rows()
+
+    def _update_platform_rows(self) -> None:
+        counts = self.state.platform_counts()
+        total = len(self.state.all_saves())
+        for key in PLATFORM_ORDER:
+            widgets = self._platform_rows.get(key)
+            if widgets is None:
+                continue
+            count = total if key == "all" else counts.get(key, 0)
+            selected = key == self.state.selected_platform
+            row_bg = SELECTED_ROW if selected else SIDE
+            widgets["row"].configure(bg=row_bg)
+            widgets["name"].configure(bg=row_bg)
+            widgets["badge"].configure(bg=row_bg, text=str(count))
+            widgets["pip"].configure(bg=PLATFORM_COLORS.get(key, BLUE))
 
     def _bind_events(self) -> None:
         self.vol_list.bind("<<ListboxSelect>>", self.on_volume_selected)
@@ -703,11 +1029,19 @@ class VajSaveApp:
         self.refresh_saves_ui()
         self.update_status("正在只看收藏" if self.state.starred_only else "已显示全部游戏")
 
+    def on_hide_unchanged_button_clicked(self) -> None:
+        """CanvasButton for "隐藏已备份": flip the flag, then run the shared handler."""
+        self._hide_unchanged_var.set(not self._hide_unchanged_var.get())
+        self.on_hide_unchanged_toggle()
+
     def on_hide_unchanged_toggle(self) -> None:
         desired = bool(self._hide_unchanged_var.get())
         if desired != self.state.hide_unchanged:
             self.state.toggle_hide_unchanged()
         self._hide_unchanged_var.set(self.state.hide_unchanged)
+        button = getattr(self, "_hide_unchanged_button", None)
+        if button is not None:
+            button.set_selected(bool(self._hide_unchanged_var.get()))
         self.refresh_saves_ui()
         self.update_status("已隐藏已备份" if self.state.hide_unchanged else "显示已备份")
 
@@ -728,6 +1062,11 @@ class VajSaveApp:
             self.refresh_saves_ui()
             self.refresh_stats()
 
+    def on_watch_button_clicked(self) -> None:
+        """CanvasButton for "监听插拔": flip the flag, then run the shared handler."""
+        self._watch_var.set(not self._watch_var.get())
+        self.on_watch_toggle()
+
     def on_watch_toggle(self) -> None:
         if self._watch_var.get():
             self.state.start_watch()
@@ -735,6 +1074,9 @@ class VajSaveApp:
         else:
             self.state.stop_watch()
             self.update_status("已停止监听")
+        button = getattr(self, "_watch_button", None)
+        if button is not None:
+            button.set_selected(bool(self._watch_var.get()))
 
     def on_volume_selected(self, event=None) -> None:
         selection = self.vol_list.curselection()
@@ -938,9 +1280,9 @@ class VajSaveApp:
 
         btn_row = tk.Frame(dialog, bg=BG)
         btn_row.pack(fill=tk.X, padx=16, pady=16)
-        ttk.Button(btn_row, text="浏览…", command=browse).pack(side=tk.LEFT)
-        ttk.Button(btn_row, text="取消", command=cancel).pack(side=tk.RIGHT)
-        ttk.Button(btn_row, text="保存", style="Accent.TButton", command=save).pack(side=tk.RIGHT, padx=(0, 8))
+        CanvasButton(btn_row, text="浏览…", command=browse).pack(side=tk.LEFT)
+        CanvasButton(btn_row, text="取消", command=cancel).pack(side=tk.RIGHT)
+        CanvasButton(btn_row, text="保存", variant="accent", command=save).pack(side=tk.RIGHT, padx=(0, 8))
 
         dialog.grab_set()
         entry.focus_set()

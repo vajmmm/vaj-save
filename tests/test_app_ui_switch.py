@@ -7,11 +7,13 @@ click), scrolling into view, and the wiring into ``VajSaveApp``.
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import pytest
 
-from vajsave.app_ui import SaveTileGrid, build_app
+from vajsave import app_ui
+from vajsave.app_ui import CanvasButton, SaveTileGrid, build_app
 from vajsave.app_state import AppState
 from vajsave.models import SaveEntry, VolumeInfo
 from vajsave.ui_theme import SWITCH, tile_face
@@ -32,6 +34,17 @@ def tk_root():
         root.destroy()
     except Exception:
         pass
+
+
+def _map_root(root) -> None:
+    """Tk only delivers ``event_generate`` events to viewable widgets."""
+    root.deiconify()
+    root.update()
+
+
+def _unmap_root(root) -> None:
+    root.withdraw()
+    root.update()
 
 
 def _dispose(app, root) -> None:
@@ -174,6 +187,20 @@ def test_selection_scrolls_into_view(tk_root, monkeypatch):
         grid.destroy()
 
 
+def test_empty_grid_renders_hint_without_error(tk_root):
+    grid = _grid(tk_root, faces=[])
+    try:
+        assert grid.size() == 0
+        assert grid.curselection() == ()
+        # The hover/selection paths must stay safe on an empty grid.
+        grid.set_hover(3)
+        assert grid.hover_index is None
+        grid.select_index(0)
+        assert grid.curselection() == ()
+    finally:
+        grid.destroy()
+
+
 def test_selection_clear_empties_curselection(tk_root):
     grid = _grid(tk_root)
     try:
@@ -237,6 +264,205 @@ def test_app_uses_switch_basic_white_surfaces(tk_root, tmp_path):
         assert app.actions_frame.cget("bg") == SWITCH["surface"]
         assert app.detail_canvas.cget("bg") == SWITCH["surface"]
         assert app.save_list.cget("bg") == SWITCH["bg"]
+    finally:
+        _dispose(app, tk_root)
+
+
+# --- CanvasButton -----------------------------------------------------------
+
+
+def test_ttk_button_and_checkbutton_absent_from_source():
+    source = Path(inspect.getsourcefile(app_ui)).read_text(encoding="utf-8")
+    assert source.count("ttk.Button") == 0
+    assert source.count("ttk.Checkbutton") == 0
+
+
+def test_canvas_button_states_and_api(tk_root):
+    calls = []
+    button = CanvasButton(tk_root, text="备份", command=lambda: calls.append(1))
+    button.pack()
+    tk_root.update_idletasks()
+    try:
+        assert button.state == "idle"
+        assert button.selected is False
+        assert button.accent is False
+        button.invoke()
+        assert calls == [1]
+
+        button.set_text("备份当前列表")
+        assert button._text == "备份当前列表"
+
+        button.set_selected(True)
+        assert button.selected is True
+        assert button.state == "selected"
+
+        accent = CanvasButton(tk_root, text="备份", variant="accent")
+        assert accent.accent is True
+        assert accent.state == "accent"
+        accent.destroy()
+
+        _map_root(tk_root)
+        # ``event_generate`` is dispatched synchronously on a mapped widget, so
+        # asserting right away keeps real pointer motion from interfering.
+        button.event_generate("<Enter>")
+        assert button.state == "hover"
+        button.event_generate("<ButtonPress-1>")
+        assert button.state == "pressed"
+        button.event_generate("<ButtonRelease-1>", x=2, y=2)
+        assert button.state == "hover"
+        button.event_generate("<Leave>")
+        assert button.state == "selected"
+        button.set_selected(False)
+        assert button.state == "idle"
+        _unmap_root(tk_root)
+    finally:
+        button.destroy()
+
+
+def test_canvas_button_heights_and_measured_width(tk_root):
+    bottom = CanvasButton(tk_root, text="刷新", height=CanvasButton.BOTTOM_HEIGHT)
+    action = CanvasButton(tk_root, text="备份", height=CanvasButton.ACTION_HEIGHT)
+    wide = CanvasButton(tk_root, text="备份当前列表", height=CanvasButton.ACTION_HEIGHT)
+    try:
+        assert bottom.winfo_reqheight() == 34
+        assert action.winfo_reqheight() == 36
+        assert CanvasButton.BOTTOM_HEIGHT == 34
+        assert CanvasButton.ACTION_HEIGHT == 36
+        # Width follows the measured label, not a fixed constant.
+        assert wide.winfo_reqwidth() > action.winfo_reqwidth()
+    finally:
+        bottom.destroy()
+        action.destroy()
+        wide.destroy()
+
+
+def test_canvas_button_optional_dot(tk_root):
+    plain = CanvasButton(tk_root, text="设置")
+    dotted = CanvasButton(tk_root, text="监听插拔", dot=SWITCH["accent"])
+    try:
+        assert plain.find_withtag("button-dot") == ()
+        assert dotted.find_withtag("button-dot") != ()
+    finally:
+        plain.destroy()
+        dotted.destroy()
+
+
+# --- tile hover / selection --------------------------------------------------
+
+
+def _tile_center(grid: SaveTileGrid, index: int):
+    x1, y1, x2, y2 = grid._boxes[index]
+    return int((x1 + x2) / 2), int((y1 + y2) / 2)
+
+
+def test_tile_hover_redraws_with_hover_token(tk_root):
+    grid = _grid(tk_root)
+    try:
+        _map_root(tk_root)
+        cx, cy = _tile_center(grid, 0)
+        grid.event_generate("<Enter>", x=cx, y=cy)
+        assert grid.hover_index == 0
+        fills = [grid.itemcget(i, "fill") for i in grid.find_all()]
+        assert SWITCH["hover"] in fills
+
+        grid.event_generate("<Leave>")
+        assert grid.hover_index is None
+        fills = [grid.itemcget(i, "fill") for i in grid.find_all()]
+        assert SWITCH["hover"] not in fills
+        _unmap_root(tk_root)
+    finally:
+        grid.destroy()
+
+
+def test_tile_click_selects_and_draws_ring(tk_root):
+    grid = _grid(tk_root)
+    try:
+        _map_root(tk_root)
+        cx, cy = _tile_center(grid, 1)
+        grid.event_generate("<Button-1>", x=cx, y=cy)
+        assert grid.curselection() == (1,)
+        rings = grid.find_withtag("tile-ring")
+        assert rings
+        assert grid.itemcget(rings[0], "outline") == SWITCH["ring"]
+        assert float(grid.itemcget(rings[0], "width")) == 3
+        title = grid.find_withtag("title1")[0]
+        assert "bold" in grid.itemcget(title, "font")
+        _unmap_root(tk_root)
+    finally:
+        grid.destroy()
+
+
+def test_set_hover_ignores_out_of_range(tk_root):
+    grid = _grid(tk_root)
+    try:
+        grid.set_hover(99)
+        assert grid.hover_index is None
+        grid.set_hover(-1)
+        assert grid.hover_index is None
+        grid.set_hover(2)
+        assert grid.hover_index == 2
+    finally:
+        grid.destroy()
+
+
+def test_selected_tile_is_drawn_larger(tk_root):
+    grid = _grid(tk_root)
+    try:
+        before = grid.coords(grid.find_withtag("tile0")[0])
+        grid.select_index(0)
+        tk_root.update()
+        after = grid.coords(grid.find_withtag("tile0")[0])
+        before_w = max(before[0::2]) - min(before[0::2])
+        after_w = max(after[0::2]) - min(after[0::2])
+        assert after_w > before_w
+    finally:
+        grid.destroy()
+
+
+# --- app structure -----------------------------------------------------------
+
+
+def test_refresh_platform_ui_reuses_rows(tk_root, tmp_path):
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    app = build_app(state=state, root=tk_root)
+    try:
+        app.refresh_platform_ui()
+        first = {key: row["row"].winfo_id() for key, row in app._platform_rows.items()}
+        app.refresh_platform_ui()
+        second = {key: row["row"].winfo_id() for key, row in app._platform_rows.items()}
+        assert first == second
+        assert set(app._platform_rows["all"].keys()) >= {"row", "name", "badge", "pip"}
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_toggle_buttons_invoke_and_sync_selected(tk_root, tmp_path):
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    app = build_app(state=state, root=tk_root)
+    try:
+        hide_before = state.hide_unchanged
+        app._hide_unchanged_button.invoke()
+        assert state.hide_unchanged != hide_before
+        assert app._hide_unchanged_button.selected == state.hide_unchanged
+
+        watch_before = app._watch_var.get()
+        app._watch_button.invoke()
+        assert app._watch_var.get() != watch_before
+        assert app._watch_button.selected == app._watch_var.get()
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_bottom_bar_fits_at_min_width(tk_root, tmp_path):
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    app = build_app(state=state, root=tk_root)
+    try:
+        tk_root.update_idletasks()
+        buttons = getattr(app, "_bottom_buttons", None)
+        assert buttons
+        # padx pairs used when packing the bar: (12,6), (6,6), (6,6), (6,6), (12,0), (12,0)
+        gaps = 12 + 6 + 6 + 6 + 6 + 6 + 12 + 12
+        assert sum(b.winfo_reqwidth() for b in buttons) + gaps <= 1080 - 48
     finally:
         _dispose(app, tk_root)
 
