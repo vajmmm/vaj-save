@@ -1,6 +1,6 @@
 # vaj-save
 
-像素风掌机存档实验室：备份、版本槽位、收藏和导出。识别 PSP / Vita / Switch / 3DS / NDS / GBA 的 USB 或 SD 导出目录。
+掌机存档实验室：备份、版本槽位、收藏和导出。识别 PSP / Vita / Switch / 3DS / NDS / GBA 的 USB 或 SD 导出目录。
 
 - 卡带柜按机种分类（PSP / Vita / Switch / 3DS / NDS / GBA）
 - 备份到 `~/Documents/vaj-save/`，相同内容去重，变化则新开 SAVE SLOT
@@ -20,6 +20,18 @@ open dist/vaj-save.app
 产物是 `dist/vaj-save.app`，可拖到「应用程序」里，以后双击启动。
 
 开发机需要 Python 3.11+ 才能**构建**；打好的 `.app` 给别人用时不要求对方先装 Python。
+
+## Windows 应用（双击 .exe）
+
+必须在 **Windows** 上构建（PyInstaller 不能从 macOS 交叉编译出可用的 Windows 包）：
+
+```powershell
+# PowerShell，Python 3.11+ 已安装
+$env:PYTHON = "python"
+.\scripts\build-windows-app.ps1
+```
+
+或 `scripts\build-windows-app.bat`。产物是 `dist\vaj-save\vaj-save.exe`，请把整个 `dist\vaj-save\` 文件夹拷走（不要只拷 exe）。对方不需要先装 Python。
 
 ## 开发安装 / 命令行
 

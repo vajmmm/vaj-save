@@ -1,4 +1,4 @@
-"""Frozen macOS .app entrypoint. Do not run this as a library module."""
+"""Frozen desktop entrypoint for macOS .app and Windows .exe."""
 
 from vajsave.app import main
 
