@@ -5,7 +5,7 @@ from pathlib import Path
 from tkinter import filedialog, ttk
 from typing import Dict, List, Optional, Union
 
-from .app_state import PLATFORM_LABELS, PLATFORM_ORDER, AppState
+from .app_state import BACKUP_STATUS_LABELS, PLATFORM_LABELS, PLATFORM_ORDER, AppState
 from .library import Snapshot
 from .models import SaveEntry
 
@@ -64,6 +64,7 @@ class VajSaveApp:
         self._versions_index: List[Snapshot] = []
         self._platform_rows: Dict[str, dict] = {}
         self._watch_var = tk.BooleanVar(value=True)
+        self._hide_unchanged_var = tk.BooleanVar(value=True)
         self._poll_interval_ms = 200
 
         self._init_window()
@@ -135,6 +136,13 @@ class VajSaveApp:
         ttk.Button(toolbar, text="打开文件夹", command=self.on_open_folder_clicked).pack(side=tk.LEFT, padx=6)
         ttk.Button(toolbar, text="打开本地库", command=self.on_open_library_clicked).pack(side=tk.LEFT, padx=6)
         ttk.Checkbutton(toolbar, text="监听插拔", variable=self._watch_var, command=self.on_watch_toggle).pack(side=tk.LEFT, padx=(12, 0))
+        self._hide_unchanged_var.set(bool(self.state.hide_unchanged))
+        ttk.Checkbutton(
+            toolbar,
+            text="隐藏已备份",
+            variable=self._hide_unchanged_var,
+            command=self.on_hide_unchanged_toggle,
+        ).pack(side=tk.LEFT, padx=(12, 0))
 
         body = tk.Frame(self.root, bg=BG)
         body.pack(fill=tk.BOTH, expand=True, padx=24, pady=(0, 8))
@@ -174,6 +182,7 @@ class VajSaveApp:
             highlightthickness=0,
             bd=0,
             activestyle="none",
+            selectmode=tk.EXTENDED,
         )
         self.save_list.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 16))
 
@@ -212,6 +221,7 @@ class VajSaveApp:
         actions = tk.Frame(right, bg=SIDE)
         actions.pack(fill=tk.X, padx=12, pady=16)
         ttk.Button(actions, text="备份", style="Accent.TButton", command=self.on_save_local_clicked).pack(fill=tk.X, pady=3)
+        ttk.Button(actions, text="备份所选", command=self.on_save_selected_clicked).pack(fill=tk.X, pady=3)
         ttk.Button(actions, text="备份当前列表", command=self.on_save_visible_clicked).pack(fill=tk.X, pady=3)
         ttk.Button(actions, text="恢复这个版本…", command=self.on_restore_clicked).pack(fill=tk.X, pady=3)
         ttk.Button(actions, text="导出 ZIP", command=self.on_export_zip_clicked).pack(fill=tk.X, pady=3)
@@ -280,6 +290,14 @@ class VajSaveApp:
         self.refresh_saves_ui()
         self.update_status("正在只看收藏" if self.state.starred_only else "已显示全部游戏")
 
+    def on_hide_unchanged_toggle(self) -> None:
+        desired = bool(self._hide_unchanged_var.get())
+        if desired != self.state.hide_unchanged:
+            self.state.toggle_hide_unchanged()
+        self._hide_unchanged_var.set(self.state.hide_unchanged)
+        self.refresh_saves_ui()
+        self.update_status("已隐藏已备份" if self.state.hide_unchanged else "显示已备份")
+
     def on_refresh_clicked(self) -> None:
         self.state.refresh_volumes()
         self.refresh_volumes_ui()
@@ -324,14 +342,28 @@ class VajSaveApp:
             self.detail_meta.set("从中间列表点选一条存档")
             self.refresh_versions_ui()
             return
-        save = self._saves_index[selection[0]]
+        # Primary detail follows the active (last) selection in multi-select.
+        index = selection[-1]
+        if index >= len(self._saves_index):
+            return
+        save = self._saves_index[index]
         self._selected_save = save
         self.path_entry_var.set(save.path)
         star = "已收藏 · " if self.state.is_starred(save) else ""
+        status = self.state.save_status(save)
+        status_label = BACKUP_STATUS_LABELS.get(status.status, status.status)
+        lines = [
+            f"{star}{PLATFORM_LABELS.get(save.platform, save.platform)}  {save.title_id or ''}  {save.slot or ''}".rstrip(),
+            f"状态: {status_label}",
+        ]
+        if status.source_mtime:
+            lines.append(f"卡上时间: {status.source_mtime}")
+        if status.last_backup_at:
+            lines.append(f"上次备份: {status.last_backup_at}")
+        if status.mtime_stale:
+            lines.append("卡上时间早于上次备份（可能是回档或拷贝）")
         self.detail_name.set(save.display_name)
-        self.detail_meta.set(
-            f"{star}{PLATFORM_LABELS.get(save.platform, save.platform)}  {save.title_id or ''}  {save.slot or ''}"
-        )
+        self.detail_meta.set("\n".join(lines))
         self.note_var.set(self.state.game_note(save))
         self.refresh_versions_ui()
 
@@ -364,13 +396,36 @@ class VajSaveApp:
             return
         dest = self.state.import_save(self._selected_save)
         self.update_status(self.state.status_text)
+        self.refresh_saves_ui()
         self.refresh_versions_ui()
         self.refresh_stats()
         self.update_warning("" if dest else "备份失败")
 
+    def _selected_saves(self) -> List[SaveEntry]:
+        selected: List[SaveEntry] = []
+        for index in self.save_list.curselection():
+            if 0 <= index < len(self._saves_index):
+                selected.append(self._saves_index[index])
+        return selected
+
+    def on_save_selected_clicked(self) -> None:
+        chosen = self._selected_saves()
+        if not chosen and self._selected_save is not None:
+            chosen = [self._selected_save]
+        if not chosen:
+            self.update_warning("先选一条或多条存档")
+            return
+        copied = self.state.import_selected_saves(chosen)
+        self.update_status(self.state.status_text)
+        self.refresh_saves_ui()
+        self.refresh_versions_ui()
+        self.refresh_stats()
+        self.update_warning("" if copied else "备份失败")
+
     def on_save_visible_clicked(self) -> None:
         copied = self.state.import_visible_saves()
         self.update_status(self.state.status_text)
+        self.refresh_saves_ui()
         self.refresh_versions_ui()
         self.refresh_stats()
         self.update_warning("" if copied else "当前列表没有可备份的存档")
@@ -449,13 +504,14 @@ class VajSaveApp:
         self._saves_index = []
         previous = self._selected_save
         self._selected_save = None
-        for group_name, saves in self.state.grouped_saves():
-            label = PLATFORM_LABELS.get(group_name, group_name)
+        for _group_name, saves in self.state.grouped_saves():
             for save in saves:
                 star = "★  " if self.state.is_starred(save) else ""
                 title = save.title_id or ""
                 extra = f"    {title}" if title else ""
-                self.save_list.insert(tk.END, f"{star}{save.display_name}{extra}")
+                status = self.state.save_status(save)
+                tag = BACKUP_STATUS_LABELS.get(status.status, status.status)
+                self.save_list.insert(tk.END, f"[{tag}] {star}{save.display_name}{extra}")
                 self._saves_index.append(save)
                 if previous and previous.path == save.path:
                     self._selected_save = save

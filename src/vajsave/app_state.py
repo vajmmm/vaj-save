@@ -6,12 +6,16 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 from .backend import StorageBackend
 from .library import (
     BackupResult,
+    Catalog,
+    SaveBackupStatus,
     Snapshot,
+    classify_save_status,
     collection_stats,
     default_library_root,
     backup_save,
     export_snapshot_zip,
     game_key,
+    hash_tree,
     load_catalog,
     restore_snapshot,
     set_game_meta,
@@ -33,25 +37,38 @@ PLATFORM_LABELS = {
     "gba": "GBA",
 }
 
+BACKUP_STATUS_LABELS = {
+    "new": "新",
+    "changed": "有变化",
+    "unchanged": "已备份",
+}
 
-def _build_status_text(result: ScanResult) -> str:
+
+def _build_status_text(result: ScanResult, counts: Optional[Dict[str, int]] = None) -> str:
     """Build a human-readable status text for a ScanResult."""
     if not Path(result.root_path).exists():
-        return f"路径不存在或不可读: {result.root_path}"
+        base = f"路径不存在或不可读: {result.root_path}"
+    else:
+        has_encrypted_3ds = any(
+            s.source_id == "3ds_sd" or (s.extra and s.extra.get("encrypted_container"))
+            for s in result.sources
+        )
+        if has_encrypted_3ds and not result.saves:
+            base = "平台: 3DS | 发现加密 SD 卡 (Nintendo 3DS)，原生存档已加密，不可直接管理 | [只读]"
+        elif result.platform == "unknown" and not result.saves:
+            base = "平台: 未知/通用卷 | 发现 0 个可识别存档 | [只读]"
+        else:
+            source_count = len(result.sources)
+            save_count = len(result.saves)
+            base = f"平台: {result.platform.upper()} | 来源: {source_count} 个 | 存档: {save_count} 个 | [只读]"
 
-    has_encrypted_3ds = any(
-        s.source_id == "3ds_sd" or (s.extra and s.extra.get("encrypted_container"))
-        for s in result.sources
+    if counts is None:
+        return base
+    return (
+        f"{base} | 新 {counts.get('new', 0)} · "
+        f"有变化 {counts.get('changed', 0)} · "
+        f"已备份 {counts.get('unchanged', 0)}"
     )
-    if has_encrypted_3ds and not result.saves:
-        return "平台: 3DS | 发现加密 SD 卡 (Nintendo 3DS)，原生存档已加密，不可直接管理 | [只读]"
-
-    if result.platform == "unknown" and not result.saves:
-        return "平台: 未知/通用卷 | 发现 0 个可识别存档 | [只读]"
-
-    source_count = len(result.sources)
-    save_count = len(result.saves)
-    return f"平台: {result.platform.upper()} | 来源: {source_count} 个 | 存档: {save_count} 个 | [只读]"
 
 
 class AppState:
@@ -79,6 +96,8 @@ class AppState:
         self.selected_platform: str = "all"
         self.search_query: str = ""
         self.starred_only: bool = False
+        self.hide_unchanged: bool = True
+        self._backup_statuses: Dict[str, SaveBackupStatus] = {}
 
         self.event_queue: "queue.Queue[tuple[str, VolumeInfo]]" = queue.Queue()
         self.is_watching: bool = False
@@ -117,7 +136,59 @@ class AppState:
                 for save in saves
                 if (catalog.games.get(game_key(save)) and catalog.games[game_key(save)].starred)
             ]
+        if self.hide_unchanged:
+            saves = [save for save in saves if self.save_status(save).status != "unchanged"]
         return saves
+
+    def save_status(self, entry: SaveEntry) -> SaveBackupStatus:
+        cached = self._backup_statuses.get(entry.path)
+        if cached is not None:
+            return cached
+        status = classify_save_status(entry, load_catalog(self.library_root))
+        self._backup_statuses[entry.path] = status
+        return status
+
+    def backup_status_counts(self) -> Dict[str, int]:
+        counts = {"new": 0, "changed": 0, "unchanged": 0}
+        for save in self.all_saves():
+            key = self.save_status(save).status
+            if key not in counts:
+                counts[key] = 0
+            counts[key] += 1
+        return counts
+
+    def toggle_hide_unchanged(self) -> bool:
+        """Toggle hide_unchanged; returns the new hide_unchanged value."""
+        self.hide_unchanged = not self.hide_unchanged
+        return self.hide_unchanged
+
+    def _refresh_entry_status(
+        self, entry: SaveEntry, catalog: Optional[Catalog] = None
+    ) -> SaveBackupStatus:
+        catalog = catalog if catalog is not None else load_catalog(self.library_root)
+        hash_error = False
+        digest: Optional[str] = None
+        try:
+            digest = hash_tree(Path(entry.path))
+        except (OSError, ValueError, FileNotFoundError) as e:
+            hash_error = True
+            self.warnings.append(f"计算存档哈希失败: {entry.display_name or entry.path}: {e}")
+        status = classify_save_status(
+            entry,
+            catalog,
+            digest=digest,
+            hash_error=hash_error,
+        )
+        self._backup_statuses[entry.path] = status
+        return status
+
+    def refresh_backup_statuses(self) -> Dict[str, int]:
+        """Recompute and cache status for every scanned save."""
+        self._backup_statuses = {}
+        catalog = load_catalog(self.library_root)
+        for entry in self.all_saves():
+            self._refresh_entry_status(entry, catalog=catalog)
+        return self.backup_status_counts()
 
     def set_search_query(self, query: str) -> None:
         self.search_query = query or ""
@@ -196,16 +267,19 @@ class AppState:
             return None
         self.last_backup = result
         self.last_import_path = result.path
+        # Refresh this row so identical content becomes unchanged (and may hide).
+        self._refresh_entry_status(entry)
         if result.is_new:
             self.status_text = f"已保存到本地 · 新版本 {result.snapshot.id}"
         else:
             self.status_text = f"已保存到本地 · 内容未变化，沿用版本 {result.snapshot.id}"
         return result.path
 
-    def import_visible_saves(self) -> List[Path]:
+    def import_selected_saves(self, entries: List[SaveEntry]) -> List[Path]:
+        """Backup explicit multi-selection; skips nothing the caller passed."""
         copied: List[Path] = []
         new_count = 0
-        for entry in self.visible_saves():
+        for entry in entries:
             dest = self.import_save(entry)
             if dest is not None:
                 copied.append(dest)
@@ -213,9 +287,14 @@ class AppState:
                     new_count += 1
         if copied:
             self.status_text = f"已备份 {len(copied)} 个存档到本地库（新增 {new_count} 个版本）"
-        elif not self.visible_saves():
+        elif not entries:
             self.status_text = "当前没有可备份的存档"
         return copied
+
+    def import_visible_saves(self) -> List[Path]:
+        # Snapshot first so hide_unchanged after each backup does not shrink the work list mid-loop.
+        targets = list(self.visible_saves())
+        return self.import_selected_saves(targets)
 
     def versions_for_entry(self, entry: SaveEntry) -> List[Snapshot]:
         return versions_for(load_catalog(self.library_root), entry)
@@ -255,7 +334,8 @@ class AppState:
             )
         self.current_result = res
         self.warnings = list(res.warnings)
-        self.status_text = _build_status_text(res)
+        self.refresh_backup_statuses()
+        self.status_text = _build_status_text(res, counts=self.backup_status_counts())
         return res
 
     def select_custom_path(self, path: Union[Path, str]) -> ScanResult:
@@ -293,6 +373,7 @@ class AppState:
             if self.current_mount == v_mount:
                 self.current_mount = None
                 self.current_result = None
+                self._backup_statuses = {}
                 self.warnings = []
                 self.status_text = f"卷 {volume.name} 已卸载"
             else:

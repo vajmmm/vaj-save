@@ -4,13 +4,18 @@ from pathlib import Path
 
 from vajsave.app_state import AppState
 from vajsave.library import (
+    Catalog,
+    GameRecord,
+    Snapshot,
     backup_save,
+    classify_save_status,
     copy_save_tree,
     destination_for,
     game_key,
     hash_tree,
     import_save,
     load_catalog,
+    path_mtime_iso,
     restore_snapshot,
     sanitize_name,
 )
@@ -91,10 +96,20 @@ def test_app_state_import_selected_and_visible(tmp_path: Path, psp_sfo_bytes: by
     assert "已保存到本地" in state.status_text
     assert (library / "psp" / "ULJM05800").exists()
     assert (save_dir / "DATA.BIN").read_bytes() == b"DATA"
+    # Backed-up identical content is unchanged and hidden by default.
+    assert state.save_status(entry).status == "unchanged"
+    assert state.visible_saves() == []
 
+    # backup-visible skips hidden unchanged
     copied = state.import_visible_saves()
-    assert len(copied) == 1
-    assert copied[0].exists()
+    assert copied == []
+
+    state.toggle_hide_unchanged()
+    assert len(state.visible_saves()) == 1
+    # Re-backup visible (shown unchanged) still succeeds via dedupe path.
+    copied_again = state.import_visible_saves()
+    assert len(copied_again) == 1
+    assert copied_again[0].exists()
 
 
 def test_import_missing_path_sets_warning(tmp_path: Path):
@@ -596,3 +611,69 @@ def test_safe_path_and_delete_resolve_oserror(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(libmod, "_is_safe_library_path", lambda *a, **k: True)
     monkeypatch.setattr(PathCls, "resolve", resolve_raises)
     _delete_snapshot_payload(snap, lib)
+
+
+def test_path_mtime_iso_missing_and_file(tmp_path: Path):
+    missing = tmp_path / "nope"
+    assert path_mtime_iso(missing) is None
+    f = tmp_path / "save.bin"
+    f.write_bytes(b"x")
+    assert path_mtime_iso(f) is not None
+
+
+def test_classify_hash_error_and_internal_hash_fail(tmp_path: Path):
+    src = tmp_path / "ULUS99999"
+    src.mkdir()
+    (src / "DATA.BIN").write_bytes(b"x")
+    entry = SaveEntry(platform="psp", source_id="psp", display_name="X", path=str(src), title_id="ULUS99999")
+    catalog = Catalog()
+    status = classify_save_status(entry, catalog, hash_error=True)
+    assert status.status == "new"
+    assert status.sha256 is None
+
+    missing = SaveEntry(
+        platform="psp",
+        source_id="psp",
+        display_name="gone",
+        path=str(tmp_path / "missing-dir"),
+        title_id="ULUS00001",
+    )
+    status2 = classify_save_status(missing, catalog)
+    assert status2.status == "new"
+
+
+def test_classify_changed_without_stale_when_dates_unparseable(tmp_path: Path):
+    src = tmp_path / "ULUS88888"
+    src.mkdir()
+    (src / "DATA.BIN").write_bytes(b"live")
+    entry = SaveEntry(platform="psp", source_id="psp", display_name="Y", path=str(src), title_id="ULUS88888")
+    key = game_key(entry)
+    catalog = Catalog(
+        {
+            key: GameRecord(
+                id=key,
+                platform="psp",
+                title_id="ULUS88888",
+                display_name="Y",
+                versions=[
+                    Snapshot(
+                        id="bad",
+                        created_at="not-a-date",
+                        sha256="deadbeef",
+                        source_path=str(src),
+                        path="psp/x",
+                    )
+                ],
+            )
+        }
+    )
+    digest = hash_tree(src)
+    status = classify_save_status(entry, catalog, digest=digest)
+    assert status.status == "changed"
+    assert status.mtime_stale is False
+
+
+def test_import_selected_empty_sets_status(tmp_path: Path):
+    state = AppState(library_root=tmp_path / "lib")
+    assert state.import_selected_saves([]) == []
+    assert "没有可备份" in state.status_text

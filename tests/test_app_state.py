@@ -1,11 +1,13 @@
 import os
 import queue
 import time
+from datetime import datetime
 from pathlib import Path
 import pytest
 
 from vajsave.app_state import AppState
-from vajsave.models import VolumeInfo
+from vajsave.library import backup_save
+from vajsave.models import SaveEntry, VolumeInfo
 from vajsave.volume import FakeVolumeProvider
 from vajsave.backend import FakeStorageBackend
 from conftest import build_sfo
@@ -454,6 +456,308 @@ def test_build_app_structure():
     app.on_show_in_finder_clicked()
     app.on_copy_path_clicked()
     app.on_close()
+
+
+def _psp_save_tree(root: Path, title_id: str, payload: bytes, psp_sfo_bytes: bytes) -> Path:
+    save_dir = root / "PSP" / "SAVEDATA" / title_id
+    save_dir.mkdir(parents=True)
+    (save_dir / "PARAM.SFO").write_bytes(psp_sfo_bytes)
+    (save_dir / "DATA.BIN").write_bytes(payload)
+    return save_dir
+
+
+def test_scan_marks_never_backed_up_as_new(tmp_path: Path, psp_sfo_bytes: bytes):
+    root = tmp_path / "PSP_VOL"
+    _psp_save_tree(root, "ULJM05800", b"v1", psp_sfo_bytes)
+    lib = tmp_path / "lib"
+    state = AppState(library_root=lib)
+    state.select_mount(root)
+
+    entry = state.all_saves()[0]
+    status = state.save_status(entry)
+    assert status.status == "new"
+    assert status.mtime_stale is False
+    assert state.hide_unchanged is True
+    assert entry in state.visible_saves()
+    assert "新 1" in state.status_text
+    assert "有变化 0" in state.status_text
+    assert "已备份 0" in state.status_text
+    # no progress / update wording
+    assert "有更新" not in state.status_text
+    assert "进度" not in state.status_text
+
+
+def test_identical_to_latest_is_unchanged_and_hidden(tmp_path: Path, psp_sfo_bytes: bytes):
+    root = tmp_path / "PSP_VOL"
+    save_dir = _psp_save_tree(root, "ULJM05800", b"same", psp_sfo_bytes)
+    lib = tmp_path / "lib"
+    entry = SaveEntry(
+        platform="psp",
+        source_id="psp",
+        display_name="Monster Hunter Portable 3rd",
+        path=str(save_dir),
+        title_id="ULJM05800",
+    )
+    backup_save(entry, lib, datetime(2026, 1, 1, 10, 0, 0))
+
+    state = AppState(library_root=lib)
+    assert state.hide_unchanged is True
+    state.select_mount(root)
+
+    scanned = state.all_saves()[0]
+    status = state.save_status(scanned)
+    assert status.status == "unchanged"
+    assert status.mtime_stale is False
+    assert status.last_backup_at
+    assert state.visible_saves() == []
+    assert "已备份 1" in state.status_text
+
+
+def test_content_change_marks_changed(tmp_path: Path, psp_sfo_bytes: bytes):
+    root = tmp_path / "PSP_VOL"
+    save_dir = _psp_save_tree(root, "ULJM05800", b"v1", psp_sfo_bytes)
+    lib = tmp_path / "lib"
+    entry = SaveEntry(
+        platform="psp",
+        source_id="psp",
+        display_name="Monster Hunter Portable 3rd",
+        path=str(save_dir),
+        title_id="ULJM05800",
+    )
+    backup_save(entry, lib, datetime(2026, 1, 1, 10, 0, 0))
+    (save_dir / "DATA.BIN").write_bytes(b"v2")
+
+    state = AppState(library_root=lib)
+    state.select_mount(root)
+    scanned = state.all_saves()[0]
+    assert state.save_status(scanned).status == "changed"
+    assert scanned in state.visible_saves()
+    assert "有变化 1" in state.status_text
+
+
+def test_matches_older_snapshot_but_not_latest_is_changed(tmp_path: Path, psp_sfo_bytes: bytes):
+    """Only the latest snapshot hash decides unchanged; older match is still changed."""
+    root = tmp_path / "PSP_VOL"
+    save_dir = _psp_save_tree(root, "ULJM05800", b"old", psp_sfo_bytes)
+    lib = tmp_path / "lib"
+    entry = SaveEntry(
+        platform="psp",
+        source_id="psp",
+        display_name="Monster Hunter Portable 3rd",
+        path=str(save_dir),
+        title_id="ULJM05800",
+    )
+    backup_save(entry, lib, datetime(2026, 1, 1, 10, 0, 0))
+    (save_dir / "DATA.BIN").write_bytes(b"new")
+    backup_save(entry, lib, datetime(2026, 1, 2, 10, 0, 0))
+    # card rolled back to older content
+    (save_dir / "DATA.BIN").write_bytes(b"old")
+
+    state = AppState(library_root=lib)
+    state.select_mount(root)
+    scanned = state.all_saves()[0]
+    status = state.save_status(scanned)
+    assert status.status == "changed"
+    assert scanned in state.visible_saves()
+
+
+def test_toggle_hide_unchanged_shows_backed_up(tmp_path: Path, psp_sfo_bytes: bytes):
+    root = tmp_path / "PSP_VOL"
+    save_dir = _psp_save_tree(root, "ULJM05800", b"same", psp_sfo_bytes)
+    lib = tmp_path / "lib"
+    entry = SaveEntry(
+        platform="psp",
+        source_id="psp",
+        display_name="Monster Hunter Portable 3rd",
+        path=str(save_dir),
+        title_id="ULJM05800",
+    )
+    backup_save(entry, lib, datetime(2026, 1, 1, 10, 0, 0))
+
+    state = AppState(library_root=lib)
+    state.select_mount(root)
+    assert state.visible_saves() == []
+
+    shown = state.toggle_hide_unchanged()
+    assert shown is False  # hide_unchanged now False
+    assert state.hide_unchanged is False
+    visible = state.visible_saves()
+    assert len(visible) == 1
+    assert state.save_status(visible[0]).status == "unchanged"
+
+
+def test_hash_failure_does_not_break_select_mount(tmp_path: Path, psp_sfo_bytes: bytes, monkeypatch):
+    root = tmp_path / "PSP_VOL"
+    _psp_save_tree(root, "ULJM05800", b"data", psp_sfo_bytes)
+    lib = tmp_path / "lib"
+
+    def boom(_path):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr("vajsave.app_state.hash_tree", boom)
+    state = AppState(library_root=lib)
+    res = state.select_mount(root)
+    assert res is not None
+    assert len(res.saves) == 1
+    status = state.save_status(res.saves[0])
+    assert status.status == "new"
+    assert any("hash" in w.lower() or "哈希" in w or "摘要" in w or "失败" in w for w in state.warnings)
+
+
+def test_import_visible_skips_hidden_unchanged(tmp_path: Path, psp_sfo_bytes: bytes):
+    root = tmp_path / "PSP_VOL"
+    save_a = _psp_save_tree(root, "ULJM05800", b"a", psp_sfo_bytes)
+    save_b = root / "PSP" / "SAVEDATA" / "ULUS12345"
+    save_b.mkdir(parents=True)
+    # second save: minimal PARAM.SFO so scanner still picks it if possible — inject via scan result instead
+    lib = tmp_path / "lib"
+
+    # Pre-backup only ULJM05800 so it becomes unchanged after scan
+    entry_a = SaveEntry(
+        platform="psp",
+        source_id="psp",
+        display_name="Monster Hunter Portable 3rd",
+        path=str(save_a),
+        title_id="ULJM05800",
+    )
+    backup_save(entry_a, lib, datetime(2026, 1, 1, 10, 0, 0))
+
+    # Create a second never-backed-up save tree the scanner will find
+    from conftest import build_sfo
+
+    sfo_b = build_sfo(
+        {
+            "TITLE": "Other Game",
+            "SAVEDATA_TITLE": "Other Game",
+            "SAVEDATA_DETAIL": "",
+            "SAVEDATA_DIRECTORY": "ULUS12345",
+            "TITLE_ID": "ULUS12345",
+            "CATEGORY": "MS",
+            "PARENTAL_LEVEL": 0,
+        }
+    )
+    (save_b / "PARAM.SFO").write_bytes(sfo_b)
+    (save_b / "DATA.BIN").write_bytes(b"b-new")
+
+    state = AppState(library_root=lib)
+    state.select_mount(root)
+    assert state.hide_unchanged is True
+    visible = state.visible_saves()
+    assert len(visible) == 1
+    assert visible[0].title_id == "ULUS12345"
+    hidden_unchanged = [s for s in state.all_saves() if s.title_id == "ULJM05800"][0]
+    assert state.save_status(hidden_unchanged).status == "unchanged"
+    assert hidden_unchanged not in visible
+
+    copied = state.import_visible_saves()
+    assert len(copied) == 1
+    # Hidden unchanged was not part of the backup batch target list.
+    assert copied[0].exists()
+    assert state.save_status(hidden_unchanged).status == "unchanged"
+    # After backup, the previously-new visible row becomes unchanged and hides.
+    assert state.visible_saves() == []
+
+
+def test_mtime_stale_only_when_changed_and_source_older(tmp_path: Path, psp_sfo_bytes: bytes):
+    root = tmp_path / "PSP_VOL"
+    save_dir = _psp_save_tree(root, "ULJM05800", b"v1", psp_sfo_bytes)
+    lib = tmp_path / "lib"
+    entry = SaveEntry(
+        platform="psp",
+        source_id="psp",
+        display_name="Monster Hunter Portable 3rd",
+        path=str(save_dir),
+        title_id="ULJM05800",
+    )
+    backup_save(entry, lib, datetime(2026, 6, 1, 12, 0, 0))
+
+    # Change content but set directory mtime earlier than backup
+    (save_dir / "DATA.BIN").write_bytes(b"rolled-back")
+    old_ts = datetime(2026, 1, 1, 8, 0, 0).timestamp()
+    os.utime(save_dir, (old_ts, old_ts))
+
+    state = AppState(library_root=lib)
+    state.select_mount(root)
+    status = state.save_status(state.all_saves()[0])
+    assert status.status == "changed"
+    assert status.mtime_stale is True
+    assert status.source_mtime
+    assert status.last_backup_at
+
+
+def test_identical_hash_ignores_mtime_jitter(tmp_path: Path, psp_sfo_bytes: bytes):
+    root = tmp_path / "PSP_VOL"
+    save_dir = _psp_save_tree(root, "ULJM05800", b"same", psp_sfo_bytes)
+    lib = tmp_path / "lib"
+    entry = SaveEntry(
+        platform="psp",
+        source_id="psp",
+        display_name="Monster Hunter Portable 3rd",
+        path=str(save_dir),
+        title_id="ULJM05800",
+    )
+    backup_save(entry, lib, datetime(2026, 1, 1, 10, 0, 0))
+
+    # FAT/USB mtime chaos: far in the future, must NOT flip classification
+    future_ts = datetime(2030, 1, 1, 0, 0, 0).timestamp()
+    os.utime(save_dir, (future_ts, future_ts))
+
+    state = AppState(library_root=lib)
+    state.select_mount(root)
+    status = state.save_status(state.all_saves()[0])
+    assert status.status == "unchanged"
+    assert status.mtime_stale is False
+    # still hidden by default — mtime must not override list filtering
+    assert state.visible_saves() == []
+
+
+def test_backup_refreshes_status_to_unchanged(tmp_path: Path, psp_sfo_bytes: bytes):
+    root = tmp_path / "PSP_VOL"
+    _psp_save_tree(root, "ULJM05800", b"v1", psp_sfo_bytes)
+    lib = tmp_path / "lib"
+    state = AppState(library_root=lib)
+    state.select_mount(root)
+    entry = state.visible_saves()[0]
+    assert state.save_status(entry).status == "new"
+
+    dest = state.import_save(entry)
+    assert dest is not None
+    assert state.save_status(entry).status == "unchanged"
+    assert state.visible_saves() == []
+
+
+def test_import_selected_saves(tmp_path: Path, psp_sfo_bytes: bytes):
+    root = tmp_path / "PSP_VOL"
+    _psp_save_tree(root, "ULJM05800", b"a", psp_sfo_bytes)
+    save_b = root / "PSP" / "SAVEDATA" / "ULUS12345"
+    save_b.mkdir(parents=True)
+    sfo_b = build_sfo(
+        {
+            "TITLE": "Other Game",
+            "SAVEDATA_TITLE": "Other Game",
+            "SAVEDATA_DETAIL": "",
+            "SAVEDATA_DIRECTORY": "ULUS12345",
+            "TITLE_ID": "ULUS12345",
+            "CATEGORY": "MS",
+            "PARENTAL_LEVEL": 0,
+        }
+    )
+    (save_b / "PARAM.SFO").write_bytes(sfo_b)
+    (save_b / "DATA.BIN").write_bytes(b"b")
+
+    lib = tmp_path / "lib"
+    state = AppState(library_root=lib)
+    state.select_mount(root)
+    all_visible = state.visible_saves()
+    assert len(all_visible) == 2
+    chosen = [all_visible[0]]
+    copied = state.import_selected_saves(chosen)
+    assert len(copied) == 1
+    assert state.save_status(chosen[0]).status == "unchanged"
+    # the other remains new/visible
+    remaining = state.visible_saves()
+    assert len(remaining) == 1
+    assert remaining[0].path != chosen[0].path
 
 
 
