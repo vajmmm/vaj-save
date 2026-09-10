@@ -1,33 +1,35 @@
 # vaj-save
 
-掌机存档管理器（只读扫描）。识别已挂载的 USB / SD 读卡器，列出 PSP、Vita、Switch、3DS 导出目录中的存档。
+像素风掌机存档实验室：备份、版本槽位、收藏和导出。识别 PSP / Vita / Switch / 3DS 的 USB 或 SD 导出目录。
 
-不对设备写入，不解密原生存档容器。
+- 卡带柜按机种分类（PSP / Vita / Switch / 3DS / NDS / GBA）
+- 备份到 `~/Documents/vaj-save/`，相同内容去重，变化则新开 SAVE SLOT
+- 收藏、备注、搜索；版本可恢复到文件夹或导出 ZIP
+- 扫描设备只读；写回请把恢复目标选成 Checkpoint / JKSV / SAVEDATA 目录
 
-## 安装
+
+## macOS App（双击打开）
+
+打包成窗口程序，不需要自己跑 Python 命令：
+
+```bash
+PYTHON=python3 ./scripts/build-macos-app.sh
+open dist/vaj-save.app
+```
+
+产物是 `dist/vaj-save.app`，可拖到「应用程序」里，以后双击启动。
+
+开发机需要 Python 3.11+ 才能**构建**；打好的 `.app` 给别人用时不要求对方先装 Python。
+
+## 开发安装 / 命令行
 
 ```bash
 pip install -e ".[dev]"
-```
 
-## 用法
-
-```bash
-# 扫描指定路径（U 盘、SD 读卡器挂载点、目录拷贝）
 vajsave scan /Volumes/YOUR_VOLUME
 vajsave scan /Volumes/YOUR_VOLUME --json
-
-# 扫描当前发现的可移动卷
 vajsave scan
-
-# 监听插拔，新卷出现时自动扫描
 vajsave watch
-# 启动桌面图形界面 App
-vajsave-app
-# 或
-python -m vajsave.app
-# 或
-vajsave app
 ```
 
 ## 支持的挂载方式

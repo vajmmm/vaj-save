@@ -1,12 +1,37 @@
 import queue
 import threading
 from pathlib import Path
-from typing import Callable, List, Optional, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 from .backend import StorageBackend
-from .models import ScanResult, VolumeInfo
+from .library import (
+    BackupResult,
+    Snapshot,
+    collection_stats,
+    default_library_root,
+    backup_save,
+    export_snapshot_zip,
+    game_key,
+    load_catalog,
+    restore_snapshot,
+    set_game_meta,
+    versions_for,
+)
+from .models import SaveEntry, ScanResult, VolumeInfo
 from .scanner import scan
 from .volume import MountedVolumeProvider, VolumeProvider, watch_volumes
+
+PLATFORM_ORDER = ["all", "psp", "vita", "switch", "3ds", "nds", "gba"]
+
+PLATFORM_LABELS = {
+    "all": "全部",
+    "psp": "PSP",
+    "vita": "PS Vita",
+    "switch": "Switch",
+    "3ds": "3DS",
+    "nds": "NDS",
+    "gba": "GBA",
+}
 
 
 def _build_status_text(result: ScanResult) -> str:
@@ -14,7 +39,6 @@ def _build_status_text(result: ScanResult) -> str:
     if not Path(result.root_path).exists():
         return f"路径不存在或不可读: {result.root_path}"
 
-    # Check if this is an encrypted 3DS card
     has_encrypted_3ds = any(
         s.source_id == "3ds_sd" or (s.extra and s.extra.get("encrypted_container"))
         for s in result.sources
@@ -38,21 +62,173 @@ class AppState:
         provider: Optional[VolumeProvider] = None,
         scan_fn: Optional[Callable[[Union[Path, str]], ScanResult]] = None,
         backend: Optional[StorageBackend] = None,
+        library_root: Optional[Union[Path, str]] = None,
     ) -> None:
         self.provider: VolumeProvider = provider or MountedVolumeProvider()
         self.scan_fn: Callable[[Union[Path, str]], ScanResult] = scan_fn or scan
         self.backend: Optional[StorageBackend] = backend
+        self.library_root: Path = Path(library_root) if library_root else default_library_root()
+        self.last_import_path: Optional[Path] = None
+        self.last_backup: Optional[BackupResult] = None
 
         self.volumes: List[VolumeInfo] = []
         self.current_mount: Optional[Path] = None
         self.current_result: Optional[ScanResult] = None
         self.status_text: str = "就绪"
         self.warnings: List[str] = []
+        self.selected_platform: str = "all"
+        self.search_query: str = ""
+        self.starred_only: bool = False
 
         self.event_queue: "queue.Queue[tuple[str, VolumeInfo]]" = queue.Queue()
         self.is_watching: bool = False
         self._watch_thread: Optional[threading.Thread] = None
         self._stop_event: Optional[threading.Event] = None
+
+    def all_saves(self) -> List[SaveEntry]:
+        if not self.current_result:
+            return []
+        return list(self.current_result.saves)
+
+    def platform_counts(self) -> Dict[str, int]:
+        counts = {key: 0 for key in PLATFORM_ORDER if key != "all"}
+        for save in self.all_saves():
+            key = save.platform if save.platform in counts else save.platform
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def visible_saves(self) -> List[SaveEntry]:
+        saves = self.all_saves()
+        if self.selected_platform not in (None, "", "all"):
+            saves = [save for save in saves if save.platform == self.selected_platform]
+        query = (self.search_query or "").strip().lower()
+        if query:
+            saves = [
+                save
+                for save in saves
+                if query in (save.display_name or "").lower()
+                or query in (save.title_id or "").lower()
+                or query in (save.source_id or "").lower()
+            ]
+        if self.starred_only:
+            catalog = load_catalog(self.library_root)
+            saves = [
+                save
+                for save in saves
+                if (catalog.games.get(game_key(save)) and catalog.games[game_key(save)].starred)
+            ]
+        return saves
+
+    def set_search_query(self, query: str) -> None:
+        self.search_query = query or ""
+
+    def toggle_starred_only(self) -> bool:
+        self.starred_only = not self.starred_only
+        return self.starred_only
+
+    def toggle_star(self, entry: SaveEntry) -> bool:
+        catalog = load_catalog(self.library_root)
+        current = catalog.games.get(game_key(entry))
+        starred = not bool(current and current.starred)
+        game = set_game_meta(self.library_root, entry, starred=starred)
+        self.status_text = "已加入收藏" if game.starred else "已取消收藏"
+        return game.starred
+
+    def is_starred(self, entry: SaveEntry) -> bool:
+        game = load_catalog(self.library_root).games.get(game_key(entry))
+        return bool(game and game.starred)
+
+    def game_note(self, entry: SaveEntry) -> str:
+        game = load_catalog(self.library_root).games.get(game_key(entry))
+        return game.note if game else ""
+
+    def set_note(self, entry: SaveEntry, note: str) -> None:
+        set_game_meta(self.library_root, entry, note=note)
+        self.status_text = "已保存备注"
+
+    def collection_stats(self) -> Dict[str, int]:
+        return collection_stats(self.library_root)
+
+    def export_version_zip(self, snapshot: Snapshot, zip_path: Union[Path, str]) -> Optional[Path]:
+        try:
+            exported = export_snapshot_zip(snapshot, self.library_root, Path(zip_path))
+        except Exception as e:
+            self.warnings.append(f"导出失败: {e}")
+            self.status_text = f"导出失败: {e}"
+            return None
+        self.status_text = f"已导出 ZIP: {exported}"
+        return exported
+
+    def grouped_saves(self) -> List[Tuple[str, List[SaveEntry]]]:
+        saves = self.visible_saves()
+        if not saves:
+            return []
+        known = [key for key in PLATFORM_ORDER if key != "all"]
+        buckets: Dict[str, List[SaveEntry]] = {key: [] for key in known}
+        extras: Dict[str, List[SaveEntry]] = {}
+        for save in saves:
+            if save.platform in buckets:
+                buckets[save.platform].append(save)
+            else:
+                extras.setdefault(save.platform, []).append(save)
+        groups: List[Tuple[str, List[SaveEntry]]] = []
+        for key in known:
+            if buckets[key]:
+                groups.append((key, buckets[key]))
+        for key, items in extras.items():
+            groups.append((key, items))
+        return groups
+
+    def set_platform_filter(self, platform: str) -> None:
+        self.selected_platform = platform or "all"
+        label = PLATFORM_LABELS.get(self.selected_platform, self.selected_platform)
+        count = len(self.visible_saves())
+        if self.current_result:
+            self.status_text = f"{label} · {count} 个存档 | [只读]"
+
+    def import_save(self, entry: SaveEntry) -> Optional[Path]:
+        """Backup one save into the versioned local library. Never writes to the source volume."""
+        try:
+            result = backup_save(entry, self.library_root)
+        except Exception as e:
+            self.warnings.append(f"备份失败: {e}")
+            self.status_text = f"备份失败: {e}"
+            return None
+        self.last_backup = result
+        self.last_import_path = result.path
+        if result.is_new:
+            self.status_text = f"已保存到本地 · 新版本 {result.snapshot.id}"
+        else:
+            self.status_text = f"已保存到本地 · 内容未变化，沿用版本 {result.snapshot.id}"
+        return result.path
+
+    def import_visible_saves(self) -> List[Path]:
+        copied: List[Path] = []
+        new_count = 0
+        for entry in self.visible_saves():
+            dest = self.import_save(entry)
+            if dest is not None:
+                copied.append(dest)
+                if self.last_backup and self.last_backup.is_new:
+                    new_count += 1
+        if copied:
+            self.status_text = f"已备份 {len(copied)} 个存档到本地库（新增 {new_count} 个版本）"
+        elif not self.visible_saves():
+            self.status_text = "当前没有可备份的存档"
+        return copied
+
+    def versions_for_entry(self, entry: SaveEntry) -> List[Snapshot]:
+        return versions_for(load_catalog(self.library_root), entry)
+
+    def restore_version(self, snapshot: Snapshot, destination: Union[Path, str]) -> Optional[Path]:
+        try:
+            restored = restore_snapshot(snapshot, self.library_root, Path(destination))
+        except Exception as e:
+            self.warnings.append(f"恢复失败: {e}")
+            self.status_text = f"恢复失败: {e}"
+            return None
+        self.status_text = f"已恢复版本 {snapshot.id} 到 {restored}"
+        return restored
 
     def refresh_volumes(self) -> List[VolumeInfo]:
         """Fetch latest volume list from provider."""
