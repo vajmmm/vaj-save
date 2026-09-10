@@ -6,10 +6,11 @@ import hashlib
 import json
 import re
 import shutil
+import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .models import SaveEntry
 
@@ -17,6 +18,10 @@ _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 CATALOG_NAME = "catalog.json"
 SETTINGS_NAME = "settings.json"
 DEFAULT_KEEP_LAST = 10
+_HASH_CHUNK = 1024 * 1024
+_HASH_CACHE_MAX = 2048
+_hash_cache: Dict[Tuple[Any, ...], str] = {}
+_hash_cache_lock = threading.Lock()
 
 
 def default_library_root() -> Path:
@@ -47,32 +52,78 @@ def destination_for(
     return Path(library_root) / platform / title / slot / stamp
 
 
+def _update_from_file(digest: Any, path: Path) -> None:
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(_HASH_CHUNK)
+            if not chunk:
+                break
+            digest.update(chunk)
+
+
+def _file_fingerprint(path: Path) -> Tuple[Any, ...]:
+    stat = path.stat()
+    return ("file", str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+
+
+def _dir_file_list(root: Path) -> List[Tuple[Path, str, int, int]]:
+    files: List[Tuple[Path, str, int, int]] = []
+    for child in root.rglob("*"):
+        if child.is_symlink() or not child.is_file():
+            continue
+        rel = child.relative_to(root).as_posix()
+        stat = child.stat()
+        files.append((child, rel, stat.st_mtime_ns, stat.st_size))
+    files.sort(key=lambda item: item[1])
+    return files
+
+
+def _cache_get(key: Tuple[Any, ...]) -> Optional[str]:
+    with _hash_cache_lock:
+        return _hash_cache.get(key)
+
+
+def _cache_put(key: Tuple[Any, ...], value: str) -> None:
+    with _hash_cache_lock:
+        if len(_hash_cache) >= _HASH_CACHE_MAX:
+            _hash_cache.clear()
+        _hash_cache[key] = value
+
+
 def hash_tree(path: Path) -> str:
-    """Stable sha256 of a file or directory (skips symlinks)."""
+    """Stable sha256 of a file or directory (skips symlinks). Streamed; stat-cacheable."""
     root = Path(path)
-    digest = hashlib.sha256()
     if not root.exists():
         raise FileNotFoundError(f"存档路径不存在: {root}")
     if root.is_symlink():
         raise ValueError(f"跳过符号链接: {root}")
     if root.is_file():
+        cache_key = _file_fingerprint(root)
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
+        digest = hashlib.sha256()
         digest.update(b"file\0")
-        digest.update(root.read_bytes())
-        return digest.hexdigest()
-    files: List[Path] = []
-    for child in root.rglob("*"):
-        if child.is_symlink() or not child.is_file():
-            continue
-        files.append(child)
-    for child in sorted(files, key=lambda p: p.relative_to(root).as_posix()):
-        rel = child.relative_to(root).as_posix().encode("utf-8")
-        data = child.read_bytes()
-        digest.update(rel)
+        _update_from_file(digest, root)
+        hexdigest = digest.hexdigest()
+        _cache_put(cache_key, hexdigest)
+        return hexdigest
+
+    listed = _dir_file_list(root)
+    cache_key = ("dir", str(root.resolve()), tuple((rel, mtime, size) for _p, rel, mtime, size in listed))
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    digest = hashlib.sha256()
+    for child, rel, _mtime, size in listed:
+        digest.update(rel.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(str(len(data)).encode("ascii"))
+        digest.update(str(size).encode("ascii"))
         digest.update(b"\0")
-        digest.update(data)
-    return digest.hexdigest()
+        _update_from_file(digest, child)
+    hexdigest = digest.hexdigest()
+    _cache_put(cache_key, hexdigest)
+    return hexdigest
 
 
 def copy_save_tree(source: Path, dest_dir: Path) -> Path:
@@ -86,7 +137,7 @@ def copy_save_tree(source: Path, dest_dir: Path) -> Path:
     if source.is_symlink():
         raise ValueError(f"跳过符号链接: {source}")
     if source.is_file():
-        target.write_bytes(source.read_bytes())
+        shutil.copyfile(source, target, follow_symlinks=False)
         return target
     if not source.is_dir():
         raise ValueError(f"无法复制: {source}")
@@ -103,7 +154,7 @@ def _copy_dir(source: Path, dest: Path) -> None:
         if child.is_dir():
             _copy_dir(child, next_dest)
         elif child.is_file():
-            next_dest.write_bytes(child.read_bytes())
+            shutil.copyfile(child, next_dest, follow_symlinks=False)
 
 
 @dataclass
@@ -199,6 +250,15 @@ def classify_save_status(
             sha256=None,
         )
 
+    if latest is None:
+        return SaveBackupStatus(
+            status="new",
+            source_mtime=source_mtime,
+            last_backup_at=None,
+            mtime_stale=False,
+            sha256=digest,
+        )
+
     if digest is None:
         try:
             digest = hash_tree(Path(entry.path))
@@ -210,15 +270,6 @@ def classify_save_status(
                 mtime_stale=False,
                 sha256=None,
             )
-
-    if latest is None:
-        return SaveBackupStatus(
-            status="new",
-            source_mtime=source_mtime,
-            last_backup_at=None,
-            mtime_stale=False,
-            sha256=digest,
-        )
 
     if digest == latest.sha256:
         # Content match wins; ignore mtime jitter on FAT/USB.

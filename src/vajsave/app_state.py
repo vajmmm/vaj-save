@@ -1,5 +1,6 @@
 import queue
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
@@ -186,8 +187,37 @@ class AppState:
         """Recompute and cache status for every scanned save."""
         self._backup_statuses = {}
         catalog = load_catalog(self.library_root)
+        pending: List[SaveEntry] = []
         for entry in self.all_saves():
-            self._refresh_entry_status(entry, catalog=catalog)
+            game = catalog.games.get(game_key(entry))
+            if not game or not game.versions:
+                self._backup_statuses[entry.path] = classify_save_status(entry, catalog, digest=None)
+            else:
+                pending.append(entry)
+        if pending:
+            def _hash_one(item: SaveEntry) -> Tuple[str, Optional[str], Optional[BaseException]]:
+                try:
+                    return item.path, hash_tree(Path(item.path)), None
+                except (OSError, ValueError, FileNotFoundError) as exc:
+                    return item.path, None, exc
+
+            workers = min(8, len(pending))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                hashed = list(pool.map(_hash_one, pending))
+            by_path = {path: (digest, err) for path, digest, err in hashed}
+            for entry in pending:
+                digest, err = by_path[entry.path]
+                if err is not None:
+                    self.warnings.append(
+                        f"计算存档哈希失败: {entry.display_name or entry.path}: {err}"
+                    )
+                    self._backup_statuses[entry.path] = classify_save_status(
+                        entry, catalog, hash_error=True
+                    )
+                else:
+                    self._backup_statuses[entry.path] = classify_save_status(
+                        entry, catalog, digest=digest
+                    )
         return self.backup_status_counts()
 
     def set_search_query(self, query: str) -> None:

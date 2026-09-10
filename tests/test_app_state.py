@@ -588,8 +588,16 @@ def test_toggle_hide_unchanged_shows_backed_up(tmp_path: Path, psp_sfo_bytes: by
 
 def test_hash_failure_does_not_break_select_mount(tmp_path: Path, psp_sfo_bytes: bytes, monkeypatch):
     root = tmp_path / "PSP_VOL"
-    _psp_save_tree(root, "ULJM05800", b"data", psp_sfo_bytes)
+    save_dir = _psp_save_tree(root, "ULJM05800", b"data", psp_sfo_bytes)
     lib = tmp_path / "lib"
+    entry = SaveEntry(
+        platform="psp",
+        source_id="psp",
+        display_name="Monster Hunter Portable 3rd",
+        path=str(save_dir),
+        title_id="ULJM05800",
+    )
+    backup_save(entry, lib, datetime(2026, 1, 1, 10, 0, 0))
 
     def boom(_path):
         raise OSError("permission denied")
@@ -602,6 +610,20 @@ def test_hash_failure_does_not_break_select_mount(tmp_path: Path, psp_sfo_bytes:
     status = state.save_status(res.saves[0])
     assert status.status == "new"
     assert any("hash" in w.lower() or "哈希" in w or "摘要" in w or "失败" in w for w in state.warnings)
+
+
+def test_select_mount_skips_hash_for_unbacked_saves(tmp_path: Path, psp_sfo_bytes: bytes, monkeypatch):
+    root = tmp_path / "PSP_VOL"
+    _psp_save_tree(root, "ULJM05800", b"data", psp_sfo_bytes)
+
+    def boom(_path):
+        raise AssertionError("unbacked saves must not be hashed")
+
+    monkeypatch.setattr("vajsave.app_state.hash_tree", boom)
+    state = AppState(library_root=tmp_path / "lib")
+    res = state.select_mount(root)
+    assert res.saves
+    assert state.save_status(res.saves[0]).status == "new"
 
 
 def test_import_visible_skips_hidden_unchanged(tmp_path: Path, psp_sfo_bytes: bytes):

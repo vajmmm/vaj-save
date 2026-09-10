@@ -24,6 +24,41 @@ from vajsave.volume import FakeVolumeProvider
 from conftest import build_sfo
 
 
+def test_classify_new_does_not_hash(monkeypatch):
+    entry = SaveEntry(platform="psp", source_id="psp", display_name="X", path="/tmp/x", title_id="ULUS1")
+
+    def boom(_path):
+        raise AssertionError("new saves must not be hashed")
+
+    monkeypatch.setattr("vajsave.library.hash_tree", boom)
+    status = classify_save_status(entry, Catalog())
+    assert status.status == "new"
+    assert status.sha256 is None
+
+
+def test_hash_tree_file_and_cache(tmp_path: Path):
+    import hashlib
+
+    blob = b"abc" * 1000
+    f = tmp_path / "one.bin"
+    f.write_bytes(blob)
+    expected = hashlib.sha256(b"file\0" + blob).hexdigest()
+    first = hash_tree(f)
+    second = hash_tree(f)
+    assert first == expected
+    assert second == expected
+
+    nested = tmp_path / "dir"
+    nested.mkdir()
+    (nested / "a.bin").write_bytes(b"aaaa")
+    (nested / "b.bin").write_bytes(b"bbbb")
+    once = hash_tree(nested)
+    twice = hash_tree(nested)
+    assert once == twice
+    (nested / "a.bin").write_bytes(b"cccc")
+    assert hash_tree(nested) != once
+
+
 def test_sanitize_name_strips_unsafe_chars():
     assert sanitize_name('PSP/<>:"save') == "PSP_____save"
     assert sanitize_name("   ") == "untitled"
