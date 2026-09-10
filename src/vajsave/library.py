@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,8 @@ from .models import SaveEntry
 
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 CATALOG_NAME = "catalog.json"
+SETTINGS_NAME = "settings.json"
+DEFAULT_KEEP_LAST = 10
 
 
 def default_library_root() -> Path:
@@ -208,6 +211,79 @@ def save_catalog(library_root: Path, catalog: Catalog) -> None:
     tmp.replace(path)
 
 
+def settings_path(library_root: Path) -> Path:
+    return Path(library_root) / SETTINGS_NAME
+
+
+def load_keep_last(library_root: Path) -> int:
+    """Read keep_last from library settings.json; default 10; 0 means unlimited."""
+    path = settings_path(library_root)
+    if not path.is_file():
+        return DEFAULT_KEEP_LAST
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return DEFAULT_KEEP_LAST
+    if not isinstance(data, dict):
+        return DEFAULT_KEEP_LAST
+    if "keep_last" not in data:
+        return DEFAULT_KEEP_LAST
+    value = data["keep_last"]
+    # Reject bool (subclass of int) and non-int numbers.
+    if type(value) is not int:
+        return DEFAULT_KEEP_LAST
+    if value < 0:
+        return DEFAULT_KEEP_LAST
+    return value
+
+
+def _is_safe_library_path(target: Path, library_root: Path) -> bool:
+    """True only when target resolves strictly inside library_root."""
+    try:
+        root = Path(library_root).resolve()
+        resolved = Path(target).resolve()
+    except OSError:
+        return False
+    if resolved == root:
+        return False
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _delete_snapshot_payload(snapshot: Snapshot, library_root: Path) -> None:
+    """Remove on-disk files for a snapshot; never touches paths outside library_root."""
+    root = Path(library_root)
+    target = snapshot.absolute_path(root)
+    if not _is_safe_library_path(target, root):
+        return
+    try:
+        resolved = target.resolve()
+    except OSError:
+        return
+    if not _is_safe_library_path(resolved, root):
+        return
+    try:
+        if resolved.is_dir():
+            shutil.rmtree(resolved)
+        elif resolved.is_file():
+            resolved.unlink()
+    except OSError:
+        # Best-effort disk cleanup; catalog entry is already dropped by caller.
+        return
+
+
+def prune_game_versions(game: GameRecord, library_root: Path, keep_last: int) -> None:
+    """Drop oldest in-library versions beyond keep_last. keep_last<=0 means no prune."""
+    if keep_last <= 0:
+        return
+    while len(game.versions) > keep_last:
+        oldest = game.versions.pop(0)
+        _delete_snapshot_payload(oldest, library_root)
+
+
 def backup_save(
     entry: SaveEntry,
     library_root: Path,
@@ -230,6 +306,7 @@ def backup_save(
         catalog.games[key] = game
     existing = game.find_hash(digest)
     if existing is not None:
+        # Identical content reuses the snapshot and must not prune.
         return BackupResult(game=game, snapshot=existing, is_new=False, path=existing.absolute_path(root))
 
     now = when or datetime.now()
@@ -248,6 +325,8 @@ def backup_save(
     game.versions.append(snapshot)
     if entry.display_name:
         game.display_name = entry.display_name
+    keep_last = load_keep_last(root)
+    prune_game_versions(game, root, keep_last)
     save_catalog(root, catalog)
     return BackupResult(game=game, snapshot=snapshot, is_new=True, path=dest_dir)
 
