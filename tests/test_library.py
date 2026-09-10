@@ -335,8 +335,9 @@ def test_prune_never_deletes_paths_outside_library_root(tmp_path: Path):
 
     assert marker.exists()
     assert marker.read_bytes() == b"safe"
-    assert len(game.versions) == 1
-    assert game.versions[0].id == "keep"
+    # unsafe/escaped path must not be deleted and must stay in catalog
+    assert [s.id for s in game.versions] == ["evil", "keep"]
+    assert (lib / snap_keep.path).exists()
 
 
 def test_catalog_write_remains_atomic_after_prune(tmp_path: Path):
@@ -416,21 +417,23 @@ def test_prune_skips_library_root_and_deletes_file_payload(tmp_path: Path):
         versions=[root_snap, file_snap, keep_snap],
     )
     prune_game_versions(game, lib, keep_last=1)
-    assert len(game.versions) == 1
-    assert game.versions[0].id == "keep"
+    # root (library root itself) is unsafe: retained; file payload deleted+dropped; newest kept
+    assert [s.id for s in game.versions] == ["root", "keep"]
     assert lib.exists()
     assert not file_abs.exists()
 
 
-def test_prune_delete_oserror_is_swallowed(tmp_path: Path, monkeypatch):
+def test_prune_rmtree_oserror_keeps_catalog_and_directory(tmp_path: Path, monkeypatch):
+    """rmtree OSError must keep both catalog entries and the old directory."""
     import vajsave.library as libmod
     from vajsave.library import GameRecord, Snapshot, prune_game_versions
 
     lib = tmp_path / "lib"
     lib.mkdir()
     snap_path = "psp/t/slot/old"
-    (lib / snap_path).mkdir(parents=True)
-    (lib / snap_path / "x.bin").write_bytes(b"x")
+    old_dir = lib / snap_path
+    old_dir.mkdir(parents=True)
+    (old_dir / "x.bin").write_bytes(b"x")
     keep_path = "psp/t/slot/new"
     (lib / keep_path).mkdir(parents=True)
 
@@ -461,8 +464,10 @@ def test_prune_delete_oserror_is_swallowed(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(libmod.shutil, "rmtree", boom)
     prune_game_versions(game, lib, keep_last=1)
-    assert len(game.versions) == 1
-    assert game.versions[0].id == "new"
+    assert [s.id for s in game.versions] == ["old", "new"]
+    assert old_dir.exists()
+    assert (old_dir / "x.bin").read_bytes() == b"x"
+    assert (lib / keep_path).exists()
 
 
 def test_backup_save_without_display_name_still_prunes(tmp_path: Path):

@@ -253,35 +253,57 @@ def _is_safe_library_path(target: Path, library_root: Path) -> bool:
     return True
 
 
-def _delete_snapshot_payload(snapshot: Snapshot, library_root: Path) -> None:
-    """Remove on-disk files for a snapshot; never touches paths outside library_root."""
+def _delete_snapshot_payload(snapshot: Snapshot, library_root: Path) -> bool:
+    """Remove on-disk files for a snapshot; never touches paths outside library_root.
+
+    Returns True when the catalog entry may be dropped (delete succeeded or path
+    already missing). Returns False when the entry must be retained (unsafe path
+    or delete failed with OSError).
+    """
     root = Path(library_root)
     target = snapshot.absolute_path(root)
     if not _is_safe_library_path(target, root):
-        return
+        return False
     try:
         resolved = target.resolve()
     except OSError:
-        return
+        return False
     if not _is_safe_library_path(resolved, root):
-        return
+        return False
     try:
+        if not resolved.exists():
+            return True
         if resolved.is_dir():
             shutil.rmtree(resolved)
         elif resolved.is_file():
             resolved.unlink()
+        else:
+            return False
+        return True
     except OSError:
-        # Best-effort disk cleanup; catalog entry is already dropped by caller.
-        return
+        return False
 
 
 def prune_game_versions(game: GameRecord, library_root: Path, keep_last: int) -> None:
-    """Drop oldest in-library versions beyond keep_last. keep_last<=0 means no prune."""
+    """Drop oldest in-library versions beyond keep_last. keep_last<=0 means no prune.
+
+    Deletes disk first; catalog entry is removed only after successful delete or
+    when the payload path is already missing. Unsafe/escaped paths and failed
+    deletes retain their catalog entries. Newest keep_last entries are never
+    candidates for removal.
+    """
     if keep_last <= 0:
         return
-    while len(game.versions) > keep_last:
-        oldest = game.versions.pop(0)
-        _delete_snapshot_payload(oldest, library_root)
+    # Only the oldest prefix beyond keep_last is eligible; skip (retain) entries
+    # that cannot be safely removed without touching the newest keep_last.
+    candidates_end = len(game.versions) - keep_last
+    i = 0
+    while i < candidates_end:
+        if _delete_snapshot_payload(game.versions[i], library_root):
+            game.versions.pop(i)
+            candidates_end -= 1
+        else:
+            i += 1
 
 
 def backup_save(
