@@ -274,3 +274,214 @@ def test_directory_access_error(monkeypatch, tmp_path: Path):
     monkeypatch.setattr("vajsave.scanner._safe_iterdir", broken_iterdir)
     result = scan(tmp_path)
     assert any("Simulated permission denied" in w for w in result.warnings)
+
+
+def test_scan_psp_savedata_directory_directly(tmp_path: Path, psp_sfo_bytes: bytes):
+    """User selected PSP/SAVEDATA (not card root) should still yield PSP saves."""
+    savedata = tmp_path / "PSP" / "SAVEDATA"
+    save_dir = savedata / "ULJM05800"
+    save_dir.mkdir(parents=True)
+    (save_dir / "PARAM.SFO").write_bytes(psp_sfo_bytes)
+    (save_dir / "MHP3RD.DAT").write_bytes(b"dummy_save_data")
+
+    result = scan(savedata)
+    assert result.platform == "psp"
+    assert any(s.source_id == "psp" for s in result.sources)
+    assert len(result.saves) == 1
+    assert result.saves[0].title_id == "ULJM05800"
+    assert result.saves[0].display_name == "Monster Hunter Portable 3rd"
+
+
+def test_scan_psp_single_game_directory(tmp_path: Path, psp_sfo_bytes: bytes):
+    """User selected one game folder under SAVEDATA should yield that PSP save."""
+    save_dir = tmp_path / "PSP" / "SAVEDATA" / "ULJM05800"
+    save_dir.mkdir(parents=True)
+    (save_dir / "PARAM.SFO").write_bytes(psp_sfo_bytes)
+    (save_dir / "MHP3RD.DAT").write_bytes(b"dummy_save_data")
+
+    result = scan(save_dir)
+    assert result.platform == "psp"
+    assert any(s.source_id == "psp" for s in result.sources)
+    assert len(result.saves) == 1
+    entry = result.saves[0]
+    assert entry.title_id == "ULJM05800"
+    assert entry.display_name == "Monster Hunter Portable 3rd"
+    assert Path(entry.path).resolve() == save_dir.resolve()
+
+
+def test_scan_jksv_wrapped_one_level(tmp_path: Path):
+    backup = tmp_path / "SD_Backup_2024"
+    slot = backup / "JKSV" / "Zelda BOTW" / "Link" / "Slot1"
+    slot.mkdir(parents=True)
+    (slot / "save.dat").write_bytes(b"botw")
+
+    result = scan(tmp_path)
+    assert result.platform == "switch"
+    assert any(s.source_id == "switch_jksv" for s in result.sources)
+    assert len(result.saves) >= 1
+    assert any(s.display_name == "Zelda BOTW" for s in result.saves)
+
+
+def test_scan_jksv_wrapped_two_levels(tmp_path: Path):
+    slot = tmp_path / "outer" / "inner" / "JKSV" / "Animal Crossing" / "Island"
+    slot.mkdir(parents=True)
+    (slot / "main.dat").write_bytes(b"ac")
+
+    result = scan(tmp_path)
+    assert result.platform == "switch"
+    assert any(s.source_id == "switch_jksv" for s in result.sources)
+    assert len(result.saves) >= 1
+    assert any(s.display_name == "Animal Crossing" for s in result.saves)
+
+
+def test_scan_switch_checkpoint_wrapped_one_and_two_levels(tmp_path: Path):
+    slot1 = (
+        tmp_path / "wrap1" / "switch" / "Checkpoint" / "saves"
+        / "0100000000010000 Super Mario Odyssey" / "2026-01-01"
+    )
+    slot1.mkdir(parents=True)
+    (slot1 / "save.bin").write_bytes(b"d1")
+
+    slot2 = (
+        tmp_path / "a" / "b" / "switch" / "Checkpoint" / "saves"
+        / "Mario Kart 8" / "slotA"
+    )
+    slot2.mkdir(parents=True)
+    (slot2 / "save.bin").write_bytes(b"d2")
+
+    result = scan(tmp_path)
+    assert result.platform == "switch"
+    assert any(s.source_id == "switch_checkpoint" for s in result.sources)
+    names = {s.display_name for s in result.saves}
+    assert "Super Mario Odyssey" in names
+    assert "Mario Kart 8" in names
+
+
+def test_scan_jksv_directory_directly(tmp_path: Path):
+    """User selected the JKSV folder itself."""
+    jksv = tmp_path / "JKSV"
+    slot = jksv / "Smash Ultimate" / "Backup1"
+    slot.mkdir(parents=True)
+    (slot / "save.dat").write_bytes(b"smash")
+
+    result = scan(jksv)
+    assert result.platform == "switch"
+    assert any(s.source_id == "switch_jksv" for s in result.sources)
+    assert len(result.saves) == 1
+    assert result.saves[0].display_name == "Smash Ultimate"
+
+
+def test_scan_does_not_duplicate_card_root_psp(tmp_path: Path, psp_sfo_bytes: bytes):
+    """Card-root scan must keep prior behavior: one PSP source/save, no dupes from descent."""
+    save_dir = tmp_path / "PSP" / "SAVEDATA" / "ULJM05800"
+    save_dir.mkdir(parents=True)
+    (save_dir / "PARAM.SFO").write_bytes(psp_sfo_bytes)
+
+    result = scan(tmp_path)
+    assert result.platform == "psp"
+    assert len(result.sources) == 1
+    assert result.sources[0].source_id == "psp"
+    assert len(result.saves) == 1
+
+
+def test_scan_psp_folder_parent_of_savedata(tmp_path: Path, psp_sfo_bytes: bytes):
+    """Selecting the PSP directory (parent of SAVEDATA) should still find saves."""
+    psp = tmp_path / "PSP"
+    save_dir = psp / "SAVEDATA" / "ULJM05800"
+    save_dir.mkdir(parents=True)
+    (save_dir / "PARAM.SFO").write_bytes(psp_sfo_bytes)
+
+    result = scan(psp)
+    assert result.platform == "psp"
+    assert len(result.saves) == 1
+    assert result.saves[0].title_id == "ULJM05800"
+
+
+def test_scan_psp_renamed_savedata_container(tmp_path: Path, psp_sfo_bytes: bytes):
+    """A non-SAVEDATA-named folder that holds PARAM.SFO game dirs is still recognized."""
+    container = tmp_path / "MyPSPBackup"
+    save_dir = container / "ULJM05800"
+    save_dir.mkdir(parents=True)
+    (save_dir / "PARAM.SFO").write_bytes(psp_sfo_bytes)
+
+    result = scan(container)
+    assert result.platform == "psp"
+    assert len(result.saves) == 1
+    assert result.saves[0].display_name == "Monster Hunter Portable 3rd"
+
+
+def test_scan_switch_checkpoint_dir_directly(tmp_path: Path):
+    saves = tmp_path / "switch" / "Checkpoint" / "saves"
+    slot = saves / "0100000000010000 Super Mario Odyssey" / "slot1"
+    slot.mkdir(parents=True)
+    (slot / "save.bin").write_bytes(b"x")
+
+    result = scan(saves)
+    assert result.platform == "switch"
+    assert any(s.source_id == "switch_checkpoint" for s in result.sources)
+    assert len(result.saves) == 1
+    assert result.saves[0].display_name == "Super Mario Odyssey"
+
+    result_cp = scan(tmp_path / "switch" / "Checkpoint")
+    assert result_cp.platform == "switch"
+    assert len(result_cp.saves) == 1
+
+
+def test_scan_3ds_checkpoint_dir_directly(tmp_path: Path):
+    saves = tmp_path / "3ds" / "Checkpoint" / "saves"
+    slot = saves / "0x011C4 Pokemon Moon" / "Main"
+    slot.mkdir(parents=True)
+    (slot / "main").write_bytes(b"pkmn")
+
+    result = scan(saves)
+    assert result.platform == "3ds"
+    assert any(s.source_id == "3ds_checkpoint" for s in result.sources)
+    assert len(result.saves) == 1
+    assert result.saves[0].display_name == "Pokemon Moon"
+
+    result_cp = scan(tmp_path / "3ds" / "Checkpoint")
+    assert result_cp.platform == "3ds"
+    assert len(result_cp.saves) == 1
+
+
+def test_scan_3ds_checkpoint_wrapped(tmp_path: Path):
+    slot = (
+        tmp_path / "bak" / "3ds" / "Checkpoint" / "saves"
+        / "0x011C4 Pokemon Moon" / "Main"
+    )
+    slot.mkdir(parents=True)
+    (slot / "main").write_bytes(b"pkmn")
+
+    result = scan(tmp_path)
+    assert result.platform == "3ds"
+    assert any(s.source_id == "3ds_checkpoint" for s in result.sources)
+    assert len(result.saves) == 1
+
+
+def test_scan_empty_jksv_is_not_a_source(tmp_path: Path):
+    jksv = tmp_path / "JKSV"
+    jksv.mkdir()
+    (jksv / "readme.txt").write_text("empty")
+
+    result = scan(tmp_path)
+    assert not any(s.source_id == "switch_jksv" for s in result.sources)
+    assert len(result.saves) == 0
+
+
+def test_find_pattern_dirs_wrapper_depth_one_unit():
+    """Exercise max_wrapper_depth=1 branch of the pattern finder."""
+    from pathlib import Path
+    import tempfile
+    from vajsave.scanner import _find_pattern_dirs
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        target = root / "wrap" / "JKSV"
+        target.mkdir(parents=True)
+        deeper = root / "a" / "b" / "JKSV"
+        deeper.mkdir(parents=True)
+        warnings: list = []
+        found = _find_pattern_dirs(root, ("JKSV",), root.resolve(), warnings, max_wrapper_depth=1)
+        names = {p.resolve() for p in found}
+        assert target.resolve() in names
+        assert deeper.resolve() not in names
