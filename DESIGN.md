@@ -1,0 +1,258 @@
+---
+name: vaj-save Switch Basic White
+description: Handheld console archive & backup manager design system
+colors:
+  bg: "#ebebeb"
+  surface: "#f2f2f2"
+  surface_alt: "#e7e7e7"
+  card: "#ffffff"
+  text: "#2d2d2d"
+  muted: "#6f6f6f"
+  line: "#d6d6d6"
+  accent: "#0a84ff"
+  ring: "#00a2ff"
+  on_accent: "#ffffff"
+  primary: "#0a84ff"
+  success: "#34c759"
+  warning: "#ff9500"
+  danger: "#ff3b30"
+  green: "#34c759"
+  orange: "#ff9500"
+  red: "#ff3b30"
+  all: "#0a84ff"
+  psp: "#64d2ff"
+  vita: "#63e6be"
+  switch: "#ff453a"
+  3ds: "#ffd60a"
+  threeds: "#ffd60a"
+  nds: "#bf5af2"
+  gba: "#30d158"
+typography:
+  fontFamily: PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif
+  title:
+    fontFamily: PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif
+    fontSize: 22px
+    fontWeight: 700
+    lineHeight: 1.3
+  heading:
+    fontFamily: PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif
+    fontSize: 16px
+    fontWeight: 700
+    lineHeight: 1.4
+  body:
+    fontFamily: PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif
+    fontSize: 13px
+    lineHeight: 1.5
+  detail:
+    fontFamily: PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif
+    fontSize: 12px
+    lineHeight: 1.4
+rounded:
+  none: 0px
+  sm: 8px
+  md: 12px
+  lg: 16px
+  tile: 18px
+  pill: 11px
+spacing:
+  xs: 4px
+  sm: 8px
+  md: 12px
+  lg: 16px
+  xl: 24px
+components:
+  top-status-bar:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.text}"
+    height: 64px
+  panel:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.lg}"
+  tile:
+    backgroundColor: "{colors.card}"
+    textColor: "{colors.text}"
+    borderColor: "{colors.line}"
+    rounded: "{rounded.tile}"
+  tile-selected:
+    backgroundColor: "{colors.card}"
+    borderColor: "{colors.ring}"
+    borderWidth: 3px
+    rounded: "{rounded.tile}"
+  button-primary:
+    backgroundColor: "{colors.accent}"
+    textColor: "{colors.on_accent}"
+    rounded: "{rounded.sm}"
+    padding: 8px
+  button-neutral:
+    backgroundColor: "{colors.surface_alt}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.sm}"
+    padding: 7px
+  input:
+    backgroundColor: "{colors.card}"
+    textColor: "{colors.text}"
+    borderColor: "{colors.line}"
+    padding: 6px
+  platform-pip:
+    backgroundColor: "{colors.primary}"
+    width: 3px
+  status-pill-new:
+    textColor: "{colors.accent}"
+    backgroundColor: "#ddeeff"
+  status-pill-changed:
+    textColor: "{colors.warning}"
+    backgroundColor: "#fff0db"
+  status-pill-unchanged:
+    textColor: "{colors.success}"
+    backgroundColor: "#e3f7e8"
+  tag-psp:
+    textColor: "{colors.psp}"
+  tag-vita:
+    textColor: "{colors.vita}"
+  tag-switch:
+    textColor: "{colors.switch}"
+  tag-3ds:
+    textColor: "{colors.threeds}"
+  tag-nds:
+    textColor: "{colors.nds}"
+  tag-gba:
+    textColor: "{colors.gba}"
+  divider:
+    backgroundColor: "{colors.line}"
+  bottom-system-bar:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.text}"
+---
+
+## Overview
+
+Nintendo Switch HOME menu meets a dense desktop backup utility.
+
+`vaj-save` backs up, versions, inspects, and restores handheld console saves (PSP, PS Vita, Nintendo Switch, 3DS, NDS, GBA). The interface now follows the Switch **Basic White** system theme instead of the old Console Dark palette.
+
+Design philosophy:
+- **Basic White surfaces**: a light gray page (`#ebebeb`), softer gray panels (`#f2f2f2` / `#e7e7e7`), and pure white rounded cards (`#ffffff`) carry every piece of content. No dark chrome.
+- **White rounded game tiles**: saves render as large white HOME-menu tiles in a Canvas grid, with a rounded monogram badge, a wrapped title, and a status pill — never a dense text-only list.
+- **Platform color identity**: the canonical neon accents (PSP cyan, Vita turquoise, Switch neon red, 3DS gold, NDS violet, GBA green) are kept as small badges/pips so a light UI can still encode the platform at a glance.
+- **Pinned, predictable actions**: the right-hand action stack is packed to the bottom (`pack(side=BOTTOM)`), so long detail text can never push the primary buttons off-screen.
+
+## Colors
+
+All values live in `src/vajsave/ui_theme.py` (`SWITCH` and `PLATFORM_COLORS`) and are re-exported by `src/vajsave/app_ui.py`. Nothing in the UI may hardcode a colour literal.
+
+### Structural surfaces (top to bottom)
+- **Page background (`#ebebeb`)** — the window canvas, the game-grid column, and the status line.
+- **Panels (`#f2f2f2`)** — the top status bar, the left platform/device panel, the right detail panel, and the bottom system bar.
+- **Subtle alt (`#e7e7e7`)** — neutral buttons, input borders, and inactive states.
+- **Cards (`#ffffff`)** — save tiles, the device Listbox, the versions Listbox, and entries.
+- **Divider lines (`#d6d6d6`)** — tile outlines and 1px separators.
+
+### Text & information
+- **Primary text (`#2d2d2d`)** — titles, game names, list labels, numbers.
+- **Muted text (`#6f6f6f`)** — metadata, volume paths, counts, subtitles.
+
+### Interaction
+- **Accent (`#0a84ff`)** — the primary "备份" button, selected list rows, the "all" platform pip.
+- **Selection ring (`#00a2ff`)** — the 3px outline around the focused save tile.
+
+### Handheld platform identifiers
+- **All (`#0a84ff`)**, **PSP (`#64d2ff`)**, **PS Vita (`#63e6be`)**, **Nintendo Switch (`#ff453a`)**, **Nintendo 3DS (`#ffd60a`)**, **Nintendo DS (`#bf5af2`)**, **Game Boy Advance (`#30d158`)**.
+
+### Functional status colors
+- **Success (`#34c759`)** — "已备份" pills and confirmations.
+- **Warning (`#ff9500`)** — "有变化" pills, pending states.
+- **Danger (`#ff3b30`)** — unmountable volumes, missing paths, destructive prompts.
+
+## Typography
+
+Same cross-platform stack as before; only the surfaces changed:
+- macOS `PingFang SC`, Windows `Microsoft YaHei`, Linux `Noto Sans CJK SC`, then `sans-serif`.
+- App title 22pt bold, detail title 16pt bold, tile titles/list labels 13pt, metadata 11–12pt.
+- Tile titles wrap inside the tile (`width=TILE_W-26`); monograms are 15pt bold on the accent badge.
+
+## Layout
+
+The window is composed of four vertical bands: **顶部状态栏** (top status bar) → **三栏主体** (three-column body) → **底部系统栏** (bottom system bar) → **状态行** (status line).
+
+- **Dimensions**: min-size `1080x680`, default geometry `1180x740`.
+- **1. Top status bar (`#f2f2f2`, 64px)** — app identity on the left (round accent badge + "vaj-save" + subtitle) and the live clock + backup stats on the right. The search entry sits directly beneath it.
+- **2. Three-column body**:
+  1. **Left panel (220px fixed, `#f2f2f2`)**: platform filter rows (3px color pip + label + count badge, `hand2` cursor) above the detected **device Listbox** (`tk.Listbox`, white rows, blue selected row).
+  2. **Middle column (flexible, `#ebebeb`)**: the **save tile grid** — a `tk.Canvas` (`SaveTileGrid`) drawing white rounded tiles, one per *visible* save.
+  3. **Right panel (340px fixed, `#f2f2f2`)**: scrollable detail canvas (title, metadata, versions Listbox, note entry) with the **action stack pinned to the bottom** (`pack(side=BOTTOM)`).
+- **3. Bottom system bar (`#f2f2f2`)**: quick actions ("刷新", "打开文件夹", "打开本地库", "设置") and the monitoring toggles ("监听插拔", "隐藏已备份").
+- **4. Status line (`#ebebeb`)**: left-aligned status text and a right-aligned warning label.
+
+## Tile Grid Behavior
+
+The middle column is no longer a `Listbox`; it is a Canvas tile grid. The number of tiles always equals `len(state.visible_saves())`.
+
+- **Single click** — selects exactly one tile (clears the rest) and shows its details.
+- **Ctrl/Command + click** — toggles that tile in the multi-selection.
+- **Shift + click** — selects the contiguous range from the anchor tile to the clicked tile.
+- **Arrow keys** — `←/→` move the active tile by one column, `↑/↓` by one row; selection follows and clamps at the edges instead of wrapping.
+- **Double click / Return** — activates the tile and runs the primary "备份" action.
+- **Auto-scroll** — whenever the selection moves, the tile is scrolled into view (`yview_moveto`).
+- **Wheel** — scrolls the grid; the detail region keeps its own wheel routing.
+
+The device Listbox (`vol_list`) and versions Listbox (`version_list`) remain `tk.Listbox` widgets; the version list intentionally leaves `<MouseWheel>`/`<Button-4>` unbound so Tk's native class binding still scrolls it.
+
+## Elevation & Depth
+
+- **Flat by design**: `ttk` "clam" style, flat relief, no blur drop-shadows.
+- **Contrast layering** creates depth: `#ebebeb` page → `#f2f2f2` panel → `#ffffff` card.
+- **Selection** is expressed with a 3px `#00a2ff` ring on the tile, not a dark fill.
+
+## Shapes
+
+- **Rounded tiles**: save tiles use an 18px corner radius drawn as a smoothed Canvas polygon.
+- **Rounded pills**: status badges use a fully rounded pill (`r = height/2`).
+- **Panels**: 16px rounding conceptually; flat frames stay rectangular internally.
+- **Pips**: a 3px vertical accent strip hugs the left edge of each platform row.
+
+## Components
+
+### Save Tile
+White card, 18px rounded corners, 1px `#d6d6d6` outline (3px `#00a2ff` when selected). Contains a rounded accent monogram badge (top-left, platform colour), an optional `★` for starred games (top-right, warning colour), a wrapped bold title, an optional subtitle (title id / slot / user), and a status pill.
+
+### Status Pills
+- **新** — accent text on a light blue tint (`mix(accent, white, 0.86)`).
+- **有变化** — warning text on a light orange tint.
+- **已备份** — success text on a light green tint.
+- Unknown statuses degrade to a muted grey pill labelled with the raw status.
+
+### Platform Rows
+`hand2` cursor; selected row tinted with `mix(accent, white, 0.84)`, idle rows `#f2f2f2`. 3px platform pip on the left, label in text colour, count badge on the right in muted grey.
+
+### Listboxes (devices, versions)
+White background, dark text, blue (`#0a84ff`) selection with white foreground, flat relief, zero border.
+
+### Buttons
+- **Accent button (`Accent.TButton`)** — `#0a84ff` background, white text, reserved for "备份".
+- **Neutral button (`TButton`)** — `#e7e7e7` background, `#2d2d2d` text, lighter on hover.
+
+### Inputs
+White field background, dark text, `#d6d6d6` border, 6px padding.
+
+## Do's and Don'ts
+
+### Do's
+- **DO** pull every colour from `vajsave.ui_theme` (`SWITCH`, `PLATFORM_COLORS`) — no ad-hoc hex literals in widgets.
+- **DO** keep the vertical structure: top status bar → three-column body → bottom system bar → status line.
+- **DO** render saves as white rounded Canvas tiles; one tile per visible save.
+- **DO** pin the right-panel action buttons to the bottom so long detail text cannot clip them.
+- **DO** keep the device and versions lists as `tk.Listbox` and leave their native wheel handling intact.
+- **DO** use the canonical platform colours for pips, badges, and monograms.
+
+### Don'ts
+- **DON'T** reintroduce the Console Dark surfaces (`#1c1c1e`, `#2c2c2e`, `#3a3a3c`) as UI background/panel/card colours.
+- **DON'T** use random saturated colours for a platform — always reference `PLATFORM_COLORS`.
+- **DON'T** let the tile grid overflow its column; clip or scroll it.
+- **DON'T** hardcode Windows drive letters (e.g. `D:`) or OS-specific paths — use cross-platform path handling.
+
+## Implementation Notes
+
+- `src/vajsave/ui_theme.py` — pure tokens + helpers (`mix`, `grid_columns`, `monogram`, `status_pill`, `tile_face`); display-free and unit tested in `tests/test_ui_theme.py`.
+- `src/vajsave/app_ui.py` — `SaveTileGrid` (Canvas widget) and `VajSaveApp` (window wiring).
+- `scripts/ui_preview.py` — builds the app offscreen and writes `build/ui-preview/home-preview.png` (Pillow) plus `save-grid.eps`/`detail.eps` (converted to PNG when Ghostscript is available; degrades gracefully and still exits 0).
