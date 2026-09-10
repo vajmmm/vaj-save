@@ -49,6 +49,7 @@ vajsave watch
 | GBA EZ-Flash | `SAVER/*.sav` | 只认固定目录，不全盘搜 `.sav` |
 | GBA EverDrive | `GBASYS/SAVE/*.{sav,srm,fla,eep}` | Mini / X5 |
 | GBA EverDrive Pro | `EDGBA/gamedata/<rom>/bram.*` | display_name 为游戏文件夹名 |
+| GBA SuperChis / SuperFW | `SAVEGAME/*.sav`；有 `.superfw/` 时也认 `SAVES/*.sav` | SuperCard/SuperChis 默认目录；`SAVES/` 太泛，无指纹不收 |
 | NDS TWiLight | 目录内有 `.nds` 且 `saves/*.sav` | 常见于 `roms/nds/` |
 | NDS R4/Wood | 同目录 `.nds` + 同名 `.sav` | 需卡根指纹（`_nds/` / `R4.dat` / `TTMenu/` / `_system_/`）或 `roms/nds`；孤立 `.sav` 不收 |
 

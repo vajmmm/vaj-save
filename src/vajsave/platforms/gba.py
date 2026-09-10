@@ -1,4 +1,4 @@
-"""GBA flashcart save layouts (EZ-Flash / EverDrive)."""
+"""GBA flashcart save layouts (EZ-Flash / EverDrive / SuperChis SuperFW)."""
 
 from __future__ import annotations
 
@@ -143,6 +143,45 @@ def _scan_everdrive_pro_gamedata(
             )
 
 
+def _has_superfw_fingerprint(root: Path, root_resolved: Path) -> bool:
+    marker = root / ".superfw"
+    try:
+        return marker.is_dir() and is_safe_path(marker, root_resolved)
+    except OSError:
+        return False
+
+
+def _scan_sav_folder(
+    save_dir: Path,
+    *,
+    source_id: str,
+    description: str,
+    root_resolved: Path,
+    warnings: List[str],
+    sources: List[SaveSource],
+    saves: List[SaveEntry],
+    seen_source_roots: Set[Path],
+    seen_save_paths: Set[Path],
+) -> None:
+    if not save_dir.is_dir() or not is_safe_path(save_dir, root_resolved):
+        return
+    for item in safe_iterdir(save_dir, warnings):
+        if not item.is_file() or item.suffix.lower() != ".sav":
+            continue
+        _add_file_save(
+            path=item,
+            source_id=source_id,
+            display_name=item.stem,
+            root_resolved=root_resolved,
+            sources=sources,
+            saves=saves,
+            seen_source_roots=seen_source_roots,
+            seen_save_paths=seen_save_paths,
+            source_root=save_dir,
+            description=description,
+        )
+
+
 def scan_gba(
     root: Path,
     root_resolved: Path,
@@ -187,3 +226,54 @@ def scan_gba(
         _scan_everdrive_pro_gamedata(
             root, root_resolved, warnings, sources, saves, seen_source_roots, seen_save_paths
         )
+
+    # SuperChis / SuperFW: SAVEGAME/*.sav (default). SAVES/*.sav only with .superfw fingerprint.
+    for savegame_dir in collect_unique_dirs(
+        find_pattern_dirs(root, ("SAVEGAME",), root_resolved, warnings)
+    ):
+        _scan_sav_folder(
+            savegame_dir,
+            source_id="gba_superchis",
+            description="GBA SuperChis/SuperFW SAVEGAME directory",
+            root_resolved=root_resolved,
+            warnings=warnings,
+            sources=sources,
+            saves=saves,
+            seen_source_roots=seen_source_roots,
+            seen_save_paths=seen_save_paths,
+        )
+    if root.name.upper() == "SAVEGAME":
+        _scan_sav_folder(
+            root,
+            source_id="gba_superchis",
+            description="GBA SuperChis/SuperFW SAVEGAME directory",
+            root_resolved=root_resolved,
+            warnings=warnings,
+            sources=sources,
+            saves=saves,
+            seen_source_roots=seen_source_roots,
+            seen_save_paths=seen_save_paths,
+        )
+
+    # SAVES/ is a generic folder name. Only take it with SuperFW fingerprint, or when
+    # the user explicitly selected the SAVES directory.
+    superfw = _has_superfw_fingerprint(root, root_resolved)
+    selected_saves = root.name.upper() == "SAVES"
+    if superfw or selected_saves:
+        saves_dirs = collect_unique_dirs(
+            find_pattern_dirs(root, ("SAVES",), root_resolved, warnings)
+        )
+        if selected_saves:
+            saves_dirs = collect_unique_dirs([*saves_dirs, root])
+        for saves_dir in saves_dirs:
+            _scan_sav_folder(
+                saves_dir,
+                source_id="gba_superchis",
+                description="GBA SuperChis/SuperFW SAVES directory",
+                root_resolved=root_resolved,
+                warnings=warnings,
+                sources=sources,
+                saves=saves,
+                seen_source_roots=seen_source_roots,
+                seen_save_paths=seen_save_paths,
+            )
