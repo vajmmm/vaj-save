@@ -67,22 +67,39 @@ class VajSaveApp:
         self._watch_var = tk.BooleanVar(value=True)
         self._hide_unchanged_var = tk.BooleanVar(value=True)
         self._poll_interval_ms = 200
+        # Enough for the first paint to land before the opening scan starts.
+        self._initial_select_delay_ms = 60
 
         self._init_window()
         self._apply_theme()
         self._create_widgets()
         self._bind_events()
-        # Enumerate right away so the device list is populated on first paint and a
-        # sensible default device is chosen (removable first, then latest letter).
+        # Enumerate right away so the device list is populated on first paint, but
+        # defer the first scan: a full SD card can take seconds to walk, and running
+        # it inside __init__ would delay the window from ever appearing.
         self.state.refresh_volumes()
-        self.state.ensure_mount_selected()
+        self.refresh_volumes_ui()
+        self.refresh_platform_ui()
+        self.refresh_saves_ui()
+        self.refresh_stats()
+        self._initial_select_job = self.root.after(self._initial_select_delay_ms, self._initial_auto_select)
+        if self._watch_var.get():
+            self.state.start_watch()
+        self._poll_job = self.root.after(self._poll_interval_ms, self._poll_events)
+
+    def _initial_auto_select(self) -> None:
+        """Choose a default device once the window is up, then scan it.
+
+        Idempotent: if the volume watcher already auto-selected something, this is a
+        no-op, so the startup burst and this deferred call cannot double-scan.
+        """
+        self._initial_select_job = None
+        if self.state.ensure_mount_selected() is None:
+            return
         self.refresh_volumes_ui(select_path=self.state.current_mount)
         self.refresh_platform_ui()
         self.refresh_saves_ui()
         self.refresh_stats()
-        if self._watch_var.get():
-            self.state.start_watch()
-        self._poll_job = self.root.after(self._poll_interval_ms, self._poll_events)
 
     def _init_window(self) -> None:
         self.root.title("vaj-save")
@@ -565,12 +582,28 @@ class VajSaveApp:
         entry.focus_set()
 
     def _bind_detail_scroll(self, widget) -> None:
-        """Route wheel events anywhere in the detail region to the canvas."""
-        widget.bind("<MouseWheel>", self._on_detail_mousewheel)
-        widget.bind("<Button-4>", self._on_detail_mousewheel_linux)
-        widget.bind("<Button-5>", self._on_detail_mousewheel_linux)
+        """Route wheel events in the detail region to the surrounding canvas.
+
+        Widgets that already scroll themselves (the versions Listbox, the note
+        Entry) keep their native wheel handling: an instance binding returning
+        "break" would shadow Tk's class binding and make the outer canvas move
+        instead of the widget under the pointer.
+        """
+        if not self._widget_handles_wheel(widget):
+            widget.bind("<MouseWheel>", self._on_detail_mousewheel)
+            widget.bind("<Button-4>", self._on_detail_mousewheel_linux)
+            widget.bind("<Button-5>", self._on_detail_mousewheel_linux)
         for child in widget.winfo_children():
             self._bind_detail_scroll(child)
+
+    @staticmethod
+    def _widget_handles_wheel(widget) -> bool:
+        """True for widgets whose class binding already implements wheel scrolling."""
+        wheel_aware = (tk.Listbox, tk.Text, tk.Entry, tk.Spinbox, ttk.Entry, ttk.Combobox)
+        spinbox = getattr(ttk, "Spinbox", None)
+        if spinbox is not None:
+            wheel_aware = wheel_aware + (spinbox,)
+        return isinstance(widget, wheel_aware)
 
     def _on_detail_mousewheel(self, event) -> str:
         if sys.platform == "darwin":
@@ -675,6 +708,12 @@ class VajSaveApp:
             except Exception:
                 pass
             self._poll_job = None
+        if getattr(self, "_initial_select_job", None):
+            try:
+                self.root.after_cancel(self._initial_select_job)
+            except Exception:
+                pass
+            self._initial_select_job = None
         self.state.stop_watch(timeout=0.5)
 
     def on_close(self) -> None:

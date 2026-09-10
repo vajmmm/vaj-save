@@ -69,12 +69,18 @@ def load_app_config() -> Dict[str, Any]:
 def save_app_config(config: Dict[str, Any]) -> bool:
     """Persist the app config atomically. Returns False on write failure."""
     path = config_path()
+    tmp = path.with_name(path.name + ".tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".tmp")
         tmp.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(path)
-    except OSError:
+    except (OSError, TypeError, ValueError):
+        # TypeError/ValueError guard against a non-serialisable caller payload;
+        # drop any half-written temp file so it cannot linger next to the config.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
         return False
     return True
 

@@ -14,6 +14,42 @@ from vajsave.backend import FakeStorageBackend
 from conftest import build_sfo
 
 
+@pytest.fixture(scope="module")
+def tk_root():
+    """A single Tk root shared by every UI test in this module.
+
+    macOS Tk cannot reliably tear down and recreate its interpreter inside one
+    process: calling ``tk.Tk()`` again after ``root.destroy()`` leaves the second
+    root's ``update()`` spinning forever in the Cocoa event loop. Sharing one root
+    keeps the UI tests hermetic without that hang.
+    """
+    try:
+        import tkinter as tk
+
+        root = tk.Tk()
+    except Exception:
+        pytest.skip("Tkinter display not available")
+    root.withdraw()
+    yield root
+    try:
+        root.destroy()
+    except Exception:
+        pass
+
+
+def _dispose_app(app, root) -> None:
+    """Stop an app's background work and drop its widgets, keeping `root` alive."""
+    try:
+        app._stop_background()
+    except Exception:
+        pass
+    for child in list(root.winfo_children()):
+        try:
+            child.destroy()
+        except Exception:
+            pass
+
+
 def test_app_state_init():
     state = AppState()
     assert state.provider is not None
@@ -439,24 +475,22 @@ def test_open_in_file_manager_failure(tmp_path: Path, monkeypatch):
     assert "失败" in msg
 
 
-def test_build_app_structure():
-    try:
-        import tkinter as tk
-        from vajsave.app_ui import build_app
-        root = tk.Tk()
-        root.withdraw()
-    except Exception:
-        pytest.skip("Tkinter display not available")
+def test_build_app_structure(tk_root):
+    from vajsave.app_ui import build_app
 
     state = AppState(provider=FakeVolumeProvider([]))
-    app = build_app(state=state, root=root)
-    assert app.root == root
-    assert app.state == state
-    app.on_refresh_clicked()
-    app.on_watch_toggle()
-    app.on_show_in_finder_clicked()
-    app.on_copy_path_clicked()
-    app.on_close()
+    app = build_app(state=state, root=tk_root)
+    try:
+        assert app.root == tk_root
+        assert app.state == state
+        app.on_refresh_clicked()
+        app.on_watch_toggle()
+        app.on_show_in_finder_clicked()
+        app.on_copy_path_clicked()
+    finally:
+        # Share the module Tk root instead of destroying it: recreating Tk in the
+        # same process is what hung the event loop on macOS.
+        _dispose_app(app, tk_root)
 
 
 def _psp_save_tree(root: Path, title_id: str, payload: bytes, psp_sfo_bytes: bytes) -> Path:
@@ -868,42 +902,6 @@ def test_set_library_root_without_scan(tmp_path: Path, monkeypatch):
 # --- app UI structure ---
 
 
-@pytest.fixture(scope="module")
-def tk_root():
-    """A single Tk root shared by every UI test in this module.
-
-    macOS Tk cannot reliably tear down and recreate its interpreter inside one
-    process: calling ``tk.Tk()`` again after ``root.destroy()`` leaves the second
-    root's ``update()`` spinning forever in the Cocoa event loop. Sharing one
-    root keeps the UI tests hermetic without that hang.
-    """
-    try:
-        import tkinter as tk
-
-        root = tk.Tk()
-    except Exception:
-        pytest.skip("Tkinter display not available")
-    root.withdraw()
-    yield root
-    try:
-        root.destroy()
-    except Exception:
-        pass
-
-
-def _dispose_app(app, root) -> None:
-    """Stop an app's background work and drop its widgets, keeping `root` alive."""
-    try:
-        app._stop_background()
-    except Exception:
-        pass
-    for child in list(root.winfo_children()):
-        try:
-            child.destroy()
-        except Exception:
-            pass
-
-
 def test_app_ui_detail_scroll_and_volume_index(tk_root, tmp_path: Path, psp_sfo_bytes: bytes):
     import tkinter as tk
 
@@ -932,6 +930,13 @@ def test_app_ui_detail_scroll_and_volume_index(tk_root, tmp_path: Path, psp_sfo_
         app.vol_list.selection_set(0)
         app.on_volume_selected()
         assert state.current_mount == vol_dir
+
+        # The versions Listbox scrolls itself: wheel events must not be hijacked by
+        # the surrounding detail canvas (an instance binding would return "break").
+        assert app.version_list.bind("<MouseWheel>") == ""
+        assert app.version_list.bind("<Button-4>") == ""
+        # Non-scrolling surfaces in the detail region do forward the wheel to it.
+        assert "_on_detail_mousewheel" in app.detail_inner.bind("<MouseWheel>")
     finally:
         _dispose_app(app, tk_root)
 

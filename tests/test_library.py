@@ -768,3 +768,26 @@ def test_app_config_missing_and_bad_json_degrades(tmp_path: Path, monkeypatch):
         assert load_app_config() == {}
     cfg.write_bytes(b"\xff\xfe\x00bad")
     assert load_app_config() == {}
+
+
+def test_save_app_config_unsupported_payload_returns_false(tmp_path: Path, monkeypatch):
+    from vajsave.library import save_app_config
+
+    cfg = tmp_path / "config.json"
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(cfg))
+
+    # A non-serialisable value must degrade to False instead of raising, and must
+    # not leave a half-written temp file next to the config.
+    assert save_app_config({"library_root": object()}) is False
+    assert not cfg.exists()
+    assert not cfg.with_name(cfg.name + ".tmp").exists()
+
+
+def test_save_app_config_failure_is_safe(tmp_path: Path, monkeypatch):
+    from vajsave.library import save_app_config
+
+    # Parent path is a file, so the directory cannot be created.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x", encoding="utf-8")
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(blocker / "config.json"))
+    assert save_app_config({"library_root": "/tmp/x"}) is False
