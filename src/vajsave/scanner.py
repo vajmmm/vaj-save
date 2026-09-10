@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Set, Union
+from typing import List, Optional, Set, Union
 
 from .models import SaveEntry, SaveSource, ScanResult
 from .platforms import gba, nds, psp, switch, threeds, vita
@@ -22,6 +22,99 @@ _safe_iterdir = safe_iterdir
 _resolved_key = resolved_key
 _find_pattern_dirs = find_pattern_dirs
 _collect_unique_dirs = collect_unique_dirs
+
+
+def _path_is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _path_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def guess_platform(root: Union[Path, str]) -> Optional[str]:
+    """Shallowly guess the handheld platform of a volume root.
+
+    Only the root and a fixed set of known relative paths are probed with
+    bounded ``is_dir``/``exists`` checks. It never recurses or walks the
+    filesystem, so it is safe to call against large or partially-unreadable
+    volumes. Returns ``None`` when the platform cannot be determined.
+    """
+    try:
+        base = Path(root)
+        if not base.is_dir():
+            return None
+    except Exception:
+        return None
+
+    def has_dir(rel: str) -> bool:
+        return _path_is_dir(base / rel)
+
+    def has_file(rel: str) -> bool:
+        return _path_exists(base / rel)
+
+    # PS Vita: native savedata or exported savegames (ux0/ is the Vita mount).
+    if (
+        has_dir("user/00/savedata")
+        or has_dir("ux0/user/00/savedata")
+        or has_dir("data/savegames")
+        or has_dir("ux0/data/savegames")
+    ):
+        return "vita"
+
+    # PSP: SAVEDATA container, also nested inside the Vita pspemu tree.
+    if (
+        has_dir("PSP/SAVEDATA")
+        or has_dir("pspemu/PSP/SAVEDATA")
+        or has_dir("ux0/pspemu/PSP/SAVEDATA")
+    ):
+        return "psp"
+    if base.name.upper() == "SAVEDATA":
+        return "psp"
+
+    # Checkpoint exports.
+    if has_dir("switch/Checkpoint/saves"):
+        return "switch"
+    if has_dir("3ds/Checkpoint/saves"):
+        return "3ds"
+
+    # JKSV is shared: Switch uses JKSV/ directly, 3DS JKSM nests Saves/ExtData/SysSave.
+    if has_dir("JKSV"):
+        if any(has_dir(f"JKSV/{cat}") for cat in ("Saves", "ExtData", "SysSave")):
+            return "3ds"
+        return "switch"
+
+    if has_dir("Nintendo 3DS"):
+        return "3ds"
+    if has_dir("switch") or has_dir("atmosphere"):
+        return "switch"
+
+    # GBA flash carts.
+    if (
+        has_dir("SAVER")
+        or has_dir("GBASYS/SAVE")
+        or has_dir("EDGBA/gamedata")
+        or has_dir(".superfw")
+    ):
+        return "gba"
+
+    # NDS flash carts / TWiLight Menu++.
+    if (
+        has_dir("roms/nds")
+        or has_dir("_nds")
+        or has_dir("TTMenu")
+        or has_file("R4.dat")
+        or has_file("_system_")
+    ):
+        return "nds"
+
+    return None
 
 
 def scan(root_path: Union[Path, str]) -> ScanResult:

@@ -1,6 +1,8 @@
+import ctypes as _real_ctypes
 import sys
 import threading
 import time
+import types as _types
 from pathlib import Path
 import pytest
 from vajsave.volume import (
@@ -9,9 +11,49 @@ from vajsave.volume import (
     FakeVolumeProvider,
     MountedVolumeProvider,
     watch_volumes,
+    _detect_volume_platform,
+    _enumerate_windows_drives,
 )
 from vajsave.scanner import scan
 from conftest import build_sfo
+
+
+# --- helpers for Win32 drive enumeration tests -----------------------------
+
+def _fake_kernel32(drive_specs, failing_type=(), logical_drives_error=False):
+    """Build a duck-typed kernel32 stub.
+
+    drive_specs maps an uppercase drive letter -> (drive_type, label).
+    """
+
+    class _FakeKernel32:
+        def GetLogicalDrives(self):
+            if logical_drives_error:
+                raise OSError("GetLogicalDrives failed")
+            mask = 0
+            for letter in drive_specs:
+                mask |= 1 << (ord(letter.upper()) - ord("A"))
+            return mask
+
+        def GetDriveTypeW(self, root):
+            letter = root[0].upper()
+            if letter in failing_type:
+                raise OSError("GetDriveTypeW failed")
+            return drive_specs[letter][0]
+
+        def GetVolumeInformationW(self, root, buffer, *args):
+            letter = root[0].upper()
+            buffer.value = drive_specs[letter][1]
+            return True
+
+    return _FakeKernel32()
+
+
+def _fake_ctypes(kernel32):
+    return _types.SimpleNamespace(
+        windll=_types.SimpleNamespace(kernel32=kernel32),
+        create_unicode_buffer=_real_ctypes.create_unicode_buffer,
+    )
 
 
 def test_fake_volume_provider():
@@ -81,27 +123,131 @@ def test_mounted_volume_provider_linux_branch(monkeypatch, tmp_path: Path):
     assert any(v.name == "USB_STICK" for v in vols)
 
 
-def test_mounted_volume_provider_windows_branch(monkeypatch, tmp_path: Path):
-    monkeypatch.setattr(sys, "platform", "win32")
+def test_enumerate_windows_drives_bitmask_and_volumeinfo():
+    kernel32 = _fake_kernel32(
+        {
+            "C": (3, ""),           # fixed
+            "E": (2, ""),           # removable, no label
+            "F": (2, "KINGSTON"),   # removable, labeled
+            "G": (5, "DVD"),        # cdrom -> skipped
+            "H": (4, "share"),      # remote -> skipped
+            "I": (0, ""),           # unknown -> skipped
+            "J": (1, ""),           # no root dir -> skipped
+        }
+    )
+    vols = _enumerate_windows_drives(kernel32)
+    by_letter = {v.mount_point.name[0]: v for v in vols}
 
-    provider = MountedVolumeProvider()
-    # Mock Path.exists to return True for D:\ only
-    real_path = Path
+    assert set(by_letter) == {"C", "E", "F"}
+    assert by_letter["C"].is_removable is False
+    assert by_letter["E"].is_removable is True
+    assert by_letter["F"].is_removable is True
 
-    class MockPath:
-        def __init__(self, p):
-            self.p = str(p)
+    assert by_letter["C"].name == "C: 本地磁盘"
+    assert by_letter["E"].name == "E: 可移动磁盘"
+    assert by_letter["F"].name == "F: KINGSTON"
 
-        def exists(self):
-            return self.p.startswith("D:")
+    assert by_letter["F"].extra["drive_type"] == 2
+    assert by_letter["F"].extra["label"] == "KINGSTON"
+    assert by_letter["C"].extra["drive_type"] == 3
+    assert by_letter["C"].extra["label"] == ""
 
-        def __str__(self):
-            return self.p
 
-    monkeypatch.setattr("vajsave.volume.Path", MockPath)
-    vols = provider._list_windows_volumes()
+def test_enumerate_windows_drives_removable_before_fixed():
+    kernel32 = _fake_kernel32(
+        {"C": (3, ""), "D": (3, ""), "E": (2, ""), "F": (2, "")}
+    )
+    vols = _enumerate_windows_drives(kernel32)
+    assert [v.mount_point.name[0] for v in vols] == ["E", "F", "C", "D"]
+
+
+def test_enumerate_windows_drives_skips_type_error():
+    kernel32 = _fake_kernel32(
+        {"C": (3, ""), "E": (2, "USB")}, failing_type=("E",)
+    )
+    vols = _enumerate_windows_drives(kernel32)
+    assert [v.mount_point.name[0] for v in vols] == ["C"]
+
+
+def test_enumerate_windows_drives_logical_error_returns_empty():
+    kernel32 = _fake_kernel32({"C": (3, "")}, logical_drives_error=True)
+    assert _enumerate_windows_drives(kernel32) == []
+
+
+def test_enumerate_windows_drives_label_error_is_safe():
+    class _Kernel32:
+        def GetLogicalDrives(self):
+            return 1 << (ord("C") - ord("A"))
+
+        def GetDriveTypeW(self, root):
+            return 3
+
+        def GetVolumeInformationW(self, *args, **kwargs):
+            raise OSError("label unavailable")
+
+    vols = _enumerate_windows_drives(_Kernel32())
+    assert len(vols) == 1
+    assert vols[0].name == "C: 本地磁盘"
+    assert vols[0].extra["label"] == ""
+
+
+def test_mounted_volume_provider_windows_branch(monkeypatch):
+    """Windows branch now enumerates via kernel32 (not Path.exists probing)."""
+    kernel32 = _fake_kernel32({"D": (2, "USB_STICK")})
+    monkeypatch.setattr("vajsave.volume.ctypes", _fake_ctypes(kernel32))
+
+    vols = MountedVolumeProvider()._list_windows_volumes()
     assert len(vols) == 1
     assert "D:" in vols[0].name
+    assert "USB_STICK" in vols[0].name
+    assert vols[0].is_removable is True
+
+
+def test_list_windows_volumes_without_ctypes_is_safe(monkeypatch):
+    monkeypatch.setattr("vajsave.volume.ctypes", None)
+    assert MountedVolumeProvider()._list_windows_volumes() == []
+
+
+def test_list_windows_volumes_without_windll_is_safe(monkeypatch):
+    monkeypatch.setattr("vajsave.volume.ctypes", _types.SimpleNamespace())
+    assert MountedVolumeProvider()._list_windows_volumes() == []
+
+
+def test_list_windows_volumes_annotates_platform(monkeypatch):
+    kernel32 = _fake_kernel32({"E": (2, "USB")})
+    monkeypatch.setattr("vajsave.volume.ctypes", _fake_ctypes(kernel32))
+    monkeypatch.setattr("vajsave.volume.guess_platform", lambda root: "psp")
+
+    vols = MountedVolumeProvider()._list_windows_volumes()
+    assert len(vols) == 1
+    assert vols[0].extra["platform"] == "psp"
+
+
+def test_list_windows_volumes_platform_failure_does_not_break_enumeration(monkeypatch):
+    kernel32 = _fake_kernel32({"E": (2, "USB")})
+    monkeypatch.setattr("vajsave.volume.ctypes", _fake_ctypes(kernel32))
+
+    def _boom(root):
+        raise RuntimeError("platform probe failed")
+
+    monkeypatch.setattr("vajsave.volume.guess_platform", _boom)
+
+    vols = MountedVolumeProvider()._list_windows_volumes()
+    assert len(vols) == 1
+    assert "platform" not in (vols[0].extra or {})
+
+
+def test_detect_volume_platform_uses_guess(tmp_path: Path):
+    (tmp_path / "PSP" / "SAVEDATA").mkdir(parents=True)
+    assert _detect_volume_platform(tmp_path) == "psp"
+
+
+def test_detect_volume_platform_failure_returns_none(monkeypatch, tmp_path: Path):
+    def _boom(root):
+        raise RuntimeError("probe failed")
+
+    monkeypatch.setattr("vajsave.volume.guess_platform", _boom)
+    assert _detect_volume_platform(tmp_path) is None
 
 
 def test_mounted_volume_provider_default_os_dispatch(monkeypatch):

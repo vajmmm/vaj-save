@@ -2,7 +2,7 @@ import os
 import stat
 from pathlib import Path
 import pytest
-from vajsave.scanner import scan
+from vajsave.scanner import scan, guess_platform
 from conftest import build_sfo
 
 
@@ -647,3 +647,95 @@ def test_switch_jksv_still_works_alongside_reserved_names(tmp_path: Path):
     assert any(s.display_name == "Zelda BOTW" for s in switch_saves)
     assert not any(s.display_name == "Saves" for s in switch_saves)
     assert any(s.display_name == "Some3DSGame" for s in threeds_saves)
+
+
+def test_guess_platform_psp(tmp_path: Path):
+    (tmp_path / "PSP" / "SAVEDATA").mkdir(parents=True)
+    assert guess_platform(tmp_path) == "psp"
+
+
+def test_guess_platform_psp_savedata_selected(tmp_path: Path):
+    savedata = tmp_path / "SAVEDATA"
+    savedata.mkdir()
+    assert guess_platform(savedata) == "psp"
+
+
+def test_guess_platform_vita_native(tmp_path: Path):
+    (tmp_path / "user" / "00" / "savedata").mkdir(parents=True)
+    assert guess_platform(tmp_path) == "vita"
+
+
+def test_guess_platform_vita_exported(tmp_path: Path):
+    (tmp_path / "data" / "savegames").mkdir(parents=True)
+    assert guess_platform(tmp_path) == "vita"
+
+
+def test_guess_platform_switch_checkpoint(tmp_path: Path):
+    (tmp_path / "switch" / "Checkpoint" / "saves").mkdir(parents=True)
+    assert guess_platform(tmp_path) == "switch"
+
+
+def test_guess_platform_switch_jksv(tmp_path: Path):
+    (tmp_path / "JKSV" / "Zelda BOTW" / "Slot1").mkdir(parents=True)
+    assert guess_platform(tmp_path) == "switch"
+
+
+def test_guess_platform_switch_atmosphere(tmp_path: Path):
+    (tmp_path / "atmosphere").mkdir()
+    assert guess_platform(tmp_path) == "switch"
+
+
+def test_guess_platform_3ds_jksm(tmp_path: Path):
+    (tmp_path / "JKSV" / "Saves" / "Pokemon Moon" / "Main").mkdir(parents=True)
+    assert guess_platform(tmp_path) == "3ds"
+
+
+def test_guess_platform_3ds_checkpoint(tmp_path: Path):
+    (tmp_path / "3ds" / "Checkpoint" / "saves").mkdir(parents=True)
+    assert guess_platform(tmp_path) == "3ds"
+
+
+def test_guess_platform_3ds_nintendo_dir(tmp_path: Path):
+    (tmp_path / "Nintendo 3DS").mkdir()
+    assert guess_platform(tmp_path) == "3ds"
+
+
+def test_guess_platform_gba_saver(tmp_path: Path):
+    (tmp_path / "SAVER").mkdir()
+    assert guess_platform(tmp_path) == "gba"
+
+
+def test_guess_platform_gba_everdrive(tmp_path: Path):
+    (tmp_path / "GBASYS" / "SAVE").mkdir(parents=True)
+    assert guess_platform(tmp_path) == "gba"
+
+
+def test_guess_platform_gba_superfw(tmp_path: Path):
+    (tmp_path / ".superfw").mkdir()
+    assert guess_platform(tmp_path) == "gba"
+
+
+def test_guess_platform_nds_roms_dir(tmp_path: Path):
+    (tmp_path / "roms" / "nds").mkdir(parents=True)
+    assert guess_platform(tmp_path) == "nds"
+
+
+def test_guess_platform_nds_card_fingerprint(tmp_path: Path):
+    (tmp_path / "_nds").mkdir()
+    assert guess_platform(tmp_path) == "nds"
+
+
+def test_guess_platform_unknown_returns_none(tmp_path: Path):
+    (tmp_path / "Documents").mkdir()
+    (tmp_path / "Movies").mkdir()
+    assert guess_platform(tmp_path) is None
+
+
+def test_guess_platform_nonexistent_returns_none(tmp_path: Path):
+    assert guess_platform(tmp_path / "does_not_exist") is None
+
+
+def test_guess_platform_is_shallow_only(tmp_path: Path):
+    # A PSP layout buried deeper than the shallow fingerprint must not be found.
+    (tmp_path / "a" / "b" / "PSP" / "SAVEDATA").mkdir(parents=True)
+    assert guess_platform(tmp_path) is None

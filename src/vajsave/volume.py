@@ -2,9 +2,106 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Protocol, Set, Union
+from typing import Any, Callable, Dict, List, Optional, Protocol, Set, Tuple, Union
 
 from .models import VolumeInfo
+from .scanner import guess_platform
+
+try:  # pragma: no cover - platform dependent
+    import ctypes
+    from ctypes import create_unicode_buffer as _create_unicode_buffer
+except Exception:  # pragma: no cover - ctypes is stdlib, but stay defensive
+    ctypes = None  # type: ignore[assignment]
+    _create_unicode_buffer = None  # type: ignore[assignment]
+
+# GetDriveTypeW return codes.
+DRIVE_UNKNOWN = 0
+DRIVE_NO_ROOT_DIR = 1
+DRIVE_REMOVABLE = 2
+DRIVE_FIXED = 3
+DRIVE_REMOTE = 4
+DRIVE_CDROM = 5
+DRIVE_RAMDISK = 6
+
+# Only removable and fixed drives are interesting as save containers.
+_KEPT_DRIVE_TYPES = (DRIVE_REMOVABLE, DRIVE_FIXED)
+_DRIVE_TYPE_TEXT = {
+    DRIVE_REMOVABLE: "可移动磁盘",
+    DRIVE_FIXED: "本地磁盘",
+}
+
+
+def _read_volume_label(kernel32: Any, root_path: str) -> str:
+    """Read a volume label through ``GetVolumeInformationW``, never raising."""
+    try:
+        buffer = _create_unicode_buffer(261)
+        kernel32.GetVolumeInformationW(
+            root_path, buffer, len(buffer), None, None, None, None, 0
+        )
+        return buffer.value or ""
+    except Exception:
+        return ""
+
+
+def _enumerate_windows_drives(kernel32: Any) -> List[VolumeInfo]:
+    """Enumerate Windows drives from an injectable kernel32 (duck typed).
+
+    Uses the ``GetLogicalDrives`` bitmask so every mounted drive letter is
+    considered (not a hardcoded D..Z range). Removable drives sort before
+    fixed drives, each group alphabetically by letter. All failures are
+    swallowed so this never raises to the caller.
+    """
+    entries: List[Tuple[int, str, VolumeInfo]] = []
+
+    try:
+        mask = int(kernel32.GetLogicalDrives())
+    except Exception:
+        return []
+
+    for index in range(26):
+        if not (mask >> index) & 1:
+            continue
+        letter = chr(ord("A") + index)
+        root_path = f"{letter}:\\"
+        try:
+            drive_type = int(kernel32.GetDriveTypeW(root_path))
+        except Exception:
+            continue
+        if drive_type not in _KEPT_DRIVE_TYPES:
+            continue
+
+        label = _read_volume_label(kernel32, root_path)
+        stripped = label.strip()
+        if stripped:
+            name = f"{letter}: {stripped}"
+        else:
+            name = f"{letter}: {_DRIVE_TYPE_TEXT.get(drive_type, '磁盘')}"
+
+        try:
+            mount_point = Path(root_path)
+        except Exception:
+            continue
+
+        entries.append(
+            (drive_type, letter, VolumeInfo(
+                name=name,
+                mount_point=mount_point,
+                is_removable=(drive_type == DRIVE_REMOVABLE),
+                extra={"drive_type": drive_type, "label": label},
+            ))
+        )
+
+    # Removable drives first; within each group ordered by drive letter.
+    entries.sort(key=lambda item: (0 if item[0] == DRIVE_REMOVABLE else 1, item[1]))
+    return [volume for _, _, volume in entries]
+
+
+def _detect_volume_platform(mount_point: Path) -> Optional[str]:
+    """Best-effort, shallow platform annotation for a mounted volume."""
+    try:
+        return guess_platform(mount_point)
+    except Exception:
+        return None
 
 
 class VolumeProvider(Protocol):
@@ -131,18 +228,24 @@ class MountedVolumeProvider:
         return results
 
     def _list_windows_volumes(self) -> List[VolumeInfo]:
-        results: List[VolumeInfo] = []
-        for drive_letter in "DEFGHIJKLMNOPQRSTUVWXYZ":
-            drive_path = Path(f"{drive_letter}:\\")
-            if drive_path.exists():
-                results.append(
-                    VolumeInfo(
-                        name=f"Drive ({drive_letter}:)",
-                        mount_point=drive_path,
-                        is_removable=True,
-                    )
-                )
-        return results
+        try:
+            kernel32 = ctypes.windll.kernel32
+        except Exception:
+            return []
+
+        try:
+            volumes = _enumerate_windows_drives(kernel32)
+        except Exception:
+            return []
+
+        for volume in volumes:
+            platform = _detect_volume_platform(volume.mount_point)
+            if not platform:
+                continue
+            if volume.extra is None:
+                volume.extra = {}
+            volume.extra.setdefault("platform", platform)
+        return volumes
 
 
 def watch_volumes(
