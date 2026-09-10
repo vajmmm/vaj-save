@@ -271,7 +271,18 @@ def test_directory_access_error(monkeypatch, tmp_path: Path):
         warnings.append("Simulated permission denied")
         return []
 
+    monkeypatch.setattr("vajsave.platforms.common.safe_iterdir", broken_iterdir)
     monkeypatch.setattr("vajsave.scanner._safe_iterdir", broken_iterdir)
+    # Platform modules bind safe_iterdir at import time — patch those too.
+    for mod_name in (
+        "vajsave.platforms.psp",
+        "vajsave.platforms.vita",
+        "vajsave.platforms.switch",
+        "vajsave.platforms.threeds",
+        "vajsave.platforms.gba",
+        "vajsave.platforms.nds",
+    ):
+        monkeypatch.setattr(f"{mod_name}.safe_iterdir", broken_iterdir)
     result = scan(tmp_path)
     assert any("Simulated permission denied" in w for w in result.warnings)
 
@@ -485,3 +496,154 @@ def test_find_pattern_dirs_wrapper_depth_one_unit():
         names = {p.resolve() for p in found}
         assert target.resolve() in names
         assert deeper.resolve() not in names
+
+
+def test_gba_ezflash_saver(tmp_path: Path):
+    saver = tmp_path / "SAVER"
+    saver.mkdir()
+    sav = saver / "Pokemon Emerald.sav"
+    sav.write_bytes(b"gba_ez")
+
+    result = scan(tmp_path)
+    assert result.platform == "gba"
+    assert any(s.source_id == "gba_ezflash" for s in result.sources)
+    assert len(result.saves) == 1
+    entry = result.saves[0]
+    assert entry.platform == "gba"
+    assert entry.source_id == "gba_ezflash"
+    assert entry.display_name == "Pokemon Emerald"
+    assert Path(entry.path).resolve() == sav.resolve()
+
+
+def test_gba_everdrive_gbasys_save(tmp_path: Path):
+    save_dir = tmp_path / "GBASYS" / "SAVE"
+    save_dir.mkdir(parents=True)
+    sav = save_dir / "Metroid.srm"
+    sav.write_bytes(b"gba_ed")
+    (save_dir / "readme.txt").write_text("ignore")
+
+    result = scan(tmp_path)
+    assert result.platform == "gba"
+    assert any(s.source_id == "gba_everdrive" for s in result.sources)
+    assert len(result.saves) == 1
+    entry = result.saves[0]
+    assert entry.platform == "gba"
+    assert entry.source_id == "gba_everdrive"
+    assert entry.display_name == "Metroid"
+    assert Path(entry.path).name == "Metroid.srm"
+
+
+def test_gba_everdrive_pro_edgba(tmp_path: Path):
+    game = tmp_path / "EDGBA" / "gamedata" / "Fire Emblem"
+    game.mkdir(parents=True)
+    bram = game / "bram.sav"
+    bram.write_bytes(b"pro_bram")
+
+    result = scan(tmp_path)
+    assert result.platform == "gba"
+    assert any(s.source_id == "gba_everdrive_pro" for s in result.sources)
+    assert len(result.saves) == 1
+    entry = result.saves[0]
+    assert entry.platform == "gba"
+    assert entry.source_id == "gba_everdrive_pro"
+    assert entry.display_name == "Fire Emblem"
+    assert Path(entry.path).resolve() == bram.resolve()
+
+
+def test_gba_layouts_wrapped(tmp_path: Path):
+    sav = tmp_path / "backup" / "SAVER" / "Zelda.sav"
+    sav.parent.mkdir(parents=True)
+    sav.write_bytes(b"wrapped")
+
+    result = scan(tmp_path)
+    assert any(s.source_id == "gba_ezflash" for s in result.sources)
+    assert any(s.display_name == "Zelda" for s in result.saves)
+
+
+def test_nds_twilight_saves(tmp_path: Path):
+    rom_dir = tmp_path / "roms" / "nds"
+    rom_dir.mkdir(parents=True)
+    (rom_dir / "Mario Kart DS.nds").write_bytes(b"rom")
+    saves = rom_dir / "saves"
+    saves.mkdir()
+    sav = saves / "Mario Kart DS.sav"
+    sav.write_bytes(b"nds_tw")
+
+    result = scan(tmp_path)
+    assert result.platform == "nds"
+    assert any(s.source_id == "nds_twilight" for s in result.sources)
+    assert len(result.saves) == 1
+    entry = result.saves[0]
+    assert entry.platform == "nds"
+    assert entry.source_id == "nds_twilight"
+    assert entry.display_name == "Mario Kart DS"
+    assert Path(entry.path).resolve() == sav.resolve()
+
+
+def test_nds_sibling_sav_with_card_fingerprint(tmp_path: Path):
+    (tmp_path / "_nds").mkdir()
+    rom_dir = tmp_path / "games"
+    rom_dir.mkdir()
+    (rom_dir / "Pokemon Platinum.nds").write_bytes(b"rom")
+    sav = rom_dir / "Pokemon Platinum.sav"
+    sav.write_bytes(b"sibling")
+
+    result = scan(tmp_path)
+    assert result.platform == "nds"
+    assert any(s.source_id == "nds_r4" for s in result.sources) or any(
+        s.platform == "nds" for s in result.saves
+    )
+    assert len(result.saves) == 1
+    entry = result.saves[0]
+    assert entry.platform == "nds"
+    assert entry.display_name == "Pokemon Platinum"
+    assert Path(entry.path).resolve() == sav.resolve()
+
+
+def test_nds_stray_sav_without_fingerprint_ignored(tmp_path: Path):
+    (tmp_path / "notes.sav").write_bytes(b"not_a_nds_save")
+    (tmp_path / "Documents").mkdir()
+    (tmp_path / "Documents" / "memo.sav").write_bytes(b"also_stray")
+
+    result = scan(tmp_path)
+    assert result.platform == "unknown"
+    assert len(result.saves) == 0
+    assert not any(s.platform == "nds" for s in result.sources)
+
+
+def test_3ds_jksm_saves_not_switch(tmp_path: Path):
+    slot = tmp_path / "JKSV" / "Saves" / "Pokemon Ultra Sun" / "Main"
+    slot.mkdir(parents=True)
+    (slot / "00000001.sav").write_bytes(b"jksm")
+
+    result = scan(tmp_path)
+    assert result.platform == "3ds"
+    assert any(s.source_id == "3ds_jksm" for s in result.sources)
+    assert not any(s.source_id == "switch_jksv" for s in result.sources)
+    assert len(result.saves) == 1
+    entry = result.saves[0]
+    assert entry.platform == "3ds"
+    assert entry.source_id == "3ds_jksm"
+    assert entry.display_name == "Pokemon Ultra Sun"
+    assert entry.slot == "Main"
+
+
+def test_switch_jksv_still_works_alongside_reserved_names(tmp_path: Path):
+    # Classic Switch game folder
+    game_slot = tmp_path / "JKSV" / "Zelda BOTW" / "Link" / "Slot1"
+    game_slot.mkdir(parents=True)
+    (game_slot / "save.dat").write_bytes(b"botw")
+
+    # Reserved 3DS-style folder must not become a Switch "game"
+    reserved = tmp_path / "JKSV" / "Saves" / "Some3DSGame" / "slot0"
+    reserved.mkdir(parents=True)
+    (reserved / "data.bin").write_bytes(b"3ds")
+
+    result = scan(tmp_path)
+    switch_saves = [s for s in result.saves if s.platform == "switch"]
+    threeds_saves = [s for s in result.saves if s.platform == "3ds"]
+    assert any(s.source_id == "switch_jksv" for s in result.sources)
+    assert any(s.source_id == "3ds_jksm" for s in result.sources)
+    assert any(s.display_name == "Zelda BOTW" for s in switch_saves)
+    assert not any(s.display_name == "Saves" for s in switch_saves)
+    assert any(s.display_name == "Some3DSGame" for s in threeds_saves)

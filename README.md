@@ -1,6 +1,6 @@
 # vaj-save
 
-像素风掌机存档实验室：备份、版本槽位、收藏和导出。识别 PSP / Vita / Switch / 3DS 的 USB 或 SD 导出目录。
+像素风掌机存档实验室：备份、版本槽位、收藏和导出。识别 PSP / Vita / Switch / 3DS / NDS / GBA 的 USB 或 SD 导出目录。
 
 - 卡带柜按机种分类（PSP / Vita / Switch / 3DS / NDS / GBA）
 - 备份到 `~/Documents/vaj-save/`，相同内容去重，变化则新开 SAVE SLOT
@@ -41,10 +41,16 @@ vajsave watch
 | Vita 导出 | `data/savegames/` | Vita Save Manager 解密导出 |
 | Vita + Adrenaline | 同时有 Vita 目录和 `pspemu/PSP/SAVEDATA/` | 一条卷上会列出两个 source |
 | Switch Checkpoint | `switch/Checkpoint/saves/` | Hekate UMS 或拔卡读卡器 |
-| Switch JKSV | `JKSV/` | 按游戏 / 用户 / 槽位宽松列举 |
+| Switch JKSV | `JKSV/<Game>/...` | 按游戏 / 用户 / 槽位宽松列举；跳过 Saves/ExtData 等保留名 |
 | Switch SD | 仅有 `atmosphere/` 或 `switch/` | 识别为 Switch 卡，存档列表可为空 |
 | 3DS Checkpoint | `3ds/Checkpoint/saves/` | 拔卡读卡器 |
+| 3DS JKSM | `JKSV/Saves/`（或 ExtData/SysSave） | 与 Switch JKSV 同根目录名，按子目录区分 |
 | 3DS 加密 SD | 仅有 `Nintendo 3DS/` | 只标记为加密卡，**不当作可管理存档** |
+| GBA EZ-Flash | `SAVER/*.sav` | 只认固定目录，不全盘搜 `.sav` |
+| GBA EverDrive | `GBASYS/SAVE/*.{sav,srm,fla,eep}` | Mini / X5 |
+| GBA EverDrive Pro | `EDGBA/gamedata/<rom>/bram.*` | display_name 为游戏文件夹名 |
+| NDS TWiLight | 目录内有 `.nds` 且 `saves/*.sav` | 常见于 `roms/nds/` |
+| NDS R4/Wood | 同目录 `.nds` + 同名 `.sav` | 需卡根指纹（`_nds/` / `R4.dat` / `TTMenu/` / `_system_/`）或 `roms/nds`；孤立 `.sav` 不收 |
 
 无上述指纹的普通 U 盘会标为 `unknown`，不会误报成某台掌机。
 
@@ -53,14 +59,21 @@ vajsave watch
 - **Switch DBI / Checkpoint MTP**：macOS 上 MTP 不稳定。请用 Hekate UMS 挂整张 SD，或拔卡。
 - 存档解密、重签、写回、编辑器。只读管理。
 
-## JKSV 布局假设
+## JKSV / JKSM 布局假设
 
-真实 JKSV 目录因版本而异。当前检测：存在 `JKSV/` 且有子目录即尝试列举。支持：
+真实 JKSV 目录因版本而异。**Switch JKSV** 与 **3DS JKSM** 都可能使用根目录名 `JKSV/`，靠子目录区分：
+
+Switch（跳过保留名 `Saves` / `ExtData` / `SysSave` / `Boss` / `Shared` / `_TRASH_`）：
 
 - `JKSV/<Game>/`（无子目录）
 - `JKSV/<Game>/<slot>/`
 - `JKSV/<Game>/<user>/<slot>/`
 
+3DS JKSM：
+
+- `JKSV/Saves/<Game>/<slot>/`
+- 同理 `ExtData` / `SysSave`
+
 ## 3DS 加密 SD
 
-`Nintendo 3DS/` 里是系统加密容器，本工具不会把其中文件列成存档。请先在机上用 Checkpoint 导出到 `3ds/Checkpoint/saves/`，再扫描。
+`Nintendo 3DS/` 里是系统加密容器，本工具不会把其中文件列成存档。请先在机上用 Checkpoint 或 JKSM 导出，再扫描。
