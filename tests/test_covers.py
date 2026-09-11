@@ -55,9 +55,30 @@ def test_find_embedded_cover_vita_sce_sys(tmp_path: Path):
     save_dir = tmp_path / "PCSE00120"
     (save_dir / "sce_sys").mkdir(parents=True)
     icon = _write_image(save_dir / "sce_sys" / "icon0.png")
-    # ``sce_sys`` is a depth-1 layout; the depth-0 lookup must not reach it.
-    assert covers.find_embedded_cover(save_dir) is None
+    # ``sce_sys`` is a depth-1 layout, so the default probe reaches it.
+    assert covers.find_embedded_cover(save_dir) == icon
     assert covers.find_embedded_cover(save_dir, max_depth=1) == icon
+    # A depth-0-only probe must not reach it.
+    assert covers.find_embedded_cover(save_dir, max_depth=0) is None
+
+
+def test_fixed_names_outrank_generic_scan_at_any_depth(tmp_path: Path):
+    """A stray image in the save root must not shadow the official icon."""
+    save_dir = tmp_path / "PCSE00120"
+    (save_dir / "sce_sys").mkdir(parents=True)
+    official = _write_image(save_dir / "sce_sys" / "icon0.png")
+    _write_image(save_dir / "screenshot.png")
+    assert covers.find_embedded_cover(save_dir) == official
+
+
+def test_canonical_subdirs_outrank_alphabetical_order(tmp_path: Path):
+    """``sce_sys`` (official Vita location) must beat ``icon/`` despite sorting later."""
+    save_dir = tmp_path / "PCSE00120"
+    (save_dir / "sce_sys").mkdir(parents=True)
+    (save_dir / "icon").mkdir(parents=True)
+    official = _write_image(save_dir / "sce_sys" / "icon0.png")
+    _write_image(save_dir / "icon" / "icon0.png")
+    assert covers.find_embedded_cover(save_dir) == official
 
 
 def test_find_embedded_cover_sibling_for_raw_sav_file(tmp_path: Path):
@@ -128,7 +149,8 @@ def test_find_embedded_cover_depth_one_scan(tmp_path: Path):
     nested = save_dir / "media"
     nested.mkdir(parents=True)
     icon = _write_image(nested / "art.png")
-    assert covers.find_embedded_cover(save_dir) is None
+    assert covers.find_embedded_cover(save_dir, max_depth=0) is None
+    assert covers.find_embedded_cover(save_dir) == icon
     assert covers.find_embedded_cover(save_dir, max_depth=1) == icon
 
 

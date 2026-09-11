@@ -78,6 +78,11 @@ DEFAULT_THUMBNAIL_RADIUS = 12
 # so ``cover_art.png`` beats ``aaa.png`` even though it sorts later.
 _GENERIC_NAME_HINTS = ("cover", "icon", "box")
 
+# Sub-directories that hold an official icon, in probe order. ``sce_sys`` is the
+# Vita location, so it has to beat the plain alphabetical order that would
+# otherwise reach ``icon/`` first.
+_CANONICAL_SUBDIRS = ("sce_sys", "media", "icon")
+
 
 def _as_path(value: Any) -> Optional[Path]:
     if value is None:
@@ -154,17 +159,13 @@ def _generic_icon_candidates(directory: Path) -> List[Path]:
     return candidates
 
 
-def _scan_dir_for_icon(directory: Path) -> Optional[Path]:
-    """Fixed-name lookup, then a generic image scan, inside one directory."""
-    found = _match_icon(directory)
-    if found is not None:
-        return found
-    candidates = _generic_icon_candidates(directory)
-    return candidates[0] if candidates else None
+def _ordered_subdirs(directory: Path) -> List[Path]:
+    """Real (non-symlink) child directories, in icon-probe order.
 
-
-def _sorted_subdirs(directory: Path) -> List[Path]:
-    """Real (non-symlink) child directories, sorted by lowercase name."""
+    Canonical cover locations (``sce_sys`` -> ``media`` -> ``icon``) come first so
+    the official artwork wins regardless of filename sort order; every remaining
+    sub-directory follows in lowercase-name order, keeping the result deterministic.
+    """
     subs: List[Path] = []
     for entry in _dir_entries(directory):
         try:
@@ -175,6 +176,8 @@ def _sorted_subdirs(directory: Path) -> List[Path]:
         except OSError:
             continue
     subs.sort(key=lambda item: item.name.lower())
+    rank = {name: index for index, name in enumerate(_CANONICAL_SUBDIRS)}
+    subs.sort(key=lambda item: rank.get(item.name.lower(), len(rank)))
     return subs
 
 
@@ -200,15 +203,22 @@ def _sibling_cover(save_file: Path) -> Optional[Path]:
     return None
 
 
-def find_embedded_cover(save_path: Any, *, max_depth: int = 0) -> Optional[Path]:
+def find_embedded_cover(save_path: Any, *, max_depth: int = 1) -> Optional[Path]:
     """Find an icon embedded in a save folder (or next to a raw save file).
 
-    The lookup is layout-agnostic and based on well-known icon file names, then
-    a bounded generic scan of image files whose names hint at artwork. When
-    ``max_depth >= 1`` the same logic is repeated for each (non-symlink) child
-    directory of the save folder, which is how ``sce_sys/icon0.png`` (Vita) and
-    similar nested layouts resolve. Returns the first match, or ``None``. Never
-    raises, never recurses beyond the requested depth, and skips oversized files.
+    Probes run in this order, so *official* artwork always outranks incidental
+    images (a stray screenshot in the save root can never shadow the icon a
+    console actually ships):
+
+    1. well-known icon names inside the save folder itself (``ICON0.PNG`` ...);
+    2. the same well-known names inside its sub-directories, probing ``sce_sys``
+       -> ``media`` -> ``icon`` first (Vita's ``sce_sys/icon0.png``);
+    3. a deterministic generic scan of image files in the save folder, then in
+       its sub-directories.
+
+    Fixed-name probes therefore outrank the generic scan at every depth. Returns
+    the first match, or ``None``. Never raises, never recurses beyond
+    ``max_depth`` levels, and skips oversized files.
     """
     path = _as_path(save_path)
     if path is None:
@@ -220,14 +230,26 @@ def find_embedded_cover(save_path: Any, *, max_depth: int = 0) -> Optional[Path]
             return None
     except OSError:
         return None
-    found = _scan_dir_for_icon(path)
+
+    subs = _ordered_subdirs(path) if max_depth >= 1 else []
+
+    # 1 + 2: well-known icon names, shallow depth first.
+    found = _match_icon(path)
     if found is not None:
         return found
-    if max_depth >= 1:
-        for sub in _sorted_subdirs(path):
-            found = _scan_dir_for_icon(sub)
-            if found is not None:
-                return found
+    for sub in subs:
+        found = _match_icon(sub)
+        if found is not None:
+            return found
+
+    # 3: deterministic generic image scan, shallow depth first.
+    candidates = _generic_icon_candidates(path)
+    if candidates:
+        return candidates[0]
+    for sub in subs:
+        candidates = _generic_icon_candidates(sub)
+        if candidates:
+            return candidates[0]
     return None
 
 

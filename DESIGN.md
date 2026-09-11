@@ -249,7 +249,7 @@ The device Listbox (`vol_list`) and versions Listbox (`version_list`) remain `tk
 ### Save Tile
 Compact rounded card (`116x124`, 14px corners). The card face is a pastel tint (`mix(platform_colour, white, 0.86)`), and the upper **cover region** (inset 6px, height 66px) shows, in priority order:
 
-1. the cover returned by `vajsave.covers.resolve_cover` — an embedded console icon found during the scan (fixed names `icon0.*` → `icon.*` → `pic1.*` → `thumb.*` → `preview.*` → `folder.*` → `cover.*` → `banner.*` → `boxart.*`, then a deterministic generic image scan of the save folder and its depth-1 sub-directories), then a user cover at `<library_root>/covers/<platform>/<name>.<ext>`;
+1. the cover returned by `vajsave.covers.resolve_cover` — an embedded console icon found during the scan (fixed names `icon0.*` → `icon.*` → `pic1.*` → `thumb.*` → `preview.*` → `folder.*` → `cover.*` → `banner.*` → `boxart.*`, probed in the save folder and then its sub-directories with `sce_sys` → `media` → `icon` taking precedence; only when no fixed name matches at either depth does a deterministic generic image scan run), then a user cover at `<library_root>/covers/<platform>/<name>.<ext>`;
 2. otherwise a **24pt bold monogram** in the platform colour on the pastel face.
 
 Below the artwork sits the wrapped 11pt title, an optional 9pt subtitle drawn just above the bottom bar, an optional `★` overlay (top-right, star colour) and the **status pill as a top-left corner badge overlaid on the artwork**. A **full-width 4px platform colour bar** hugs the bottom edge.
