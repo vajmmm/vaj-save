@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import List, Optional, Set, Union
 
 from .models import SaveEntry, SaveSource, ScanResult
+from .covers import find_embedded_cover
 from .platforms import gba, nds, psp, switch, threeds, vita
 from .platforms.common import (
     collect_unique_dirs,
@@ -172,6 +173,15 @@ def scan(root_path: Union[Path, str]) -> ScanResult:
     else:
         unique_platforms = list(dict.fromkeys(s.platform for s in sources))
         platform = unique_platforms[0]
+
+    # Fill embedded cover icons during the scan: a bounded, read-only lookup of
+    # well-known icon names inside each save folder (never a disk-wide walk).
+    for entry in saves:
+        if entry.cover_path:
+            continue
+        cover = find_embedded_cover(entry.path, entry.platform)
+        if cover is not None:
+            entry.cover_path = str(cover)
 
     return ScanResult(
         root_path=str(root),

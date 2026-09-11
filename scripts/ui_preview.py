@@ -37,8 +37,23 @@ if str(_SRC) not in sys.path:
 
 from vajsave.app_state import PLATFORM_LABELS, PLATFORM_ORDER, AppState  # noqa: E402
 from vajsave.app_ui import build_app  # noqa: E402
+from vajsave.covers import load_thumbnail, resolve_cover  # noqa: E402
 from vajsave.models import SaveEntry, ScanResult, VolumeInfo  # noqa: E402
-from vajsave.ui_theme import PLATFORM_COLORS, SWITCH, grid_columns, mix, tile_face  # noqa: E402
+from vajsave.ui_theme import (  # noqa: E402
+    PLATFORM_COLORS,
+    SWITCH,
+    TILE_BAR_HEIGHT,
+    TILE_COVER_HEIGHT,
+    TILE_COVER_INSET,
+    TILE_COVER_RADIUS,
+    TILE_GAP,
+    TILE_HEIGHT,
+    TILE_RADIUS,
+    TILE_WIDTH,
+    grid_columns,
+    mix,
+    tile_face,
+)
 
 # Demo catalogue: a save from every platform the scanner understands.
 DEMO_SAVES = [
@@ -54,9 +69,24 @@ DEMO_SAVES = [
 # --- demo state -------------------------------------------------------------------
 
 
+def _make_demo_cover(root: Path, platform: str, name: str, color: str) -> Optional[Path]:
+    """Write a small demo cover PNG so the preview shows real artwork."""
+    try:
+        from PIL import Image
+
+        cover_dir = root / platform
+        cover_dir.mkdir(parents=True, exist_ok=True)
+        path = cover_dir / f"{name}.png"
+        Image.new("RGB", (128, 160), color).save(path)
+        return path
+    except Exception:  # noqa: BLE001 - a missing cover just falls back to pastel
+        return None
+
+
 def _demo_scan(root: Path) -> ScanResult:
-    saves = [
-        SaveEntry(
+    saves = []
+    for index, (platform, name, title_id, slot) in enumerate(DEMO_SAVES):
+        entry = SaveEntry(
             platform=platform,
             source_id=f"demo_{platform}",
             display_name=name,
@@ -64,8 +94,15 @@ def _demo_scan(root: Path) -> ScanResult:
             title_id=title_id,
             slot=slot,
         )
-        for platform, name, title_id, slot in DEMO_SAVES
-    ]
+        if index < 3:
+            # Illustrate the embedded-cover layer for the first few saves.
+            cover = _make_demo_cover(
+                root, platform, (title_id or name).replace("/", "_"),
+                PLATFORM_COLORS.get(platform, SWITCH["accent"]),
+            )
+            if cover is not None:
+                entry.cover_path = str(cover)
+        saves.append(entry)
     return ScanResult(root_path=str(root), platform="demo", sources=[], saves=saves, warnings=[])
 
 
@@ -177,10 +214,10 @@ def render_home_preview(out_dir: Path, state: AppState) -> Path:
     draw = ImageDraw.Draw(image)
     font_title = _load_font(20, bold=True)
     font_body = _load_font(13)
-    font_body_bold = _load_font(13, bold=True)
     font_small = _load_font(11)
+    font_pill = _load_font(10, bold=True)
     font_badge = _load_font(16, bold=True)
-    font_mono = _load_font(30, bold=True)
+    font_mono = _load_font(24, bold=True)
 
     # Top status bar.
     draw.rectangle([0, 0, width, top_h], fill=SWITCH["surface"])
@@ -227,10 +264,11 @@ def render_home_preview(out_dir: Path, state: AppState) -> Path:
         count = len(state.all_saves()) if key == "all" else counts.get(key, 0)
         draw.text((left[2] - 16, row_y + 15), str(count), font=font_small, fill=SWITCH["muted"], anchor="rm")
 
-    # Middle column: white rounded tiles, clipped to the column bounds.
+    # Middle column: compact cover tiles, clipped to the column bounds.
     mid = [pad + 234, body_top, width - pad - 350, body_bottom]
-    faces = [tile_face(save, state.save_status(save)) for save in state.visible_saves()]
-    tile_w, tile_h, gap = 246, 246, 14
+    visible = state.visible_saves()
+    faces = [tile_face(save, state.save_status(save)) for save in visible]
+    tile_w, tile_h, gap = TILE_WIDTH, TILE_HEIGHT, TILE_GAP
     mid_w, mid_h = mid[2] - mid[0], mid[3] - mid[1]
     tiles_layer = Image.new("RGB", (mid_w, mid_h), SWITCH["bg"])
     layer_draw = ImageDraw.Draw(tiles_layer)
@@ -240,28 +278,38 @@ def render_home_preview(out_dir: Path, state: AppState) -> Path:
         x1 = col * (tile_w + gap)
         y1 = 40 + row * (tile_h + gap)
         x2, y2 = x1 + tile_w, y1 + tile_h
-        # Pastel platform face, big centred monogram, full-width bottom bar.
-        _rounded(layer_draw, [x1, y1, x2, y2], 20, face.get("face", SWITCH["card"]))
+        # Pastel platform face, then cover artwork (or a small monogram).
+        _rounded(layer_draw, [x1, y1, x2, y2], TILE_RADIUS, face.get("face", SWITCH["card"]))
+        cover_w = tile_w - 2 * TILE_COVER_INSET
+        cover_h = TILE_COVER_HEIGHT
+        thumb = None
+        cover_path = resolve_cover(visible[i], state.library_root)
+        if cover_path is not None:
+            thumb = load_thumbnail(cover_path, cover_w, cover_h, radius=TILE_COVER_RADIUS)
+        if thumb is not None:
+            tiles_layer.paste(thumb, (x1 + TILE_COVER_INSET, y1 + TILE_COVER_INSET), thumb)
+        else:
+            layer_draw.text(
+                (x1 + tile_w / 2, y1 + TILE_COVER_INSET + cover_h / 2),
+                face["monogram"],
+                font=font_mono,
+                fill=face["accent"],
+                anchor="mm",
+            )
+        # Full-width platform bar hugging the bottom edge.
+        layer_draw.rectangle([x1, y2 - TILE_BAR_HEIGHT, x2, y2], fill=face["accent"])
         layer_draw.text(
-            (x1 + tile_w / 2, y1 + tile_h * 0.40),
-            face["monogram"],
-            font=font_mono,
-            fill=face["accent"],
-            anchor="mm",
-        )
-        layer_draw.rectangle([x1, y2 - 4, x2, y2], fill=face["accent"])
-        layer_draw.text(
-            (x1 + tile_w / 2, y1 + tile_h * 0.62),
+            (x1 + tile_w / 2, y1 + TILE_COVER_INSET + cover_h + 4),
             face["title"],
-            font=font_body_bold,
+            font=font_small,
             fill=SWITCH["text"],
             anchor="ma",
         )
+        # Status pill as a top-left corner badge over the artwork.
         pill = face["pill"]
-        pill_w = min(tile_w - 30, 18 + 13 * len(pill["label"]))
-        px1 = x1 + (tile_w - pill_w) / 2
-        _rounded(layer_draw, [px1, y2 - 38, px1 + pill_w, y2 - 16], 11, pill["bg"])
-        layer_draw.text((x1 + tile_w / 2, y2 - 27), pill["label"], font=font_small, fill=pill["fg"], anchor="mm")
+        pill_w = min(tile_w - 16, 14 + 11 * len(pill["label"]))
+        _rounded(layer_draw, [x1 + 8, y1 + 8, x1 + 8 + pill_w, y1 + 25], 8, pill["bg"])
+        layer_draw.text((x1 + 8 + pill_w / 2, y1 + 16), pill["label"], font=font_pill, fill=pill["fg"], anchor="mm")
     image.paste(tiles_layer, (mid[0], mid[1]))
     draw.text((mid[0], body_top + 14), "游戏", font=font_small, fill=SWITCH["muted"], anchor="la")
 

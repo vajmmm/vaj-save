@@ -13,6 +13,9 @@ class SaveEntry:
     slot: Optional[str] = None
     user: Optional[str] = None
     extra: Optional[Dict[str, Any]] = None
+    # Optional icon found inside the save folder during the device scan. Only
+    # emitted by ``to_dict`` when set so older serialized catalogs stay clean.
+    cover_path: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -29,6 +32,8 @@ class SaveEntry:
             d["user"] = self.user
         if self.extra:
             d["extra"] = self.extra
+        if self.cover_path:
+            d["cover_path"] = self.cover_path
         return d
 
 

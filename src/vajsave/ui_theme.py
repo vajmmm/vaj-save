@@ -59,13 +59,26 @@ PLATFORM_COLORS: Dict[str, str] = {
 DEFAULT_TILE_WIDTH = 156
 DEFAULT_TILE_GAP = 14
 
+# Compact cover-tile metrics used by ``SaveTileGrid`` and the design docs. These
+# are deliberately smaller than ``DEFAULT_TILE_WIDTH`` (kept for back-compat
+# with ``grid_columns`` callers) so the middle column fits 4 columns x 3 rows at
+# the default 1180x740 window instead of the old 2x2 square tiles.
+TILE_WIDTH = 116
+TILE_HEIGHT = 124
+TILE_GAP = DEFAULT_TILE_GAP
+TILE_RADIUS = 14
+TILE_BAR_HEIGHT = 4
+
+# Cover artwork geometry inside a tile (rounded RGBA thumbnail via covers.py).
+TILE_COVER_INSET = 6
+TILE_COVER_HEIGHT = 66
+TILE_COVER_RADIUS = 12
+
 # Selected save tiles grow by ``TILE_SELECT_SCALE`` px and wear a ``TILE_RING_WIDTH``
 # px selection ring sitting ``TILE_RING_GAP`` px outside the tile.
 TILE_SELECT_SCALE = 8
 TILE_RING_GAP = 6
 TILE_RING_WIDTH = 3
-TILE_RADIUS = 18
-TILE_BAR_HEIGHT = 4
 
 _STATUS_PILL_SPECS: Dict[str, Dict[str, str]] = {
     "new": {"label": "新", "fg": SWITCH["accent"]},

@@ -8,18 +8,23 @@ from tkinter import filedialog, ttk
 from typing import Dict, List, Optional, Tuple, Union
 
 from .app_state import BACKUP_STATUS_LABELS, PLATFORM_LABELS, PLATFORM_ORDER, AppState
+from .covers import load_thumbnail, resolve_cover
 from .library import Snapshot
 from .models import SaveEntry, VolumeInfo
 from .ui_theme import (
-    DEFAULT_TILE_GAP,
-    DEFAULT_TILE_WIDTH,
     PLATFORM_COLORS,
     SWITCH,
     TILE_BAR_HEIGHT,
+    TILE_COVER_HEIGHT,
+    TILE_COVER_INSET,
+    TILE_COVER_RADIUS,
+    TILE_GAP,
+    TILE_HEIGHT,
     TILE_RADIUS,
     TILE_RING_GAP,
     TILE_RING_WIDTH,
     TILE_SELECT_SCALE,
+    TILE_WIDTH,
     darken,
     grid_columns,
     mix,
@@ -45,6 +50,10 @@ ON_ACCENT = SWITCH["on_accent"]
 # Selected surfaces are a light-blue tint of the accent so white cards still read.
 SELECTED_ROW = mix(BLUE, CARD, 0.84)
 SELECTED_LIST = mix(BLUE, CARD, 0.86)
+
+# Sentinel so the cover cache can distinguish a cached ``None`` (negative entry)
+# from a cache miss.
+_MISSING = object()
 
 
 def open_in_file_manager(path: Union[Path, str]) -> tuple[bool, str]:
@@ -297,10 +306,11 @@ class SaveTileGrid(tk.Canvas):
     keys, and double-click all drive the same selection model.
     """
 
-    TILE_W = DEFAULT_TILE_WIDTH + 90  # roomier square-ish HOME tiles
-    TILE_H = DEFAULT_TILE_WIDTH + 90
-    GAP = DEFAULT_TILE_GAP
+    TILE_W = TILE_WIDTH  # compact cover tiles, not square HOME tiles
+    TILE_H = TILE_HEIGHT
+    GAP = TILE_GAP
     PAD = 16
+    COVER_CACHE_MAX = 256
 
     def __init__(
         self,
@@ -327,6 +337,11 @@ class SaveTileGrid(tk.Canvas):
         self._hover: Optional[int] = None
         self._cols = 1
         self._laying_out = False
+        # Reference-keeping thumbnail cache: keyed by (path, mtime, w, h) and
+        # holding either a live ``PhotoImage`` or ``None`` (negative cache).
+        # Bounded so a long browsing session cannot grow without limit.
+        self._cover_cache: "dict[Tuple[str, int, int, int], object]" = {}
+        self._cover_refs: List[object] = []
 
         self.bind("<Enter>", self._on_pointer_enter)
         self.bind("<Leave>", self._on_pointer_leave)
@@ -535,6 +550,7 @@ class SaveTileGrid(tk.Canvas):
         try:
             self.delete("all")
             self._boxes = []
+            self._cover_refs = []
             total = len(self._tiles)
             width = self._canvas_width()
             if total == 0:
@@ -561,6 +577,37 @@ class SaveTileGrid(tk.Canvas):
             self.configure(scrollregion=(0, 0, width, content_h))
         finally:
             self._laying_out = False
+
+    def _cover_photo(self, path, width: int, height: int):
+        """Return a reference-kept ``PhotoImage`` for ``path`` (or ``None``).
+
+        Results (including failures) are cached keyed by path + mtime + size so a
+        repaint never re-decodes, and the cache is bounded at
+        ``COVER_CACHE_MAX`` entries. Decode errors / vanished files degrade to
+        ``None`` and the caller paints the pastel fallback instead.
+        """
+        try:
+            stat = Path(path).stat()
+            key = (str(path), stat.st_mtime_ns, int(width), int(height))
+        except (OSError, TypeError, ValueError):
+            return None
+        cached = self._cover_cache.pop(key, _MISSING)
+        if cached is not _MISSING:
+            self._cover_cache[key] = cached  # LRU refresh
+            return cached
+        photo = None
+        image = load_thumbnail(path, width, height, radius=TILE_COVER_RADIUS)
+        if image is not None:
+            try:
+                from PIL import ImageTk
+
+                photo = ImageTk.PhotoImage(image)
+            except Exception:  # noqa: BLE001 - no PhotoImage support means no cover
+                photo = None
+        self._cover_cache[key] = photo
+        while len(self._cover_cache) > self.COVER_CACHE_MAX:
+            self._cover_cache.pop(next(iter(self._cover_cache)))
+        return photo
 
     def _draw_tile(self, index: int, face: dict, x1: float, y1: float, x2: float, y2: float) -> None:
         colors = self.colors
@@ -600,7 +647,37 @@ class SaveTileGrid(tk.Canvas):
 
         accent = face.get("accent", colors["accent"])
         center = (x1 + x2) / 2
-        span = y2 - y1
+
+        # Cover artwork region: a rounded thumbnail when one resolves, otherwise
+        # the pastel face carries a smaller monogram (no big empty square).
+        inset = TILE_COVER_INSET
+        cover_x = x1 + inset
+        cover_y = y1 + inset
+        cover_w = max(1, int((x2 - x1) - 2 * inset))
+        cover_h = min(TILE_COVER_HEIGHT, max(1, int((y2 - y1) - 2 * inset)))
+        photo = None
+        cover_path = face.get("cover")
+        if cover_path:
+            photo = self._cover_photo(cover_path, cover_w, cover_h)
+        if photo is not None:
+            # Keep a hard reference for as long as this layout is displayed.
+            self._cover_refs.append(photo)
+            self.create_image(
+                cover_x,
+                cover_y,
+                image=photo,
+                anchor="nw",
+                tags=("tile-cover", f"cover{index}"),
+            )
+        else:
+            self.create_text(
+                center,
+                cover_y + cover_h / 2,
+                text=face.get("monogram", "?"),
+                fill=accent,
+                font=ui_font(24, "bold"),
+                tags=("tile-mono", f"mono{index}"),
+            )
 
         # Full-width platform colour bar hugging the bottom edge.
         self.create_rectangle(
@@ -613,32 +690,14 @@ class SaveTileGrid(tk.Canvas):
             tags=("tile-bar", f"bar{index}"),
         )
 
-        # Big centred monogram on the pastel face.
+        # Wrapped title directly under the artwork.
         self.create_text(
             center,
-            y1 + span * 0.40,
-            text=face.get("monogram", "?"),
-            fill=accent,
-            font=ui_font(30, "bold"),
-            tags=("tile-mono", f"mono{index}"),
-        )
-        if face.get("starred"):
-            self.create_text(
-                x2 - 22,
-                y1 + 24,
-                text="★",
-                fill=colors["star"],
-                font=ui_font(14, "bold"),
-                tags=("tile-star", f"star{index}"),
-            )
-
-        self.create_text(
-            center,
-            y1 + span * 0.62,
+            cover_y + cover_h + 2,
             text=face.get("title", ""),
             fill=colors["text"],
-            font=ui_font(13, "bold" if selected else "normal"),
-            width=self.TILE_W - 26,
+            font=ui_font(11, "bold" if selected else "normal"),
+            width=max(1, int(x2 - x1) - 12),
             anchor="n",
             justify="center",
             tags=("tile-title", f"title{index}"),
@@ -646,22 +705,25 @@ class SaveTileGrid(tk.Canvas):
         if face.get("subtitle"):
             self.create_text(
                 center,
-                y2 - 58,
+                y2 - TILE_BAR_HEIGHT - 3,
                 text=face["subtitle"],
                 fill=colors["muted"],
-                font=ui_font(11),
-                width=self.TILE_W - 26,
-                anchor="n",
+                font=ui_font(9),
+                width=max(1, int(x2 - x1) - 12),
+                anchor="s",
                 justify="center",
                 tags=("tile-sub", f"sub{index}"),
             )
 
+        # Status pill overlay (top-left corner badge, drawn over the artwork).
         pill = face.get("pill") or {}
         label = pill.get("label", "")
         if label:
-            pill_w = min(self.TILE_W - 30, 18 + 13 * len(label))
-            px1, px2 = center - pill_w / 2, center + pill_w / 2
-            py1, py2 = y2 - 36, y2 - 14
+            pill_w = min(max(1, int(x2 - x1) - 16), 14 + 11 * len(label))
+            px1 = x1 + 8
+            px2 = px1 + pill_w
+            py1 = y1 + 8
+            py2 = py1 + 17
             self.create_polygon(
                 _rounded_points(px1, py1, px2, py2, (py2 - py1) / 2),
                 smooth=True,
@@ -671,12 +733,23 @@ class SaveTileGrid(tk.Canvas):
                 tags=("tile-pill", f"pill{index}"),
             )
             self.create_text(
-                center,
+                (px1 + px2) / 2,
                 (py1 + py2) / 2,
                 text=label,
                 fill=pill.get("fg", colors["muted"]),
-                font=ui_font(11, "bold"),
+                font=ui_font(10, "bold"),
                 tags=("tile-pill-label", f"pilltext{index}"),
+            )
+
+        # Starred overlay on the opposite corner.
+        if face.get("starred"):
+            self.create_text(
+                x2 - 14,
+                y1 + 15,
+                text="★",
+                fill=colors["star"],
+                font=ui_font(13, "bold"),
+                tags=("tile-star", f"star{index}"),
             )
 
 
@@ -1360,7 +1433,9 @@ class VajSaveApp:
         for _group_name, saves in self.state.grouped_saves():
             for save in saves:
                 status = self.state.save_status(save)
-                faces.append(tile_face(save, status, starred=self.state.is_starred(save)))
+                face = tile_face(save, status, starred=self.state.is_starred(save))
+                face["cover"] = resolve_cover(save, self.state.library_root)
+                faces.append(face)
                 self._saves_index.append(save)
                 if previous and previous.path == save.path:
                     restore_index = len(self._saves_index) - 1

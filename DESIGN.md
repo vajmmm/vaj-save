@@ -54,14 +54,14 @@ typography:
     lineHeight: 1.4
   monogram:
     fontFamily: PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif
-    fontSize: 30px
+    fontSize: 24px
     fontWeight: 700
 rounded:
   none: 0px
   sm: 8px
   md: 12px
   lg: 16px
-  tile: 18px
+  tile: 14px
   pill: 11px
 spacing:
   xs: 4px
@@ -80,10 +80,16 @@ components:
     rounded: "{rounded.lg}"
   tile:
     backgroundColor: "{colors.card}"
+    width: 116px
+    height: 124px
+    gap: 14px
     faceTint: 0.86
     textColor: "{colors.text}"
     rounded: "{rounded.tile}"
     barHeight: 4px
+    coverInset: 6px
+    coverHeight: 66px
+    coverRadius: 12px
   tile-hover:
     backgroundColor: "{colors.hover}"
     borderColor: "{colors.line}"
@@ -151,7 +157,7 @@ Nintendo Switch HOME menu meets a dense desktop backup utility.
 
 Design philosophy:
 - **Basic White surfaces**: a light gray page (`#ebebeb`), softer gray panels (`#f2f2f2` / `#e7e7e7`), and pure white inputs carry every piece of content. No dark chrome.
-- **Pastel platform tiles**: saves render as large HOME-menu tiles in a Canvas grid, each tinted with a pastel of its platform colour, a big centred monogram, a full-width platform colour bar, and a status pill — never a dense text-only list.
+- **Pastel platform tiles**: saves render as compact HOME-menu cover tiles in a Canvas grid — each tile shows the game's cover art (embedded console icon, then a user-supplied cover, then a pastel fallback face with a small monogram), a wrapped title, a top-left status pill, an optional `★`, and a full-width platform colour bar. The 116x124 tiles keep the grid dense (12 visible at the default window) instead of a sparse text-only list.
 - **Platform color identity**: the canonical neon accents (PSP cyan, Vita turquoise, Switch Joy-Con red, 3DS gold, NDS violet, GBA green) are kept as bars, pips, and monograms so a light UI can still encode the platform at a glance.
 - **Pinned, predictable actions**: the right-hand action stack is packed to the bottom (`pack(side=BOTTOM)`), so long detail text can never push the primary buttons off-screen.
 
@@ -189,8 +195,9 @@ All values live in `src/vajsave/ui_theme.py` (`SWITCH`, `PLATFORM_COLORS`, and t
 
 Same cross-platform stack as before; only the surfaces changed:
 - macOS `PingFang SC`, Windows `Microsoft YaHei`, Linux `Noto Sans CJK SC`, then `sans-serif`.
-- App title 22pt bold, detail title 16pt bold, tile titles/list labels 13pt, metadata 11–12pt.
-- Tile monograms are **30pt bold, centred** on the pastel face; the selected tile's title is bold while idle titles stay regular. Tile titles wrap inside the tile (`width=TILE_W-26`).
+- App title 22pt bold, detail title 16pt bold, tile titles 11pt, list labels 13pt, metadata 11–12pt.
+- Tile titles are **11pt** and wrap inside the tile (`width=tileWidth-12`); the selected tile's title is bold while idle titles stay regular.
+- Tile monograms (the fallback face when no cover resolves) are **24pt bold, centred** in the cover region — deliberately smaller so the tile is dominated by artwork or the title, not a huge empty square.
 
 ## Layout
 
@@ -200,7 +207,7 @@ The window is composed of four vertical bands: **顶部状态栏** (top status b
 - **1. Top status bar (`#f2f2f2`, 64px)** — app identity on the left (round accent badge + "vaj-save" + subtitle) and the live clock + backup stats on the right. The search entry sits directly beneath it.
 - **2. Three-column body**:
   1. **Left panel (220px fixed, `#f2f2f2`)**: platform filter rows (3px color pip + label + count badge, `hand2` cursor) above the detected **device Listbox** (`tk.Listbox`, white rows, blue selected row).
-  2. **Middle column (flexible, `#ebebeb`)**: the **save tile grid** — a `tk.Canvas` (`SaveTileGrid`) drawing pastel rounded tiles, one per *visible* save.
+  2. **Middle column (flexible, `#ebebeb`)**: the **compact cover tile grid** — a `tk.Canvas` (`SaveTileGrid`) drawing 116x124 rounded tiles, one per *visible* save. At the default `1180x740` window this is **4 columns x 3 rows = 12 visible tiles**; at the `1080x680` minimum it stays at **>= 3 columns**.
   3. **Right panel (340px fixed, `#f2f2f2`)**: scrollable detail canvas (title, metadata, versions Listbox, note entry) with the **action stack pinned to the bottom** (`pack(side=BOTTOM)`).
 - **3. Bottom system bar (`#f2f2f2`)**: quick actions ("刷新", "打开文件夹", "打开本地库", "设置") and the monitoring toggles ("监听插拔", "隐藏已备份"), all rendered as `CanvasButton`s so the 1080px minimum width never wraps or clips them.
 - **4. Status line (`#ebebeb`)**: left-aligned status text and a right-aligned warning label.
@@ -208,6 +215,8 @@ The window is composed of four vertical bands: **顶部状态栏** (top status b
 ## Tile Grid Behavior
 
 The middle column is no longer a `Listbox`; it is a Canvas tile grid. The number of tiles always equals `len(state.visible_saves())`.
+
+**Density**: tiles are `116x124` with a `14px` gap, so the flexible middle column fits **4 columns x 3 full rows = 12 visible tiles** at the default `1180x740` window (was `2x2 = 4` with the old 246px square tiles), and **>= 3 columns** at the `1080x680` minimum. Column count is always derived from the live canvas width via `ui_theme.grid_columns`, never hardcoded.
 
 - **Single click** — selects exactly one tile (clears the rest) and shows its details.
 - **Ctrl/Command + click** — toggles that tile in the multi-selection.
@@ -228,7 +237,8 @@ The device Listbox (`vol_list`) and versions Listbox (`version_list`) remain `tk
 
 ## Shapes
 
-- **Rounded tiles**: save tiles use an 18px corner radius drawn as a smoothed Canvas polygon.
+- **Rounded tiles**: compact cover tiles use a 14px corner radius (`rounded.tile`) drawn as a smoothed Canvas polygon.
+- **Rounded cover art**: thumbnails are decoded to exact-size rounded RGBA images (`rounded.tile`-scaled 12px radius) so artwork never sits on a square white mat.
 - **Rounded pills**: status badges use a fully rounded pill (`r = height/2`).
 - **Rounded buttons**: `CanvasButton` draws an 8px rounded pill (`radius = 9`) with a 1px outline.
 - **Panels**: 16px rounding conceptually; flat frames stay rectangular internally.
@@ -237,10 +247,16 @@ The device Listbox (`vol_list`) and versions Listbox (`version_list`) remain `tk
 ## Components
 
 ### Save Tile
-Pastel rounded card (18px corners) tinted with `mix(platform_colour, white, 0.86)`. Contains a 30pt bold centred monogram in the platform colour, an optional `★` for starred games (top-right, star colour), a wrapped title, an optional subtitle (title id / slot / user), a status pill, and a **full-width 4px platform colour bar** along the bottom edge.
+Compact rounded card (`116x124`, 14px corners). The card face is a pastel tint (`mix(platform_colour, white, 0.86)`), and the upper **cover region** (inset 6px, height 66px) shows, in priority order:
+
+1. the cover returned by `vajsave.covers.resolve_cover` — an embedded console icon (`ICON0.PNG`, `sce_sys/icon0.png`, …) found during the scan, then a user cover at `<library_root>/covers/<platform>/<name>.<ext>`;
+2. otherwise a **24pt bold monogram** in the platform colour on the pastel face.
+
+Below the artwork sits the wrapped 11pt title, an optional 9pt subtitle drawn just above the bottom bar, an optional `★` overlay (top-right, star colour) and the **status pill as a top-left corner badge overlaid on the artwork**. A **full-width 4px platform colour bar** hugs the bottom edge.
 
 - **Hover**: face becomes `hover` (`#e2e2e2`) with a 1px `line` outline.
 - **Selected**: the tile grows 8px overall, a 3px `ring` outline is drawn 6px outside it, and the title turns bold.
+- **Covers**: thumbnails are loaded through `covers.load_thumbnail` (exact `104x66` rounded RGBA, aspect-preserving centre crop) and cached by path + mtime + size in a bounded, reference-keeping, negative-aware cache (max 256). A missing/corrupt file silently falls back to the pastel face.
 
 ### Status Pills
 - **新** — accent text on a light blue tint (`mix(accent, white, 0.86)`).
@@ -270,21 +286,29 @@ White field background, dark text, `#d6d6d6` border, 6px padding.
 ### Do's
 - **DO** pull every colour from `vajsave.ui_theme` (`SWITCH`, `PLATFORM_COLORS`) — no ad-hoc hex literals in widgets.
 - **DO** keep the vertical structure: top status bar → three-column body → bottom system bar → status line.
-- **DO** render saves as pastel rounded Canvas tiles; one tile per visible save.
+- **DO** render saves as compact rounded Canvas cover tiles; one tile per visible save.
+- **DO** show the resolved cover first (embedded icon → user cover → pastel), keep the aspect ratio, and round the thumbnail corners.
+- **DO** keep the status pill and `★` as small overlay badges on the cover, never as full-width bars that eat the artwork.
+- **DO** fall back silently to the pastel face + small monogram when a cover is missing/corrupt.
 - **DO** use `CanvasButton` for every button and toggle so states stay consistent.
 - **DO** pin the right-panel action buttons to the bottom so long detail text cannot clip them.
 - **DO** keep the device and versions lists as `tk.Listbox` and leave their native wheel handling intact.
-- **DO** use the canonical platform colours for pips, bars, and monograms.
+- **DO** use the canonical platform colours for pips, bars, monograms, and cover fallbacks.
 
 ### Don'ts
 - **DON'T** reintroduce the Console Dark surfaces (`#1c1c1e`, `#2c2c2e`, `#3a3a3c`) as UI background/panel/card colours.
 - **DON'T** fall back to `ttk.Button` / `ttk.Checkbutton`; bypassing `CanvasButton` breaks the Basic White chrome.
 - **DON'T** use random saturated colours for a platform — always reference `PLATFORM_COLORS`.
+- **DON'T** stretch a cover out of aspect ratio or let it spill outside its 14px-rounded tile.
+- **DON'T** name user cover files with Windows-illegal characters (`:`, `*`, `?`, …) — use the sanitized title/display name, never a `platform:title:slot` game key.
 - **DON'T** let the tile grid overflow its column; clip or scroll it.
+- **DON'T** hardcode tile sizes or columns — read them from `ui_theme` and derive columns with `grid_columns`.
 - **DON'T** hardcode Windows drive letters (e.g. `D:`) or OS-specific paths — use cross-platform path handling.
 
 ## Implementation Notes
 
-- `src/vajsave/ui_theme.py` — pure tokens + helpers (`mix`, `lighten`, `darken`, `hex_to_rgb`, `rgb_to_hex`, `ring_size`, `grid_columns`, `monogram`, `status_pill`, `tile_face`); display-free and unit tested in `tests/test_ui_theme.py`.
-- `src/vajsave/app_ui.py` — `CanvasButton` (rounded Canvas button/checkbutton), `SaveTileGrid` (Canvas tile grid), and `VajSaveApp` (window wiring).
+- `src/vajsave/ui_theme.py` — pure tokens + helpers (`mix`, `lighten`, `darken`, `hex_to_rgb`, `rgb_to_hex`, `ring_size`, `grid_columns`, `monogram`, `status_pill`, `tile_face`) plus the compact tile metrics (`TILE_WIDTH`/`TILE_HEIGHT`/`TILE_GAP`/`TILE_RADIUS`/cover geometry); display-free and unit tested in `tests/test_ui_theme.py`.
+- `src/vajsave/covers.py` — read-only, exception-safe cover discovery and thumbnailing (`find_embedded_cover`, `user_cover_path`, `resolve_cover`, `load_thumbnail`); never imports tkinter and is unit tested in `tests/test_covers.py`.
+- `src/vajsave/app_ui.py` — `CanvasButton` (rounded Canvas button/checkbutton), `SaveTileGrid` (compact cover tile grid + bounded cover cache), and `VajSaveApp` (window wiring).
+- `src/vajsave/scanner.py` — fills `SaveEntry.cover_path` with an embedded icon during the (bounded, read-only) scan.
 - `scripts/ui_preview.py` — builds the app offscreen and writes `build/ui-preview/home-preview.png` (Pillow) plus `save-grid.eps`/`detail.eps` (converted to PNG when Ghostscript is available; degrades gracefully and still exits 0). The Pillow image is an **illustrative mock**, not a screenshot of the live widgets.

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from vajsave import app_ui
+from vajsave import ui_theme
 from vajsave.app_ui import CanvasButton, SaveTileGrid, build_app
 from vajsave.app_state import AppState
 from vajsave.models import SaveEntry, VolumeInfo
@@ -484,5 +485,145 @@ def test_app_tile_double_click_backs_up_selected_save(tk_root, tmp_path, psp_sfo
         # Double-click runs the primary "备份" action for the clicked save.
         assert state.last_backup is not None
         assert state.last_backup.snapshot is not None
+    finally:
+        _dispose(app, tk_root)
+
+
+# --- compact cover tiles -----------------------------------------------------
+
+
+def _fully_visible_rows(grid: SaveTileGrid) -> int:
+    """Number of tile rows rendered completely inside the viewport."""
+    viewport = grid._viewport_height()
+    rows: dict = {}
+    for (_x1, y1, _x2, y2) in grid._boxes:
+        key = round(y1)
+        rows.setdefault(key, True)
+        if y2 > viewport:
+            rows[key] = False
+    return sum(1 for ok in rows.values() if ok)
+
+
+def test_grid_uses_compact_tile_metrics():
+    assert SaveTileGrid.TILE_W == ui_theme.TILE_WIDTH
+    assert SaveTileGrid.TILE_H == ui_theme.TILE_HEIGHT
+    assert SaveTileGrid.GAP == ui_theme.TILE_GAP
+    assert SaveTileGrid.TILE_W < 246 and SaveTileGrid.TILE_H < 246
+
+
+def _many_saves_volume(tmp_path, psp_sfo_bytes, count: int = 16) -> Path:
+    return _psp_volume(tmp_path, psp_sfo_bytes, [f"ULJM{i:05d}" for i in range(count)])
+
+
+def _app_with_volume(tk_root, tmp_path, psp_sfo_bytes, count=16):
+    vol = _many_saves_volume(tmp_path, psp_sfo_bytes, count)
+    state = AppState(
+        provider=FakeVolumeProvider([VolumeInfo(name="PSP", mount_point=vol)]),
+        library_root=tmp_path / "lib",
+    )
+    state.refresh_volumes()
+    app = build_app(state=state, root=tk_root)
+    state.select_mount(vol)
+    app.refresh_saves_ui()
+    return app
+
+
+def test_default_window_shows_four_columns_and_three_rows(tk_root, tmp_path, psp_sfo_bytes):
+    app = _app_with_volume(tk_root, tmp_path, psp_sfo_bytes)
+    try:
+        _map_root(tk_root)
+        tk_root.geometry("1180x740")
+        tk_root.update()
+        tk_root.update()
+        grid = app.save_list
+        assert grid.size() == 16
+        assert grid.columns() == 4
+        rows = _fully_visible_rows(grid)
+        assert rows >= 3
+        assert grid.columns() * rows >= 12
+    finally:
+        _dispose(app, tk_root)
+        _unmap_root(tk_root)
+
+
+def test_min_window_keeps_at_least_three_columns(tk_root, tmp_path, psp_sfo_bytes):
+    app = _app_with_volume(tk_root, tmp_path, psp_sfo_bytes)
+    try:
+        _map_root(tk_root)
+        tk_root.geometry("1080x680")
+        tk_root.update()
+        tk_root.update()
+        assert app.save_list.columns() >= 3
+    finally:
+        _dispose(app, tk_root)
+        _unmap_root(tk_root)
+
+
+def test_cover_tile_draws_image_and_fallback_draws_monogram(tk_root, tmp_path):
+    from PIL import Image
+
+    cover_path = tmp_path / "cover.png"
+    Image.new("RGBA", (80, 80), (10, 120, 255, 255)).save(cover_path)
+
+    entry = SaveEntry(
+        platform="psp",
+        source_id="psp",
+        display_name="With Cover",
+        path="/tmp/vol/PSP/SAVEDATA/ULJM00001",
+        title_id="ULJM00001",
+    )
+    covered = tile_face(entry, "new")
+    covered["cover"] = cover_path
+    fallback = tile_face(entry, "new")  # no "cover" key -> pastel + monogram
+
+    grid = _grid(tk_root, faces=[covered, fallback])
+    try:
+        grid.update_idletasks()
+        assert grid.find_withtag("tile-cover")
+        assert grid.find_withtag("tile-mono")  # the fallback tile still shows a letter
+    finally:
+        grid.destroy()
+
+
+def test_cover_cache_is_negative_and_bounded(tk_root, tmp_path):
+    grid = _grid(tk_root, faces=[])
+    try:
+        corrupt = tmp_path / "bad.png"
+        corrupt.write_bytes(b"not an image")
+        assert grid._cover_photo(corrupt, 40, 40) is None
+        # A decode failure is cached as a negative entry instead of re-decoding.
+        assert list(grid._cover_cache.values()) == [None]
+        assert len(grid._cover_cache) == 1
+
+        grid.COVER_CACHE_MAX = 3
+        for i in range(5):
+            path = tmp_path / f"c{i}.png"
+            path.write_bytes(b"garbage")
+            grid._cover_photo(path, 10, 10)
+        assert len(grid._cover_cache) <= 3
+    finally:
+        grid.destroy()
+
+
+def test_resolve_cover_priority_flows_into_faces(tk_root, tmp_path, psp_sfo_bytes):
+    from PIL import Image
+
+    vol = _psp_volume(tmp_path, psp_sfo_bytes, ["ULJM05800"])
+    lib = tmp_path / "lib"
+    state = AppState(
+        provider=FakeVolumeProvider([VolumeInfo(name="PSP", mount_point=vol)]),
+        library_root=lib,
+    )
+    state.refresh_volumes()
+    state.select_mount(vol)
+    # Drop a user cover for the scanned save.
+    cover_dir = lib / "covers" / "psp"
+    cover_dir.mkdir(parents=True)
+    Image.new("RGB", (32, 32), (0, 200, 0)).save(cover_dir / "ULJM05800.png")
+
+    app = build_app(state=state, root=tk_root)
+    try:
+        app.refresh_saves_ui()
+        assert app.save_list._tiles[0].get("cover") == cover_dir / "ULJM05800.png"
     finally:
         _dispose(app, tk_root)

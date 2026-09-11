@@ -739,3 +739,42 @@ def test_guess_platform_is_shallow_only(tmp_path: Path):
     # A PSP layout buried deeper than the shallow fingerprint must not be found.
     (tmp_path / "a" / "b" / "PSP" / "SAVEDATA").mkdir(parents=True)
     assert guess_platform(tmp_path) is None
+
+
+# --- embedded cover discovery (filled during scan) --------------------------
+
+
+def test_scan_fills_psp_embedded_cover(tmp_path: Path, psp_sfo_bytes: bytes):
+    save_dir = tmp_path / "PSP" / "SAVEDATA" / "ULJM05800"
+    save_dir.mkdir(parents=True)
+    (save_dir / "PARAM.SFO").write_bytes(psp_sfo_bytes)
+    icon = save_dir / "ICON0.PNG"
+    icon.write_bytes(b"not-a-real-png-but-exists")
+
+    result = scan(tmp_path)
+    entry = result.saves[0]
+    assert entry.cover_path == str(icon)
+    assert entry.to_dict()["cover_path"] == str(icon)
+
+
+def test_scan_fills_vita_sce_sys_cover(tmp_path: Path, vita_sfo_bytes: bytes):
+    sce_sys = tmp_path / "user" / "00" / "savedata" / "PCSE00120" / "sce_sys"
+    sce_sys.mkdir(parents=True)
+    (sce_sys / "param.sfo").write_bytes(vita_sfo_bytes)
+    icon = sce_sys / "icon0.png"
+    icon.write_bytes(b"icon")
+
+    result = scan(tmp_path)
+    entry = result.saves[0]
+    assert entry.cover_path == str(icon)
+
+
+def test_scan_leaves_cover_unset_without_icon(tmp_path: Path, psp_sfo_bytes: bytes):
+    save_dir = tmp_path / "PSP" / "SAVEDATA" / "ULJM05800"
+    save_dir.mkdir(parents=True)
+    (save_dir / "PARAM.SFO").write_bytes(psp_sfo_bytes)
+
+    result = scan(tmp_path)
+    entry = result.saves[0]
+    assert entry.cover_path is None
+    assert "cover_path" not in entry.to_dict()

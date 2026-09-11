@@ -218,3 +218,26 @@ def test_tile_face_exposes_pastel_face_color():
     # A pastel tint of the platform colour, never a plain white card.
     assert pastel != ui_theme.SWITCH["card"]
     assert pastel == ui_theme.mix(ui_theme.PLATFORM_COLORS["switch"], ui_theme.SWITCH["card"], 0.86)
+
+
+# --- compact cover-tile metrics ---------------------------------------------
+
+
+def test_compact_tile_metrics_are_defined():
+    assert ui_theme.TILE_WIDTH == 116
+    assert ui_theme.TILE_HEIGHT == 124
+    assert ui_theme.TILE_GAP == ui_theme.DEFAULT_TILE_GAP
+    # DESIGN.md rounded.tile is 14px with a 4px platform bar.
+    assert ui_theme.TILE_RADIUS == 14
+    assert ui_theme.TILE_BAR_HEIGHT == 4
+    assert ui_theme.TILE_COVER_INSET > 0
+    assert 0 < ui_theme.TILE_COVER_HEIGHT < ui_theme.TILE_HEIGHT
+    assert 0 < ui_theme.TILE_COVER_RADIUS <= ui_theme.TILE_RADIUS
+
+
+def test_compact_metrics_give_four_columns_at_default_and_three_at_min():
+    # Middle-column canvas widths measured at the default and minimum window.
+    default = ui_theme.grid_columns(530, ui_theme.TILE_WIDTH, ui_theme.TILE_GAP)
+    minimum = ui_theme.grid_columns(430, ui_theme.TILE_WIDTH, ui_theme.TILE_GAP)
+    assert default == 4
+    assert minimum == 3

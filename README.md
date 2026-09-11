@@ -35,6 +35,35 @@ U 盘，以及以 USB 大容量存储（UMS）方式直连的掌机（Hekate UMS
 配置读写失败会安全回退到默认路径（`~/Documents/vaj-save/`），不影响启动。
 
 
+## 封面
+
+中间「游戏」列的每个存档瓦片会优先显示真实封面图，按下面的优先级取图：
+
+1. **存档目录内的内嵌图标**（扫描设备时自动发现，只读、不递归全盘）：
+   - PSP `SAVEDATA/<游戏>/ICON0.PNG`
+   - Vita `.../savedata/<游戏>/sce_sys/icon0.png`
+   - 其余平台识别 `icon0.png` / `icon.png` / `cover.png` / `banner.png` / `boxart.png`（含 `sce_sys/`、`media/` 等常见子目录，大小写不敏感）
+   - 裸存档文件（GBA/NDS 的 `.sav`）会找同名的 `<游戏名>.png` / `.jpg`
+2. **用户投放的封面**：放到本地备份库的
+   `<备份库>/covers/<机种>/<名称>.<扩展名>`
+   - `<机种>` 取 `psp` / `vita` / `switch` / `3ds` / `nds` / `gba`
+   - `<名称>` 取该存档的 `title_id`（没有时用游戏名），文件名中的 Windows 非法字符（`:` `*` `?` 等）会被替换成 `_`，所以**不会**用含 `:` 的 game key 当文件名
+   - 支持的扩展名：`png` `jpg` `jpeg` `webp` `bmp` `gif`，同名时任选一种即可
+3. 都没有时，瓦片显示 pastel 面色 + 缩小首字母（不会出现大面积留白）。
+
+示例（备份库为默认的 `~/Documents/vaj-save/`）：
+
+```
+# PSP 存档 ULJM05800 的封面
+~/Documents/vaj-save/covers/psp/ULJM05800.png
+
+# Vita 游戏 Persona 4 Golden（无 title_id 时用游戏名）
+~/Documents/vaj-save/covers/vita/Persona 4 Golden.jpg
+```
+
+封面缩略图会保持宽高比、按瓦片尺寸裁剪为圆角图；文件缺失或损坏时静默回退到 pastel 面色，UI 不会报错。
+
+
 ## macOS App（双击打开）
 
 打包成窗口程序，不需要自己跑 Python 命令：
