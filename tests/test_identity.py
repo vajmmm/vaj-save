@@ -380,11 +380,57 @@ def test_settings_dialog_apply_rom_dirs(tmp_path: Path):
         def update_status(self, text: str) -> None:
             self.status = text
 
+        def refresh_saves_ui(self) -> None:
+            return
+
     stub = Stub()
     VajSaveApp._apply_rom_dirs(stub, tmp_path / "gba", None)
     assert state.gba_rom_dir == tmp_path / "gba"
     assert state.nds_rom_dir is None
     assert stub.status == "ROM 目录已更新"
+
+
+def test_save_display_unresolved_gba_without_rom(tmp_path: Path):
+    from vajsave.app_ui import save_display
+
+    save = tmp_path / "SAVEGAME" / "Apotris.sav"
+    save.parent.mkdir()
+    save.write_bytes(b"x")
+    state = AppState(library_root=tmp_path / "lib")
+    entry = make_entry(name="Apotris", path=str(save))
+    view = save_display(state, entry)
+    assert view["title"] == "Apotris"
+    assert view["title_id"] == "—"
+    assert view["identity_status"] == "未识别"
+    assert "ROM" in view["hint"]
+
+
+def test_save_display_resolved_gba_fills_title_id(tmp_path: Path):
+    from vajsave.app_ui import save_display
+
+    rom_dir = tmp_path / "roms"
+    rom_dir.mkdir()
+    (rom_dir / "Apotris.gba").write_bytes(make_gba_rom(title="APOTRIS", code="APTR"))
+    save = tmp_path / "SAVEGAME" / "Apotris.sav"
+    save.parent.mkdir()
+    save.write_bytes(b"x")
+    state = AppState(library_root=tmp_path / "lib")
+    state.set_rom_dirs(rom_dir, None)
+    entry = make_entry(name="Apotris", path=str(save))
+    view = save_display(state, entry)
+    assert view["identity_status"] == "已识别"
+    assert view["title_id"] == "APTR"
+    assert "APOTRIS" in view["subtitle"]
+    assert view["title"] == "Apotris"
+
+
+def test_truncate_ui_text_caps_long_names():
+    from vajsave.app_ui import _truncate_ui_text
+
+    long_name = "火焰纹章-圣魔之光石[狼组+火花天龙剑+李采叶叶](汉化+中文语音2.0)(简)(JP)(136Mb)"
+    clipped = _truncate_ui_text(long_name, 28)
+    assert clipped.endswith("…")
+    assert len(clipped) == 28
 
 
 def test_package_exports_identity_surface():

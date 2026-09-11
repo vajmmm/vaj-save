@@ -8,6 +8,12 @@ from typing import Dict, List, Optional, Tuple, Union
 
 from .app_state import PLATFORM_LABELS, PLATFORM_ORDER, AppState
 from .covers import load_thumbnail, resolve_cover
+from .identity import (
+    STATUS_AMBIGUOUS,
+    STATUS_PARTIAL,
+    STATUS_RESOLVED,
+    STATUS_UNRESOLVED,
+)
 from .library import Snapshot
 from .models import SaveEntry, VolumeInfo
 from .ui_theme import (
@@ -92,6 +98,50 @@ def _truncate_ui_text(value: object, max_chars: int) -> str:
     if max_chars <= 1:
         return "…"
     return text[: max_chars - 1] + "…"
+
+
+_IDENTITY_STATUS_LABELS = {
+    STATUS_RESOLVED: "已识别",
+    STATUS_PARTIAL: "部分识别",
+    STATUS_AMBIGUOUS: "多个候选",
+    STATUS_UNRESOLVED: "未识别",
+}
+
+# Inspector title: ~two lines at 15pt in a 240px wrap. Longer names must not
+# grow the right column and shove the status bar off-screen.
+_DETAIL_NAME_MAX_CHARS = 28
+
+
+def save_display(state: AppState, save: SaveEntry) -> Dict[str, str]:
+    """List/inspector text for one save, including GameIdentity when resolved."""
+    filename = save.display_name or Path(save.path).name
+    result = state.resolve_save_identity(save)
+    identity = result.identity
+    title_id = save.title_id or ""
+    header_title = ""
+    if identity is not None:
+        title_id = identity.title_id or identity.game_code or title_id
+        if identity.title and identity.title != filename:
+            header_title = identity.title
+    subtitle_bits = [bit for bit in (header_title, save.slot, save.user) if bit]
+    if result.status in (STATUS_RESOLVED, STATUS_PARTIAL) and identity is not None:
+        if identity.game_code and identity.game_code not in subtitle_bits:
+            subtitle_bits.append(identity.game_code)
+    identity_status = _IDENTITY_STATUS_LABELS.get(result.status, "未识别")
+    hint = ""
+    if result.status == STATUS_UNRESOLVED and save.platform in ("gba", "nds"):
+        hint = "未匹配到 ROM，可在设置中指定 ROM 目录"
+    elif result.status == STATUS_AMBIGUOUS:
+        hint = "匹配到多个 ROM，未自动选择"
+    elif result.reason and result.status == STATUS_PARTIAL:
+        hint = result.reason
+    return {
+        "title": filename,
+        "subtitle": " · ".join(subtitle_bits),
+        "title_id": title_id or "—",
+        "identity_status": identity_status,
+        "hint": hint,
+    }
 
 
 def _rounded_points(x1: float, y1: float, x2: float, y2: float, r: float) -> List[float]:
@@ -430,6 +480,27 @@ class SaveList(tk.Canvas):
         self._active = None
         self._hover = None
         self._layout()
+
+    def _fit_text(self, value: object, font_spec, max_px: int) -> str:
+        """Single-line ellipsis using pixel width so CJK names cannot wrap."""
+        text = str(value or "")
+        if max_px <= 8:
+            return "…" if text else ""
+        font = tkfont.Font(font=font_spec, root=self)
+        if font.measure(text) <= max_px:
+            return text
+        ellipsis = "…"
+        lo, hi = 0, len(text)
+        best = ellipsis
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            candidate = text[:mid] + ellipsis
+            if font.measure(candidate) <= max_px:
+                best = candidate
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return best
 
     def size(self) -> int:
         return len(self._rows)
@@ -795,16 +866,17 @@ class SaveList(tk.Canvas):
         text_right = cursor - 16 if (platform_text or title_id_text or date_text) else status_left - 16
         wrap = max(1, int(text_right - text_x))
         subtitle = row.get("subtitle")
-        title_text = _truncate_ui_text(row.get("title", ""), max(8, wrap // 12))
-        subtitle_text = _truncate_ui_text(subtitle, max(8, wrap // 13))
+        title_font = ui_font(13)
+        sub_font = ui_font(11)
+        title_text = self._fit_text(row.get("title", ""), title_font, wrap)
+        subtitle_text = self._fit_text(subtitle, sub_font, wrap)
         if subtitle:
             self.create_text(
                 text_x,
                 y1 + self.ROW_H * 0.34,
                 text=title_text,
                 fill=colors["ink"],
-                font=ui_font(13),
-                width=wrap,
+                font=title_font,
                 anchor="w",
                 tags=("row-title", f"title{index}", f"row{index}"),
             )
@@ -813,8 +885,7 @@ class SaveList(tk.Canvas):
                 y1 + self.ROW_H * 0.72,
                 text=subtitle_text,
                 fill=colors["muted"],
-                font=ui_font(11),
-                width=wrap,
+                font=sub_font,
                 anchor="w",
                 tags=("row-sub", f"sub{index}", f"row{index}"),
             )
@@ -824,8 +895,7 @@ class SaveList(tk.Canvas):
                 y1 + self.ROW_H / 2,
                 text=title_text,
                 fill=colors["ink"],
-                font=ui_font(13),
-                width=wrap,
+                font=title_font,
                 anchor="w",
                 tags=("row-title", f"title{index}", f"row{index}"),
             )
@@ -1178,9 +1248,29 @@ class VajSaveApp:
         self.detail_name = tk.StringVar(value="未选择游戏")
         name_block = tk.Frame(preview, bg=PANEL_BG)
         name_block.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        tk.Label(name_block, textvariable=self.detail_name, bg=PANEL_BG, fg=INK, font=ui_font(15, "bold"), wraplength=240, justify="left", anchor="w").pack(fill=tk.X, pady=(4, 5))
+        tk.Label(
+            name_block,
+            textvariable=self.detail_name,
+            bg=PANEL_BG,
+            fg=INK,
+            font=ui_font(15, "bold"),
+            wraplength=240,
+            justify="left",
+            anchor="nw",
+            height=2,
+        ).pack(fill=tk.X, pady=(4, 5))
         self.detail_subtitle_var = tk.StringVar(value="")
-        tk.Label(name_block, textvariable=self.detail_subtitle_var, bg=PANEL_BG, fg=MUTED_STRONG, font=ui_font(10), anchor="w", wraplength=240, justify="left").pack(fill=tk.X)
+        tk.Label(
+            name_block,
+            textvariable=self.detail_subtitle_var,
+            bg=PANEL_BG,
+            fg=MUTED_STRONG,
+            font=ui_font(10),
+            anchor="w",
+            wraplength=240,
+            justify="left",
+            height=1,
+        ).pack(fill=tk.X)
 
         self.detail_vars: Dict[str, tk.StringVar] = {}
         fields = tk.Frame(detail, bg=PANEL_BG)
@@ -1188,8 +1278,8 @@ class VajSaveApp:
         for column in (1, 3):
             fields.columnconfigure(column, weight=1)
         pairs = (
-            (("平台", "platform"), ("Title ID", "title_id")),
-            (("版本", "version"), ("存档大小", "size")),
+            (("平台", "platform"), ("识别", "identity")),
+            (("Title ID", "title_id"), ("版本", "version")),
             (("最近备份", "last_backup"), ("状态", "status")),
         )
         for row_index, pair in enumerate(pairs):
@@ -1208,9 +1298,17 @@ class VajSaveApp:
             row=3, column=0, sticky="nw", pady=(5, 2), padx=(0, 7)
         )
         self.detail_vars["path"] = tk.StringVar(value="—")
-        tk.Label(fields, textvariable=self.detail_vars["path"], bg=PANEL_BG, fg=INK, font=ui_font(10), wraplength=300, justify="left", anchor="w").grid(
-            row=3, column=1, columnspan=3, sticky="ew", pady=(5, 2)
-        )
+        tk.Label(
+            fields,
+            textvariable=self.detail_vars["path"],
+            bg=PANEL_BG,
+            fg=INK,
+            font=ui_font(10),
+            wraplength=300,
+            justify="left",
+            anchor="nw",
+            height=2,
+        ).grid(row=3, column=1, columnspan=3, sticky="ew", pady=(5, 2))
         for key in ("status", "source_mtime"):
             self.detail_vars.setdefault(key, tk.StringVar(value="—"))
         self.detail_hint_var = tk.StringVar(value="")
@@ -1478,21 +1576,21 @@ class VajSaveApp:
         save = self._saves_index[index]
         self._selected_save = save
         status = self.state.save_status(save)
-        self.detail_name.set(save.display_name or save.path)
-        self.detail_subtitle_var.set(" · ".join(filter(None, (save.title_id, save.slot, save.user))))
+        view = save_display(self.state, save)
+        self.detail_name.set(_truncate_ui_text(view["title"], _DETAIL_NAME_MAX_CHARS))
+        self.detail_subtitle_var.set(_truncate_ui_text(view["subtitle"], 40))
         self._render_detail_cover(save)
         self.detail_vars["platform"].set(PLATFORM_LABELS.get(save.platform, save.platform))
-        self.detail_vars["title_id"].set(save.title_id or "—")
+        self.detail_vars["identity"].set(view["identity_status"])
+        self.detail_vars["title_id"].set(view["title_id"])
         snapshots = self.state.versions_for_entry(save)
         self.detail_vars["version"].set(f"{len(snapshots)} 个版本" if snapshots else "尚未备份")
-        self.detail_vars["size"].set("—")
         self.detail_vars["status"].set(status_label(status))
         self.detail_vars["source_mtime"].set(_format_ui_timestamp(status.source_mtime))
         self.detail_vars["last_backup"].set(_format_ui_timestamp(status.last_backup_at))
         self.detail_vars["path"].set(save.path)
-        self.detail_hint_var.set(
-            "卡上时间早于上次备份（可能是回档或拷贝）" if status.mtime_stale else ""
-        )
+        stale = "卡上时间早于上次备份（可能是回档或拷贝）" if status.mtime_stale else ""
+        self.detail_hint_var.set(stale or view["hint"])
         self.note_var.set(self.state.game_note(save))
         self.refresh_versions_ui()
 
@@ -1582,6 +1680,7 @@ class VajSaveApp:
     def _apply_rom_dirs(self, gba_rom_dir, nds_rom_dir) -> None:
         """Apply the optional cartridge ROM directories chosen in the settings dialog."""
         self.state.set_rom_dirs(gba_rom_dir, nds_rom_dir)
+        self.refresh_saves_ui()
         self.update_status("ROM 目录已更新")
 
     def on_settings_clicked(self) -> None:
@@ -1674,9 +1773,12 @@ class VajSaveApp:
             for save in saves:
                 status = self.state.save_status(save)
                 row = save_row(save, status, starred=self.state.is_starred(save))
+                view = save_display(self.state, save)
+                row["title"] = view["title"]
+                row["subtitle"] = view["subtitle"]
                 row["cover"] = resolve_cover(save, self.state.library_root)
                 row["platform_label"] = PLATFORM_LABELS.get(save.platform, save.platform)
-                row["title_id"] = save.title_id or "—"
+                row["title_id"] = view["title_id"]
                 row["last_backup"] = _format_ui_timestamp(status.last_backup_at)
                 row["version_count"] = len(self.state.versions_for_entry(save))
                 rows.append(row)

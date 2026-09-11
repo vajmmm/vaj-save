@@ -466,7 +466,7 @@ def test_detail_is_a_definition_list_and_versions_take_remaining_height(tk_root,
     state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
     app = build_app(state=state, root=tk_root)
     try:
-        for key in ("platform", "status", "source_mtime", "last_backup", "path"):
+        for key in ("platform", "identity", "status", "source_mtime", "last_backup", "path"):
             assert key in app.detail_vars
         info = app.versions_frame.grid_info()
         assert set(info.get("sticky") or "") == set("nsew")
