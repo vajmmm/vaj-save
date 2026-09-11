@@ -146,7 +146,12 @@ class GameIdentityResolver:
                 raise ValueError(f"无法读取 ROM: {rom_path}")
         if identity is None:
             raise ValueError("bind 需要 identity 或 rom_path")
-        return self.bindings.set(entry, identity, manual=True)
+        bound = self.bindings.set(entry, identity, manual=True)
+        # A manual ``rom_path`` binding hashes the ROM through the identity cache;
+        # persist that entry immediately so the work is not repeated (or lost) if
+        # the app closes before the next resolution pass flushes the cache.
+        self.flush_cache()
+        return bound
 
 
 __all__ = ["GameIdentityResolver", "ResolverContext"]

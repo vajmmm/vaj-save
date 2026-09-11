@@ -9,6 +9,8 @@ unchanged binding is never rewritten.
 
 from pathlib import Path
 
+import json
+
 import vajsave.identity.roms as roms_module
 from vajsave.identity import BINDINGS_NAME, GameIdentityResolver
 from vajsave.identity.bindings import BindingStore
@@ -410,3 +412,38 @@ def test_rom_cache_save_failure_returns_false(tmp_path: Path):
     rom.write_bytes(make_gba_rom())
     cache.put(rom, "gba", GameIdentity(identity_key="gba:sha1:aa", platform="gba", title="K"))
     assert cache.get(rom, "gba").identity_key == "gba:sha1:aa"
+
+
+# --- manual ROM binding persistence -----------------------------------------
+
+
+def test_manual_rom_binding_flushes_rom_cache_immediately(tmp_path: Path):
+    """Binding a ROM by path must persist the freshly hashed identity at once.
+
+    ``build_identity_from_rom`` only marks the cache dirty; without an explicit
+    flush in ``bind`` the entry would sit in memory and be lost if the app closed
+    before the next resolution pass.
+    """
+    resolver = GameIdentityResolver(cache_path=tmp_path / "rom_cache.json")
+    rom = tmp_path / "Kirby.gba"
+    rom.write_bytes(make_gba_rom())
+
+    resolver.bind(entry("gba", "Kirby", tmp_path / "SAVER" / "Kirby.sav"), rom_path=rom)
+
+    cache_path = tmp_path / "rom_cache.json"
+    assert cache_path.is_file()
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert any(
+        record.get("platform") == "gba" for record in payload["entries"].values()
+    )
+
+
+def test_manual_binding_without_rom_path_does_not_create_cache(tmp_path: Path):
+    from vajsave.identity import SOURCE_MANUAL
+    from vajsave.identity.models import GameIdentity
+
+    resolver = GameIdentityResolver(cache_path=tmp_path / "rom_cache.json")
+    identity = GameIdentity(identity_key="gba:sha1:aa", platform="gba", title="Kirby")
+    bound = resolver.bind(entry("gba", "Kirby", tmp_path / "SAVER" / "Kirby.sav"), identity=identity)
+    assert bound.source == SOURCE_MANUAL
+    assert not (tmp_path / "rom_cache.json").exists()

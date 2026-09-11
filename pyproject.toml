@@ -38,6 +38,9 @@ vajsave-app = "vajsave.app:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"vajsave.data" = ["libretro/*"]
+
 [tool.pytest.ini_options]
 minversion = "7.0"
 addopts = "-ra --cov=vajsave --cov-report=term-missing --cov-branch"

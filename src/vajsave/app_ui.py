@@ -7,7 +7,8 @@ from tkinter import filedialog, ttk
 from typing import Dict, List, Optional, Tuple, Union
 
 from .app_state import PLATFORM_LABELS, PLATFORM_ORDER, AppState
-from .covers import load_thumbnail, resolve_cover
+from .artwork import PLACEHOLDER, ArtworkLoader
+from .covers import load_thumbnail
 from .identity import (
     STATUS_AMBIGUOUS,
     STATUS_PARTIAL,
@@ -61,6 +62,9 @@ SELECTED_LIST = SWITCH["selected"]
 # Sentinel so the cover cache can distinguish a cached ``None`` (negative entry)
 # from a cache miss.
 _MISSING = object()
+
+# Sentinel for "compute the cover path from the entry" in ``_render_detail_cover``.
+_AUTO = object()
 
 
 def open_in_file_manager(path: Union[Path, str]) -> tuple[bool, str]:
@@ -118,11 +122,16 @@ def save_display(
     state: AppState,
     save: SaveEntry,
     result: Optional[GameIdentityResult] = None,
+    *,
+    metadata=None,
 ) -> Dict[str, str]:
     """List/inspector text for one save, including GameIdentity when resolved.
 
     ``result`` lets a caller that already resolved the save reuse that result
-    instead of matching/hashing the ROMs a second time.
+    instead of matching/hashing the ROMs a second time.  ``metadata`` (a
+    :class:`~vajsave.metadata.GameMetadata`) promotes the canonical index title
+    to the display title once it is known; without it the scanned file name is
+    shown so the UI never has to block on the index.
     """
     filename = save.display_name or Path(save.path).name
     if result is None:
@@ -139,6 +148,7 @@ def save_display(
         if identity.game_code and identity.game_code not in subtitle_bits:
             subtitle_bits.append(identity.game_code)
     identity_status = _IDENTITY_STATUS_LABELS.get(result.status, "未识别")
+    canonical_title = getattr(metadata, "canonical_title", "") if metadata else ""
     hint = ""
     if result.status == STATUS_UNRESOLVED and save.platform in ("gba", "nds"):
         hint = "未匹配到 ROM，可在设置中指定 ROM 目录"
@@ -147,7 +157,7 @@ def save_display(
     elif result.reason and result.status == STATUS_PARTIAL:
         hint = result.reason
     return {
-        "title": filename,
+        "title": canonical_title or filename,
         "subtitle": " · ".join(subtitle_bits),
         "title_id": title_id or "—",
         "identity_status": identity_status,
@@ -995,9 +1005,20 @@ class SaveList(tk.Canvas):
 
 
 class VajSaveApp:
-    def __init__(self, root: Optional[tk.Tk] = None, state: Optional[AppState] = None) -> None:
+    def __init__(
+        self,
+        root: Optional[tk.Tk] = None,
+        state: Optional[AppState] = None,
+        loader: Optional[ArtworkLoader] = None,
+    ) -> None:
         self.root = root or tk.Tk()
         self.state = state or AppState()
+        # Off-thread metadata/cover work. In the app ``root.after(0, ...)`` is the
+        # only way results are marshalled back onto the Tk main thread; tests can
+        # inject a synchronous loader for deterministic assertions.
+        self._artwork_loader = loader or ArtworkLoader(
+            lambda fn: self.root.after(0, fn), max_workers=2
+        )
         self._selected_save: Optional[SaveEntry] = None
         self._selected_snapshot: Optional[Snapshot] = None
         self._saves_index: List[SaveEntry] = []
@@ -1005,6 +1026,11 @@ class VajSaveApp:
         self._versions_index: List[Snapshot] = []
         self._platform_rows: Dict[str, dict] = {}
         self._identity_candidates: List[GameIdentity] = []
+        # Enrichment generations: a background result is only applied when its
+        # token still matches, so a slow download for a previously selected save
+        # can never overwrite the cover/title of the current one.
+        self._enrich_token = 0
+        self._detail_cover_path: Optional[str] = None
         self._watch_var = tk.BooleanVar(value=True)
         self._hide_unchanged_var = tk.BooleanVar(value=True)
         self._poll_interval_ms = 200
@@ -1592,6 +1618,10 @@ class VajSaveApp:
         self.refresh_saves_ui()
 
     def _clear_detail(self) -> None:
+        # Invalidate any in-flight enrichment so its result cannot repaint a
+        # cover/title for a save that is no longer selected.
+        self._enrich_token += 1
+        self._detail_cover_path = None
         self.detail_name.set("未选择游戏")
         self.detail_subtitle_var.set("")
         for var in self.detail_vars.values():
@@ -1601,14 +1631,24 @@ class VajSaveApp:
         self._hide_identity_section()
         self._render_detail_cover(None)
 
-    def _render_detail_cover(self, save: Optional[SaveEntry]) -> None:
-        """绘制当前存档封面，且不让详情面板依赖列表缓存。"""
+    def _render_detail_cover(
+        self, save: Optional[SaveEntry], *, cover_path=_AUTO
+    ) -> None:
+        """绘制当前存档封面，且不让详情面板依赖列表缓存。
+
+        ``cover_path=_AUTO`` resolves the network-free best cover (user local >
+        downloaded cache > embedded) synchronously; a background enrichment can
+        later pass an explicit path to upgrade to a freshly downloaded image.
+        """
         canvas = getattr(self, "detail_cover_canvas", None)
         if canvas is None:
             return
         canvas.delete("all")
         self.detail_cover_ref = None
-        cover_path = resolve_cover(save, self.state.library_root) if save else None
+        if cover_path is _AUTO:
+            resolution = self.state.resolve_save_cover(save) if save else PLACEHOLDER
+            cover_path = resolution.path
+        self._detail_cover_path = str(cover_path) if cover_path else None
         if cover_path:
             image = load_thumbnail(cover_path, 108, 144, radius=8)
             if image is not None:
@@ -1641,7 +1681,10 @@ class VajSaveApp:
         self._selected_save = save
         status = self.state.save_status(save)
         result = self.state.resolve_save_identity(save)
-        view = save_display(self.state, save, result=result)
+        # Cache-only metadata keeps the first paint instant; a background pass
+        # fills in the canonical title (and cover) once the index answers.
+        metadata = self.state.cached_save_metadata(result.identity)
+        view = save_display(self.state, save, result=result, metadata=metadata)
         self.detail_name.set(_truncate_ui_text(view["title"], _DETAIL_NAME_MAX_CHARS))
         self.detail_subtitle_var.set(_truncate_ui_text(view["subtitle"], 40))
         self._render_detail_cover(save)
@@ -1659,6 +1702,52 @@ class VajSaveApp:
         self._update_identity_section(save, result)
         self.note_var.set(self.state.game_note(save))
         self.refresh_versions_ui()
+        self._request_enrichment(save, result)
+
+    # -- background metadata / cover enrichment -----------------------------
+
+    def _request_enrichment(
+        self, save: SaveEntry, result: Optional[GameIdentityResult]
+    ) -> None:
+        """Resolve metadata + cover for ``save`` off the UI thread.
+
+        The generation token makes a late result a no-op once the selection has
+        moved on, and the loader coalesces repeat requests for the same path so
+        one save never triggers duplicate work or duplicate repaints.
+        """
+        self._enrich_token += 1
+        token = self._enrich_token
+        if result is None or result.identity is None:
+            return
+        identity = result.identity
+
+        def task():
+            metadata = self.state.resolve_save_metadata(save, identity)
+            cover = self.state.ensure_save_cover(save, result, metadata)
+            return metadata, cover
+
+        def callback(payload) -> None:
+            if token != self._enrich_token:
+                return  # stale: the selection changed while we were working
+            self._apply_enrichment(save, payload)
+
+        try:
+            self._artwork_loader.submit(save.path, task, callback)
+        except Exception:  # noqa: BLE001 - enrichment is strictly best-effort
+            pass
+
+    def _apply_enrichment(self, save: SaveEntry, payload) -> None:
+        """Apply a finished background result, if it still belongs to the view."""
+        if not payload or save is not self._selected_save:
+            return
+        metadata, cover = payload
+        if metadata is not None and getattr(metadata, "canonical_title", ""):
+            self.detail_name.set(
+                _truncate_ui_text(metadata.canonical_title, _DETAIL_NAME_MAX_CHARS)
+            )
+        path = getattr(cover, "path", None)
+        if path and not getattr(cover, "is_placeholder", False) and path != self._detail_cover_path:
+            self._render_detail_cover(save, cover_path=path)
 
     def on_row_activated(self, index: int) -> None:
         """Double-clicking a row runs the primary backup action."""
@@ -1848,6 +1937,12 @@ class VajSaveApp:
         self.refresh_saves_ui()
         self.update_status("ROM 目录已更新")
 
+    def _apply_libretro_dir(self, libretro_dir) -> None:
+        """Apply the optional libretro metadata directory chosen in the settings dialog."""
+        self.state.set_libretro_dir(libretro_dir)
+        self.refresh_saves_ui()
+        self.update_status("元数据目录已更新")
+
     def on_settings_clicked(self) -> None:
         dialog = tk.Toplevel(self.root)
         dialog.title("设置")
@@ -1878,6 +1973,11 @@ class VajSaveApp:
         path_var = add_dir_row("本地备份库路径", str(self.state.library_root), "选择备份库目录")
         gba_var = add_dir_row("GBA ROM 目录（可选）", str(self.state.gba_rom_dir or ""), "选择 GBA ROM 目录")
         nds_var = add_dir_row("NDS ROM 目录（可选）", str(self.state.nds_rom_dir or ""), "选择 NDS ROM 目录")
+        meta_var = add_dir_row(
+            "Libretro 元数据目录（可选）",
+            str(self.state.libretro_dir or ""),
+            "选择包含 libretro/No-Intro .dat 的目录",
+        )
 
         def save() -> None:
             chosen = path_var.get().strip()
@@ -1885,9 +1985,11 @@ class VajSaveApp:
                 return
             gba = gba_var.get().strip()
             nds = nds_var.get().strip()
+            meta = meta_var.get().strip()
             dialog.destroy()
             self._apply_library_root(chosen)
             self._apply_rom_dirs(gba or None, nds or None)
+            self._apply_libretro_dir(meta or None)
 
         def cancel() -> None:
             dialog.destroy()
@@ -1944,10 +2046,13 @@ class VajSaveApp:
             for save in saves:
                 status = self.state.save_status(save)
                 row = save_row(save, status, starred=self.state.is_starred(save))
-                view = save_display(self.state, save, result=result_by_path.get(save.path))
+                identity = result_by_path.get(save.path)
+                identity_obj = identity.identity if identity is not None else None
+                metadata = self.state.cached_save_metadata(identity_obj)
+                view = save_display(self.state, save, result=identity, metadata=metadata)
                 row["title"] = view["title"]
                 row["subtitle"] = view["subtitle"]
-                row["cover"] = resolve_cover(save, self.state.library_root)
+                row["cover"] = self.state.resolve_save_cover(save, result=identity).path
                 row["platform_label"] = PLATFORM_LABELS.get(save.platform, save.platform)
                 row["title_id"] = view["title_id"]
                 row["last_backup"] = _format_ui_timestamp(status.last_backup_at)
@@ -2013,11 +2118,23 @@ class VajSaveApp:
                     pass
                 setattr(self, job_name, None)
         self.state.stop_watch(timeout=0.5)
+        # Drop any pending enrichment result and stop the worker pool.
+        self._enrich_token += 1
+        loader = getattr(self, "_artwork_loader", None)
+        if loader is not None:
+            try:
+                loader.shutdown(wait=False)
+            except Exception:
+                pass
 
     def on_close(self) -> None:
         self._stop_background()
         self.root.destroy()
 
 
-def build_app(state: Optional[AppState] = None, root: Optional[tk.Tk] = None) -> VajSaveApp:
-    return VajSaveApp(root=root, state=state)
+def build_app(
+    state: Optional[AppState] = None,
+    root: Optional[tk.Tk] = None,
+    loader: Optional[ArtworkLoader] = None,
+) -> VajSaveApp:
+    return VajSaveApp(root=root, state=state, loader=loader)

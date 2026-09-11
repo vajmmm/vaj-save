@@ -26,6 +26,21 @@ from .library import (
     set_game_meta,
     versions_for,
 )
+from .artwork import (
+    COVER_CACHE_DIR,
+    PLACEHOLDER,
+    ArtworkResolution,
+    ArtworkService,
+    CoverCache,
+)
+from .metadata import (
+    METADATA_CACHE_NAME,
+    GameMetadata,
+    LibretroMetadataProvider,
+    MetadataCache,
+    MetadataService,
+    default_libretro_dirs,
+)
 from .identity import (
     BINDINGS_NAME,
     ROM_CACHE_NAME,
@@ -132,7 +147,10 @@ class AppState:
         self.backend: Optional[StorageBackend] = backend
         self.library_root: Path = self._resolve_library_root(library_root)
         self.gba_rom_dir, self.nds_rom_dir = self._resolve_rom_dirs()
+        self.libretro_dir: Optional[Path] = self._resolve_libretro_dir()
         self._identity_resolver: Optional[GameIdentityResolver] = None
+        self._metadata_service: Optional[MetadataService] = None
+        self._artwork_service: Optional[ArtworkService] = None
         self.last_import_path: Optional[Path] = None
         self.last_backup: Optional[BackupResult] = None
 
@@ -184,6 +202,11 @@ class AppState:
             AppState._coerce_dir(config.get("nds_rom_dir")),
         )
 
+    @staticmethod
+    def _resolve_libretro_dir() -> Optional[Path]:
+        """Read the persisted libretro metadata directory (invalid value -> None)."""
+        return AppState._coerce_dir(load_app_config().get("libretro_dir"))
+
     def set_library_root(self, library_root: Union[Path, str]) -> Path:
         """Switch the local backup library and persist it to the app config.
 
@@ -193,6 +216,9 @@ class AppState:
         self.library_root = Path(library_root).expanduser()
         self._backup_statuses = {}
         self._identity_resolver = None
+        # All metadata/artwork caches live under the library root.
+        self._metadata_service = None
+        self._artwork_service = None
         config = load_app_config()
         config["library_root"] = str(self.library_root)
         save_app_config(config)
@@ -231,6 +257,7 @@ class AppState:
                 config.pop("nds_rom_dir", None)
         save_app_config(config)
         self._identity_resolver = None
+        self._metadata_service = None
         return (self.gba_rom_dir, self.nds_rom_dir)
 
     def _should_search_volume_for_roms(self, root: Path) -> bool:
@@ -297,6 +324,119 @@ class AppState:
         if self._identity_resolver is None:
             self._identity_resolver = self._build_identity_resolver()
         return self._identity_resolver
+
+    # -- metadata / artwork --------------------------------------------------
+
+    def _libretro_dirs(self) -> List[Path]:
+        return default_libretro_dirs(
+            self.library_root, configured=load_app_config().get("libretro_dir")
+        )
+
+    @property
+    def metadata_service(self) -> MetadataService:
+        """Cache-first metadata resolver backed by the local libretro index."""
+        if self._metadata_service is None:
+            provider = LibretroMetadataProvider(self._libretro_dirs())
+            cache = MetadataCache(self.library_root / METADATA_CACHE_NAME)
+            self._metadata_service = MetadataService(provider, cache)
+        return self._metadata_service
+
+    @property
+    def artwork_service(self) -> ArtworkService:
+        """Cover provider/downloader bound to the library's cache directory."""
+        if self._artwork_service is None:
+            cache = CoverCache(self.library_root / COVER_CACHE_DIR)
+            self._artwork_service = ArtworkService(cache=cache)
+        return self._artwork_service
+
+    def set_libretro_dir(self, value: object = None) -> Optional[Path]:
+        """Persist (or clear) the optional libretro ``.dat`` directory."""
+        config = load_app_config()
+        resolved = self._coerce_dir(value)
+        if resolved is not None:
+            config["libretro_dir"] = str(resolved)
+        else:
+            config.pop("libretro_dir", None)
+        save_app_config(config)
+        self.libretro_dir = resolved
+        self._metadata_service = None
+        return resolved
+
+    def resolve_save_metadata(
+        self, entry: SaveEntry, identity: Optional[GameIdentity] = None
+    ) -> Optional[GameMetadata]:
+        """Canonical metadata for a save's ROM, or ``None``. Never raises."""
+        try:
+            if identity is None:
+                identity = self.resolve_save_identity(entry).identity
+            if identity is None:
+                return None
+            return self.metadata_service.for_identity(identity)
+        except Exception:  # noqa: BLE001 - metadata is best-effort
+            return None
+
+    def cached_save_metadata(
+        self, identity: Optional[GameIdentity]
+    ) -> Optional[GameMetadata]:
+        """Cache-only metadata (no provider access) for the UI hot path."""
+        if identity is None:
+            return None
+        try:
+            return self.metadata_service.cached(
+                getattr(identity, "platform", "") or "",
+                sha1=getattr(identity, "rom_sha1", None),
+                crc32=getattr(identity, "rom_crc32", None),
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
+    def resolve_save_cover(
+        self,
+        entry: SaveEntry,
+        result: Optional[GameIdentityResult] = None,
+        identity: Optional[GameIdentity] = None,
+    ) -> ArtworkResolution:
+        """Network-free best cover (user > downloaded cache > embedded)."""
+        try:
+            if identity is None:
+                identity = (result.identity if result else None)
+            if identity is None:
+                identity = self.resolve_save_identity(entry).identity
+            key = identity.identity_key if identity is not None else None
+            return self.artwork_service.resolve(
+                entry, self.library_root, identity_key=key
+            )
+        except Exception:  # noqa: BLE001 - a cover must never break the UI
+            return PLACEHOLDER
+
+    def ensure_save_cover(
+        self,
+        entry: SaveEntry,
+        result: Optional[GameIdentityResult] = None,
+        metadata: Optional[GameMetadata] = None,
+    ) -> ArtworkResolution:
+        """Full fallback order including a download attempt (worker-thread safe).
+
+        The official libretro filename rule needs the index's canonical title, so
+        without metadata this stays a local-only resolution: the app never guesses
+        a name (and never touches the network) for an unknown ROM.
+        """
+        try:
+            if metadata is None or not metadata.canonical_title:
+                return self.resolve_save_cover(entry, result=result)
+            if result is None:
+                result = self.resolve_save_identity(entry)
+            identity = result.identity
+            key = identity.identity_key if identity is not None else None
+            return self.artwork_service.ensure_cover(
+                entry,
+                platform=getattr(entry, "platform", "") or "",
+                title=metadata.canonical_title,
+                identity_key=key,
+                library_root=self.library_root,
+            )
+        except Exception:  # noqa: BLE001
+            return PLACEHOLDER
 
     def resolve_save_identity(self, entry: SaveEntry) -> GameIdentityResult:
         return self.identity_resolver.resolve(entry)

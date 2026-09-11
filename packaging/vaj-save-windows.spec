@@ -14,7 +14,10 @@ a = Analysis(
     [str(entry)],
     pathex=[str(project_root / "src")],
     binaries=[],
-    datas=[(str(project_root / "assets"), "assets")],
+    datas=[
+        (str(project_root / "assets"), "assets"),
+        (str(project_root / "src" / "vajsave" / "data"), "vajsave/data"),
+    ],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
