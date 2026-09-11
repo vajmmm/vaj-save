@@ -78,6 +78,14 @@ class GameIdentityResolver:
         )
 
     def resolve(self, entry) -> GameIdentityResult:
+        try:
+            return self._resolve_entry(entry)
+        finally:
+            # A single resolution must persist immediately: the UI resolves the
+            # selected row on its own, outside any batch.
+            self.flush_cache()
+
+    def _resolve_entry(self, entry) -> GameIdentityResult:
         module = self.module_for(getattr(entry, "platform", None))
         if module is None:
             return unresolved(
@@ -90,7 +98,7 @@ class GameIdentityResolver:
         results: List[GameIdentityResult] = []
         for entry in entries:
             try:
-                results.append(self.resolve(entry))
+                results.append(self._resolve_entry(entry))
             except Exception as exc:  # noqa: BLE001 - one bad save must not stop the batch
                 results.append(
                     unresolved(
@@ -98,7 +106,14 @@ class GameIdentityResolver:
                         save_path=getattr(entry, "path", None),
                     )
                 )
+        # Flush once for the whole batch instead of after every entry, so a cold
+        # volume costs one cache write rather than O(N^2).
+        self.flush_cache()
         return results
+
+    def flush_cache(self) -> bool:
+        """Persist any pending ROM-identity cache writes; no-op when clean."""
+        return self.rom_cache.flush() if self.rom_cache is not None else False
 
     # -- maintenance ---------------------------------------------------------
 

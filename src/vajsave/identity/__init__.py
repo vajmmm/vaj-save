@@ -31,8 +31,11 @@ from .models import (
     unresolved,
 )
 from .naming import (
+    FUZZY_MIN_JACCARD,
     display_name_from_stem,
     extract_region,
+    fuzzy_token_match,
+    jaccard_similarity,
     normalize_title,
     save_hint,
     strip_extension,
@@ -71,6 +74,9 @@ __all__ = [
     "display_name_from_stem",
     "strip_extension",
     "save_hint",
+    "FUZZY_MIN_JACCARD",
+    "jaccard_similarity",
+    "fuzzy_token_match",
     "resolved",
     "partial",
     "ambiguous",

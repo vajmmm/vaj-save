@@ -140,21 +140,31 @@ def test_save_hint_prefers_display_name_then_path():
     assert save_hint(make_entry(name="", path="/a/b/Folder")) == "Folder"
 
 
-def test_conservative_token_match_is_one_directional_subset():
-    from vajsave.identity.naming import conservative_token_match, title_tokens
+def test_fuzzy_token_match_uses_jaccard_threshold():
+    from vajsave.identity.naming import (
+        FUZZY_MIN_JACCARD,
+        fuzzy_token_match,
+        jaccard_similarity,
+        title_tokens,
+    )
 
-    assert conservative_token_match(
+    assert FUZZY_MIN_JACCARD == 0.6
+    assert jaccard_similarity(title_tokens("Pokemon Emerald"), title_tokens("Pokemon")) == 0.5
+    assert jaccard_similarity(frozenset(), title_tokens("Pokemon")) == 0.0
+
+    # 2/3 clears the threshold: the ROM may carry a small extra word.
+    assert fuzzy_token_match(
         title_tokens("Pokemon Emerald"), title_tokens("Pokemon Emerald Version")
     )
-    assert conservative_token_match(
-        title_tokens("Kirby"), title_tokens("Kirby Nightmare in Dream Land")
-    )
-    # A longer save name must not match a shorter, coarser ROM name.
-    assert not conservative_token_match(
+    # A coarser ROM (1/2) or a longer unrelated name must never auto-match.
+    assert not fuzzy_token_match(
         title_tokens("Pokemon Emerald"), title_tokens("Pokemon")
     )
+    assert not fuzzy_token_match(
+        title_tokens("Mario Kart"), title_tokens("Mario Kart DS Deluxe Edition")
+    )
     # An empty hint is never a match.
-    assert not conservative_token_match(title_tokens(""), title_tokens("Pokemon"))
+    assert not fuzzy_token_match(title_tokens(""), title_tokens("Pokemon"))
 
 
 # --- digests -----------------------------------------------------------------
