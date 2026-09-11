@@ -18,11 +18,12 @@ rather than raising.
 from __future__ import annotations
 
 import json
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple, Union
 
-from ..identity.naming import extract_region
+from ..identity.naming import extract_region, normalize_title
 from .models import SOURCE_LIBRETRO, GameMetadata
 
 # Platforms the metadata layer can answer for.  Everything else is out of scope
@@ -64,6 +65,75 @@ def _normalize_hex(value: Optional[str], width: int) -> Optional[str]:
     return format(number, "0{}x".format(width))
 
 
+# A cartridge game code is exactly four alphanumeric characters (e.g. ``BPEE``).
+# No-Intro DATs also carry placeholder/sentinel serials such as ``!none`` and
+# ``!n/a``; those must never become index keys.
+_SERIAL_RE = re.compile(r"^[A-Z0-9]{4}$")
+_INVALID_SERIALS = frozenset({"!NONE", "!N/A", "N/A", "NONE", "NULL"})
+
+# Parenthetical/bracketed metadata tags (region, language list, revision, ...).
+_TAG_RE = re.compile(r"[\(\[]([^\)\]]*)[\)\]]")
+
+# Variant tags that mark a non-retail build.  A same-family fallback prefers a
+# real release over a beta/proto/demo when several share one game code.
+_NON_RETAIL_TAGS = (
+    "beta",
+    "proto",
+    "demo",
+    "sample",
+    "kiosk",
+    "unl",
+    "program",
+    "test",
+    "piracy",
+)
+
+
+def _normalize_serial(value: Optional[str]) -> Optional[str]:
+    """Canonicalise a cartridge game code, or ``None`` when it is not usable.
+
+    Upper-cased and stripped, then required to be exactly four alphanumeric
+    characters.  Sentinel/placeholder serials and over-long No-Intro oddities
+    are rejected so they cannot collide with a real ROM header game code.
+    """
+    if value is None:
+        return None
+    text = str(value).strip().upper()
+    if not text or text in _INVALID_SERIALS:
+        return None
+    if not _SERIAL_RE.match(text):
+        return None
+    return text
+
+
+def _family_key(title: str) -> str:
+    """Region/rev/variant-free title key used to group one serial's releases.
+
+    ``normalize_title`` strips every parenthetical tag, so all regional and
+    revision variants of the same game share one key while genuinely different
+    titles (a serial collision) stay apart.
+    """
+    return normalize_title(title)
+
+
+def _tag_tokens(title: str) -> List[str]:
+    tokens: List[str] = []
+    for match in _TAG_RE.finditer(str(title or "")):
+        for part in re.split(r"[,\s]+", match.group(1)):
+            if part:
+                tokens.append(part.lower())
+    return tokens
+
+
+def _variant_sort_key(metadata: GameMetadata):
+    """Deterministic ranking of same-family variants: retail first, then fewest tags."""
+    tokens = _tag_tokens(metadata.canonical_title)
+    non_retail = any(
+        token.startswith(prefix) for token in tokens for prefix in _NON_RETAIL_TAGS
+    )
+    return (non_retail, len(tokens), metadata.canonical_title, metadata.identity_key)
+
+
 def detect_platform(*names: Optional[str]) -> Optional[str]:
     """Best-effort platform from a datafile header/filename (or ``None``)."""
     for name in names:
@@ -100,6 +170,7 @@ class LibretroIndex:
     def __init__(self) -> None:
         self._by_sha1: Dict[str, GameMetadata] = {}
         self._by_crc: Dict[str, GameMetadata] = {}
+        self._by_serial: Dict[str, List[GameMetadata]] = {}
         self._games: int = 0
 
     # -- building ------------------------------------------------------------
@@ -135,6 +206,9 @@ class LibretroIndex:
             self._by_sha1[norm_sha1] = metadata
         if norm_crc:
             self._by_crc[norm_crc] = metadata
+        norm_serial = _normalize_serial(serial)
+        if norm_serial:
+            self._by_serial.setdefault(norm_serial, []).append(metadata)
         self._games += 1
 
     def load_json_file(self, path: Union[Path, str]) -> int:
@@ -318,6 +392,39 @@ class LibretroIndex:
             if found is not None and found.platform == wanted:
                 return found
         return None
+
+    def lookup_serial(
+        self,
+        *,
+        platform: str,
+        serial: Optional[str],
+    ) -> Optional[GameMetadata]:
+        """Conservative **digest-miss** fallback keyed by cartridge game code.
+
+        Only GBA header game codes are understood here.  A code that maps to
+        more than one *family* of games is a real serial collision and returns
+        ``None`` -- the caller must not guess between different titles.  When a
+        code maps to several regional/revision variants of one family, the
+        release is chosen deterministically (see :func:`_variant_sort_key`).
+        """
+        wanted = (platform or "").strip().lower()
+        if wanted != "gba":
+            return None
+        normalized = _normalize_serial(serial)
+        if not normalized:
+            return None
+        candidates = [
+            item for item in self._by_serial.get(normalized, ()) if item.platform == wanted
+        ]
+        if not candidates:
+            return None
+        families: Dict[str, List[GameMetadata]] = {}
+        for item in candidates:
+            families.setdefault(_family_key(item.canonical_title), []).append(item)
+        if len(families) != 1:
+            return None
+        family = next(iter(families.values()))
+        return min(family, key=_variant_sort_key)
 
     # -- introspection -------------------------------------------------------
 

@@ -11,7 +11,12 @@ from PIL import Image
 
 from vajsave.app_state import AppState
 from vajsave.artwork import COVER_CACHE_DIR, ArtworkDownloader, ArtworkService, CoverCache
-from vajsave.artwork.service import SOURCE_EMBEDDED, SOURCE_PLACEHOLDER, SOURCE_USER
+from vajsave.artwork.service import (
+    SOURCE_DOWNLOADED,
+    SOURCE_EMBEDDED,
+    SOURCE_PLACEHOLDER,
+    SOURCE_USER,
+)
 from vajsave.models import SaveEntry
 
 
@@ -53,6 +58,74 @@ def _entry(tmp_path: Path, *, name="Apotris", cover_path=None) -> SaveEntry:
         display_name=name,
         path=str(save),
         cover_path=cover_path,
+    )
+
+
+class _FakeResponse:
+    def __init__(self, data: bytes, status: int = 200) -> None:
+        self._data = data
+        self.status = status
+        self.headers = {}
+
+    def read(self, n=-1):
+        if n is None or n < 0:
+            return self._data
+        return self._data[:n]
+
+    def close(self):
+        return None
+
+
+def test_appstate_serial_fallback_caches_and_downloads_by_canonical_title(tmp_path: Path):
+    """A patched/汉化 GBA ROM whose digest misses the index still gets metadata
+    from its header game code, and the cover pipeline then downloads by the
+    resolved canonical title under the real ROM identity key."""
+    rom_dir = tmp_path / "roms"
+    rom_dir.mkdir()
+    rom = rom_dir / "Apotris (Chinese).gba"
+    rom.write_bytes(make_gba_rom(title="APOTRIS", code="Z9ZQ"))
+
+    dat_dir = tmp_path / "dats"
+    dat_dir.mkdir()
+    # The digest deliberately does NOT match the patched ROM; only the serial does.
+    (dat_dir / "gba.dat").write_text(
+        '<?xml version="1.0"?><datafile><header><name>Nintendo - Game Boy Advance</name>'
+        '</header><game name="Apotris - Rhythm Game (USA)">'
+        '<rom name="x.gba" crc="00000001" sha1="' + "a" * 40 + '" serial="Z9ZQ"/>'
+        '</game></datafile>',
+        encoding="utf-8",
+    )
+
+    state = AppState(library_root=tmp_path / "lib")
+    state.set_rom_dirs(rom_dir, None)
+    state.set_libretro_dir(dat_dir)
+    entry = _entry(tmp_path)
+
+    result = state.resolve_save_identity(entry)
+    assert result.is_resolved
+    metadata = state.resolve_save_metadata(entry, result.identity)
+    assert metadata is not None
+    assert metadata.canonical_title == "Apotris - Rhythm Game (USA)"
+    assert metadata.identity_key == result.identity.identity_key
+    assert state.cached_save_metadata(result.identity).canonical_title == (
+        "Apotris - Rhythm Game (USA)"
+    )
+
+    urls = []
+
+    def opener(url, timeout=None):
+        urls.append(url)
+        return _FakeResponse(png_bytes())
+
+    state._artwork_service = ArtworkService(
+        cache=CoverCache(state.library_root / COVER_CACHE_DIR),
+        downloader=ArtworkDownloader(urlopen=opener),
+    )
+    cover = state.ensure_save_cover(entry, result, metadata)
+    assert cover.source == SOURCE_DOWNLOADED
+    assert urls and "Apotris%20-%20Rhythm%20Game%20(USA)" in urls[0]
+    assert urls[0].startswith(
+        "https://thumbnails.libretro.com/Nintendo%20-%20Game%20Boy%20Advance/Named_Boxarts/"
     )
 
 

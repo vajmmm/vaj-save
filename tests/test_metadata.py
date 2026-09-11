@@ -47,10 +47,11 @@ IDENTITY_KEY = f"gba:sha1:{SHA1_A}"
 
 
 class FakeIdentity:
-    def __init__(self, platform="gba", sha1=SHA1_A, crc=CRC_A, key=None):
+    def __init__(self, platform="gba", sha1=SHA1_A, crc=CRC_A, key=None, game_code=None):
         self.platform = platform
         self.rom_sha1 = sha1
         self.rom_crc32 = crc
+        self.game_code = game_code
         self.identity_key = key if key is not None else (
             f"{platform}:sha1:{sha1}" if sha1 else f"{platform}:crc32:{crc}"
         )
@@ -238,6 +239,86 @@ def test_external_ids_for_drops_blanks():
     assert external_ids_for(None, None) is None
 
 
+# --- serial (game code) fallback --------------------------------------------
+
+
+def test_index_lookup_serial_normalizes_and_is_deterministic(tmp_path: Path):
+    path = write_compact(
+        tmp_path / "gba.json",
+        "gba",
+        [
+            (SHA1_A, CRC_A, "Game A (Europe) (Rev 1)", "AX4P", "2"),
+            (SHA1_B, CRC_B, "Game A (Europe)", "AX4P", "1"),
+            ("c" * 40, "abcdef01", "Game A (Europe) (Virtual Console)", "AX4P", "3"),
+        ],
+    )
+    index = LibretroIndex.from_paths([path])
+    picked = index.lookup_serial(platform="gba", serial="ax4p")
+    assert picked is not None
+    # same-family variants collapse to one deterministic (base) release
+    assert picked.canonical_title == "Game A (Europe)"
+    assert index.lookup_serial(platform="gba", serial="AX4P") == picked
+    assert index.lookup_serial(platform="gba", serial=" AX4P ") == picked
+
+
+def test_index_lookup_serial_different_titles_is_none(tmp_path: Path):
+    path = write_compact(
+        tmp_path / "gba.json",
+        "gba",
+        [
+            (SHA1_A, CRC_A, "Alpha (USA)", "BQ7E", "1"),
+            (SHA1_B, CRC_B, "Beta (Japan)", "BQ7E", "2"),
+        ],
+    )
+    index = LibretroIndex.from_paths([path])
+    assert index.lookup_serial(platform="gba", serial="BQ7E") is None
+
+
+def test_index_lookup_serial_missing_and_invalid_is_none(tmp_path: Path):
+    path = write_compact(
+        tmp_path / "gba.json",
+        "gba",
+        [
+            (SHA1_A, CRC_A, "Game A (USA)", "BPEE", "1"),
+            (SHA1_B, CRC_B, "Game B (USA)", "!none", "2"),
+        ],
+    )
+    index = LibretroIndex.from_paths([path])
+    assert index.lookup_serial(platform="gba", serial="2ATE") is None
+    assert index.lookup_serial(platform="gba", serial="") is None
+    assert index.lookup_serial(platform="gba", serial=None) is None
+    assert index.lookup_serial(platform="gba", serial="!none") is None
+    assert index.lookup_serial(platform="gba", serial="toolong") is None
+    assert index.lookup_serial(platform="gba", serial="BPEE").canonical_title == "Game A (USA)"
+    assert index.lookup_serial(platform="nds", serial="BPEE") is None
+    assert index.lookup_serial(platform="psp", serial="BPEE") is None
+
+
+def test_index_lookup_serial_prefers_retail_over_beta(tmp_path: Path):
+    path = write_compact(
+        tmp_path / "gba.json",
+        "gba",
+        [
+            (SHA1_A, CRC_A, "Game A (Beta)", "Z9ZQ", "1"),
+            (SHA1_B, CRC_B, "Game A (USA, Europe)", "Z9ZQ", "2"),
+        ],
+    )
+    index = LibretroIndex.from_paths([path])
+    # The retail build wins over a same-family beta even though it carries more tags.
+    assert index.lookup_serial(platform="gba", serial="Z9ZQ").canonical_title == (
+        "Game A (USA, Europe)"
+    )
+
+
+def test_index_lookup_serial_does_not_cross_platforms(tmp_path: Path):
+    write_compact(tmp_path / "gba.json", "gba", [(SHA1_A, CRC_A, "GBA Game (USA)", "Z9ZQ", "1")])
+    write_compact(tmp_path / "nds.json", "nds", [(SHA1_B, CRC_B, "NDS Game (Japan)", "Z9ZQ", "2")])
+    index = LibretroIndex.from_paths([tmp_path])
+    assert index.lookup_serial(platform="gba", serial="Z9ZQ").canonical_title == "GBA Game (USA)"
+    # The serial fallback is GBA-only by design, even with an NDS record loaded.
+    assert index.lookup_serial(platform="nds", serial="Z9ZQ") is None
+
+
 # --- bundled real index ------------------------------------------------------
 
 
@@ -265,6 +346,21 @@ def test_bundled_index_is_non_empty_and_parseable():
     index = LibretroIndex.from_paths([bundled_libretro_dir()])
     assert len(index) > 5000
     assert index.lookup(platform="gba", sha1=EMERALD_SHA1) is not None
+
+
+def test_bundled_index_serial_fallback_resolves_real_game_code():
+    provider = LibretroMetadataProvider()
+    identity = FakeIdentity(sha1="c" * 40, crc="deadbeef", game_code="BPEE")
+    metadata = provider.resolve(identity)
+    assert metadata is not None
+    assert metadata.canonical_title == "Pokemon - Emerald Version (USA, Europe)"
+    assert metadata.identity_key == identity.identity_key
+
+
+def test_bundled_index_serial_fallback_unknown_code_is_none():
+    provider = LibretroMetadataProvider()
+    identity = FakeIdentity(sha1="c" * 40, crc="deadbeef", game_code="2ATE")
+    assert provider.resolve(identity) is None
 
 
 # --- value object ------------------------------------------------------------
@@ -466,6 +562,107 @@ def test_libretro_provider_edge_cases():
     assert provider.resolve(None) is None
     assert provider.resolve(FakeIdentity(platform="psp", sha1=SHA1_A)) is None
     assert provider.resolve(FakeIdentity(sha1=None, crc=None)) is None
+
+
+def test_provider_digest_hit_wins_over_serial(tmp_path: Path):
+    path = write_compact(
+        tmp_path / "gba.json",
+        "gba",
+        [
+            (SHA1_A, CRC_A, "Digest Game (USA)", "AX4P", "1"),
+            (SHA1_B, CRC_B, "Serial Game (USA)", "BQ7E", "2"),
+        ],
+    )
+    provider = LibretroMetadataProvider([tmp_path])
+    identity = FakeIdentity(sha1=SHA1_A, crc=CRC_A, game_code="BQ7E")
+    found = provider.resolve(identity)
+    assert found is not None
+    assert found.canonical_title == "Digest Game (USA)"
+    assert found.identity_key == identity.identity_key
+
+
+def test_provider_digest_miss_falls_back_to_game_code(tmp_path: Path):
+    path = write_compact(
+        tmp_path / "gba.json",
+        "gba",
+        [(SHA1_B, CRC_B, "Serial Game (USA)", "AX4P", "2")],
+    )
+    provider = LibretroMetadataProvider([tmp_path])
+    identity = FakeIdentity(sha1=SHA1_A, crc=CRC_A, game_code="ax4p")
+    found = provider.resolve(identity)
+    assert found is not None
+    assert found.canonical_title == "Serial Game (USA)"
+    assert found.identity_key == identity.identity_key
+
+
+def test_provider_digest_miss_ambiguous_serial_is_none(tmp_path: Path):
+    path = write_compact(
+        tmp_path / "gba.json",
+        "gba",
+        [
+            (SHA1_A, CRC_A, "Alpha (USA)", "BQ7E", "1"),
+            (SHA1_B, CRC_B, "Beta (Japan)", "BQ7E", "2"),
+        ],
+    )
+    provider = LibretroMetadataProvider([tmp_path])
+    identity = FakeIdentity(sha1="c" * 40, crc="deadbeef", game_code="BQ7E")
+    assert provider.resolve(identity) is None
+
+
+def test_provider_digest_miss_no_record_is_none(tmp_path: Path):
+    path = write_compact(
+        tmp_path / "gba.json",
+        "gba",
+        [(SHA1_A, CRC_A, "Game A (USA)", "BPEE", "1")],
+    )
+    provider = LibretroMetadataProvider([tmp_path])
+    identity = FakeIdentity(sha1="c" * 40, crc="deadbeef", game_code="2ATE")
+    assert provider.resolve(identity) is None
+
+
+def test_provider_digest_miss_without_game_code_is_none(tmp_path: Path):
+    # A title-like identity must never be guessed from the filename/title.
+    write_compact(
+        tmp_path / "gba.json",
+        "gba",
+        [(SHA1_A, CRC_A, "Apotris - Rhythm Game (USA)", "Z9ZQ", "1")],
+    )
+    provider = LibretroMetadataProvider([tmp_path])
+    identity = FakeIdentity(sha1="c" * 40, crc="deadbeef", game_code=None)
+    assert provider.resolve(identity) is None
+
+
+def test_provider_serial_only_identity_resolves(tmp_path: Path):
+    write_compact(
+        tmp_path / "gba.json",
+        "gba",
+        [(SHA1_A, CRC_A, "Game A (USA)", "Z9ZQ", "1")],
+    )
+    provider = LibretroMetadataProvider([tmp_path])
+    identity = FakeIdentity(sha1=None, crc=None, game_code="Z9ZQ")
+    found = provider.resolve(identity)
+    assert found is not None
+    assert found.canonical_title == "Game A (USA)"
+    assert found.identity_key == identity.identity_key
+
+
+def test_resolver_caches_serial_fallback_under_identity_key(tmp_path: Path):
+    write_compact(
+        tmp_path / "gba.json",
+        "gba",
+        [(SHA1_B, CRC_B, "Serial Game (USA)", "AX4P", "2")],
+    )
+    provider = LibretroMetadataProvider([tmp_path])
+    cache = MetadataCache(tmp_path / METADATA_CACHE_NAME)
+    resolver = GameMetadataResolver(provider, cache)
+    identity = FakeIdentity(sha1=SHA1_A, crc=CRC_A, game_code="AX4P")
+
+    found = resolver.resolve(identity)
+    assert found is not None
+    assert found.identity_key == identity.identity_key
+    assert resolver.cached(identity).canonical_title == "Serial Game (USA)"
+    # A cache hit must not consult the provider again.
+    assert resolver.resolve(identity).canonical_title == "Serial Game (USA)"
 
 
 def test_libretro_provider_exception_degrades():
