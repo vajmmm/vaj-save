@@ -55,11 +55,17 @@ class BindingStore:
     def set(self, entry, identity: GameIdentity, *, manual: bool = False) -> GameIdentity:
         kind = SOURCE_MANUAL if manual else SOURCE_BINDING
         stored = replace(identity, source=kind)
-        self._data[self.key_for(entry)] = {
+        key = self.key_for(entry)
+        record = {
             "identity": stored.to_dict(),
             "kind": kind,
             "hint": save_hint(entry),
         }
+        # The UI re-resolves every save on each refresh; only touch the disk when
+        # the stored binding actually changes.
+        if self._data.get(key) == record:
+            return stored
+        self._data[key] = record
         self.save()
         return stored
 
@@ -93,6 +99,7 @@ class BindingStore:
     def save(self) -> bool:
         if self.path is None:
             return False
+        tmp = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_name(self.path.name + ".tmp")
@@ -100,9 +107,10 @@ class BindingStore:
             tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp.replace(self.path)
         except (OSError, TypeError, ValueError):
-            try:
-                tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
+            if tmp is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
             return False
         return True

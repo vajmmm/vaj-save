@@ -20,6 +20,7 @@ from .identity import (
     GameIdentity,
     GameIdentityResolver,
     GameIdentityResult,
+    RomIdentityCache,
     RomIndex,
 )
 
@@ -43,5 +44,6 @@ __all__ = [
     "GameIdentityResult",
     "GameIdentityResolver",
     "BindingStore",
+    "RomIdentityCache",
     "RomIndex",
 ]
