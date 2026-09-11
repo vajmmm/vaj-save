@@ -231,3 +231,117 @@ def test_missing_rom_dirs_are_harmless(tmp_path: Path):
     resolver = GameIdentityResolver(rom_dirs={"gba": [tmp_path / "does-not-exist"]})
     result = resolver.resolve(entry("gba", "Kirby", tmp_path / "Kirby.sav"))
     assert result.status == "unresolved"
+
+
+# --- conservative fuzzy / token matching (stage 2) ---------------------------
+
+
+def test_gba_fuzzy_unique_rom_matches_when_exact_fails(tmp_path: Path):
+    rom_dir = _rom_dir(tmp_path)
+    (rom_dir / "Pokemon Emerald Version (USA).gba").write_bytes(
+        make_gba_rom(title="POKEMON EMERALD")
+    )
+    resolver = GameIdentityResolver(rom_dirs={"gba": [rom_dir]})
+
+    result = resolver.resolve(entry("gba", "Pokemon Emerald", tmp_path / "Pokemon Emerald.sav"))
+    assert result.is_resolved
+    assert result.identity.identity_key.startswith("gba:sha1:")
+    assert result.identity.source == "rom"
+
+
+def test_gba_fuzzy_sibling_rom_is_found_without_config(tmp_path: Path):
+    saver = tmp_path / "SAVER"
+    saver.mkdir()
+    (saver / "Apotris.sav").write_bytes(b"save")
+    (saver / "Apotris - Rhythm Game.gba").write_bytes(make_gba_rom(title="APOTRIS"))
+
+    result = GameIdentityResolver().resolve(entry("gba", "Apotris", saver / "Apotris.sav"))
+    assert result.is_resolved
+
+
+def test_gba_fuzzy_multiple_candidates_are_ambiguous(tmp_path: Path):
+    rom_dir = _rom_dir(tmp_path)
+    (rom_dir / "Pokemon Emerald.gba").write_bytes(make_gba_rom(title="EMERALD"))
+    (rom_dir / "Pokemon Ruby.gba").write_bytes(make_gba_rom(title="RUBY"))
+    resolver = GameIdentityResolver(rom_dirs={"gba": [rom_dir]})
+
+    result = resolver.resolve(entry("gba", "Pokemon", tmp_path / "Pokemon.sav"))
+    assert result.status == "ambiguous"
+    assert len(result.candidates) == 2
+
+
+def test_exact_match_wins_over_weaker_fuzzy_candidates(tmp_path: Path):
+    rom_dir = _rom_dir(tmp_path)
+    exact = rom_dir / "Kirby.gba"
+    exact.write_bytes(make_gba_rom(title="KIRBY EXACT", code="EXCT"))
+    (rom_dir / "Kirby Nightmare in Dream Land.gba").write_bytes(
+        make_gba_rom(title="KIRBY NIGHTMARE", code="NITE")
+    )
+    resolver = GameIdentityResolver(rom_dirs={"gba": [rom_dir]})
+
+    result = resolver.resolve(entry("gba", "Kirby", tmp_path / "Kirby.sav"))
+    assert result.is_resolved
+    assert result.identity.game_code == "EXCT"
+
+
+def test_fuzzy_does_not_match_rom_name_that_is_only_a_subset_of_save(tmp_path: Path):
+    rom_dir = _rom_dir(tmp_path)
+    (rom_dir / "Pokemon.gba").write_bytes(make_gba_rom(title="POKEMON"))
+    resolver = GameIdentityResolver(rom_dirs={"gba": [rom_dir]})
+
+    result = resolver.resolve(entry("gba", "Pokemon Emerald", tmp_path / "Pokemon Emerald.sav"))
+    assert result.status == "unresolved"
+
+
+def test_fuzzy_without_overlap_is_unresolved(tmp_path: Path):
+    rom_dir = _rom_dir(tmp_path)
+    (rom_dir / "Zelda.gba").write_bytes(make_gba_rom(title="ZELDA"))
+    resolver = GameIdentityResolver(rom_dirs={"gba": [rom_dir]})
+
+    result = resolver.resolve(entry("gba", "Metroid", tmp_path / "Metroid.sav"))
+    assert result.status == "unresolved"
+
+
+def test_fuzzy_match_binds_identity_for_later_offline_resolution(tmp_path: Path):
+    rom_dir = _rom_dir(tmp_path)
+    rom = rom_dir / "Pokemon Emerald Version.gba"
+    rom.write_bytes(make_gba_rom(title="POKEMON EMERALD"))
+    binding_path = tmp_path / BINDINGS_NAME
+    resolver = GameIdentityResolver(rom_dirs={"gba": [rom_dir]}, binding_path=binding_path)
+    sav = entry("gba", "Pokemon Emerald", tmp_path / "Pokemon Emerald.sav")
+
+    first = resolver.resolve(sav)
+    assert first.is_resolved
+
+    rom.unlink()
+    resolver.refresh()
+    second = resolver.resolve(sav)
+    assert second.is_resolved
+    assert second.identity_key == first.identity_key
+
+
+def test_unreadable_exact_rom_is_unresolved(tmp_path: Path, monkeypatch):
+    import vajsave.identity.roms as roms_module
+
+    rom_dir = _rom_dir(tmp_path)
+    (rom_dir / "Kirby.gba").write_bytes(make_gba_rom())
+
+    def boom(path, *args, **kwargs):
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(roms_module, "digest_file", boom)
+    resolver = GameIdentityResolver(rom_dirs={"gba": [rom_dir]})
+    result = resolver.resolve(entry("gba", "Kirby", tmp_path / "Kirby.sav"))
+    assert result.status == "unresolved"
+
+
+def test_auto_bind_false_does_not_write_binding(tmp_path: Path):
+    rom_dir = _rom_dir(tmp_path)
+    (rom_dir / "Kirby.gba").write_bytes(make_gba_rom())
+    binding_path = tmp_path / BINDINGS_NAME
+    resolver = GameIdentityResolver(
+        rom_dirs={"gba": [rom_dir]}, binding_path=binding_path, auto_bind=False
+    )
+    result = resolver.resolve(entry("gba", "Kirby", tmp_path / "Kirby.sav"))
+    assert result.is_resolved
+    assert not binding_path.exists()

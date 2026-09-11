@@ -22,7 +22,15 @@ from .models import (
     resolved,
     unresolved,
 )
-from .naming import display_name_from_stem, extract_region, normalize_title, save_hint, strip_extension
+from .naming import (
+    conservative_token_match,
+    display_name_from_stem,
+    extract_region,
+    normalize_title,
+    save_hint,
+    strip_extension,
+    title_tokens,
+)
 
 # Cartridge extensions per platform.  GBA dumps occasionally use ``.agb``.
 ROM_EXTENSIONS: Dict[str, Tuple[str, ...]] = {
@@ -57,19 +65,41 @@ class RomFile:
     normalized: str
     display_name: str
     region: Optional[str]
+    # Precomputed so the fuzzy stage never re-normalises the whole ROM pool.
+    tokens: frozenset = frozenset()
 
 
 def make_rom_file(path, platform: str) -> RomFile:
     p = Path(path)
     stem = strip_extension(p.name)
+    normalized = normalize_title(stem)
     return RomFile(
         path=p,
         platform=platform,
         stem=stem,
-        normalized=normalize_title(stem),
+        normalized=normalized,
         display_name=display_name_from_stem(stem),
         region=extract_region(p.name),
+        tokens=frozenset(normalized.split()),
     )
+
+
+def supported_extensions(platform: str) -> Tuple[str, ...]:
+    """Extensions accepted for ``platform``; empty when it is unconstrained."""
+    return ROM_EXTENSIONS.get((platform or "").strip().lower(), ())
+
+
+def is_supported_rom_path(path, platform: str) -> bool:
+    """Whether ``path`` carries an extension accepted for ``platform``.
+
+    Platforms without a declared constraint accept any path so the generic
+    resolver keeps working for non-cartridge targets; cartridge platforms only
+    accept their declared dumps (e.g. GBA: ``.gba``/``.agb``, NDS: ``.nds``).
+    """
+    exts = supported_extensions(platform)
+    if not exts:
+        return True
+    return Path(path).suffix.lower() in exts
 
 
 def _decode_header_field(raw: bytes) -> Optional[str]:
@@ -105,15 +135,23 @@ def read_rom_header(path, platform: str) -> Dict[str, str]:
     return data
 
 
-def build_identity_from_rom(rom: RomFile, platform: str) -> Optional[GameIdentity]:
-    """Hash ``rom`` and build a :class:`GameIdentity`, or ``None`` if unreadable."""
+def build_identity_from_rom(rom: RomFile, platform: str, cache=None) -> Optional[GameIdentity]:
+    """Hash ``rom`` and build a :class:`GameIdentity`, or ``None`` if unreadable.
+
+    When a :class:`~.cache.RomIdentityCache` is supplied an unchanged ROM is
+    served from the cache, skipping the whole-file digest entirely.
+    """
+    if cache is not None:
+        cached = cache.get(rom.path, platform)
+        if cached is not None:
+            return cached
     try:
         sha1, crc32 = digest_file(rom.path)
     except (OSError, ValueError):
         return None
     header = read_rom_header(rom.path, platform)
     title = header.get("title") or rom.display_name or rom.stem
-    return GameIdentity(
+    identity = GameIdentity(
         identity_key=f"{platform}:sha1:{sha1}",
         platform=platform,
         title=title,
@@ -124,6 +162,9 @@ def build_identity_from_rom(rom: RomFile, platform: str) -> Optional[GameIdentit
         game_code=header.get("game_code"),
         source=SOURCE_ROM,
     )
+    if cache is not None:
+        cache.put(rom.path, platform, identity)
+    return identity
 
 
 def _dedupe(roms: Iterable[RomFile]) -> List[RomFile]:
@@ -222,14 +263,18 @@ class RomIndex:
     def all_roms(self, platform: str) -> List[RomFile]:
         return list(self._configured(platform))
 
+    def pool(self, platform: str, extra_dirs: Sequence = ()) -> List[RomFile]:
+        """Configured (cached) ROMs plus a live shallow scan of ``extra_dirs``."""
+        files = list(self._configured(platform))
+        for directory in extra_dirs:
+            files.extend(self._scan_dir(directory, platform, False))
+        return _dedupe(files)
+
     def find(self, platform: str, hint: str, extra_dirs: Sequence = ()) -> List[RomFile]:
         normalized = normalize_title(hint)
         if not normalized:
             return []
-        pool = list(self._configured(platform))
-        for directory in extra_dirs:
-            pool.extend(self._scan_dir(directory, platform, False))
-        pool = _dedupe(pool)
+        pool = self.pool(platform, extra_dirs)
         matches = [rom for rom in pool if rom.normalized == normalized]
         return sorted(matches, key=lambda rom: str(rom.path))
 
@@ -251,25 +296,59 @@ def sibling_dirs(entry) -> List[Path]:
 
 
 def resolve_rom_identity(entry, ctx, *, platform: str) -> GameIdentityResult:
-    """Shared GBA/NDS resolution: manual binding > ROM match > stored binding."""
+    """Shared GBA/NDS resolution: manual binding > exact ROM > fuzzy ROM > binding."""
     bound = ctx.bindings.get(entry)
     if bound is not None and bound.source == SOURCE_MANUAL:
         return resolved(bound, reason="手动绑定的游戏身份", save_path=entry.path)
 
-    roms = ctx.rom_index.find(platform, save_hint(entry), extra_dirs=sibling_dirs(entry))
-    matched: List[GameIdentity] = []
-    for rom in roms:
-        identity = build_identity_from_rom(rom, platform)
-        if identity is not None:
-            matched.append(identity)
+    hint = save_hint(entry)
+    extra_dirs = sibling_dirs(entry)
+    cache = getattr(ctx, "rom_cache", None)
 
-    if len(matched) > 1:
-        return ambiguous(tuple(matched), reason="匹配到多个 ROM", save_path=entry.path)
-    if len(matched) == 1:
-        identity = matched[0]
-        if getattr(ctx, "auto_bind", True):
-            ctx.bindings.set(entry, identity, manual=False)
-        return resolved(identity, save_path=entry.path)
+    # Stage 1: exact normalised-name match has the highest priority.
+    exact = _build_identities(ctx.rom_index.find(platform, hint, extra_dirs), platform, cache)
+    if len(exact) > 1:
+        return ambiguous(tuple(exact), reason="匹配到多个 ROM", save_path=entry.path)
+    if len(exact) == 1:
+        return _bind_and_resolve(exact[0], entry, ctx)
+
+    # Stage 2: conservative token containment.  Only a single trustworthy
+    # candidate is auto-matched; anything else stays ambiguous/unresolved.
+    fuzzy = _build_identities(
+        _fuzzy_candidates(ctx.rom_index.pool(platform, extra_dirs), hint), platform, cache
+    )
+    if len(fuzzy) > 1:
+        return ambiguous(tuple(fuzzy), reason="模糊匹配到多个 ROM", save_path=entry.path)
+    if len(fuzzy) == 1:
+        return _bind_and_resolve(fuzzy[0], entry, ctx, reason="名称近似匹配到唯一 ROM")
+
     if bound is not None:
         return resolved(bound, reason="未找到 ROM，使用已保存的身份绑定", save_path=entry.path)
     return unresolved(reason="未找到匹配的 ROM", save_path=entry.path)
+
+
+def _build_identities(roms: Iterable[RomFile], platform: str, cache) -> List[GameIdentity]:
+    matched: List[GameIdentity] = []
+    for rom in roms:
+        identity = build_identity_from_rom(rom, platform, cache)
+        if identity is not None:
+            matched.append(identity)
+    return matched
+
+
+def _fuzzy_candidates(pool: Iterable[RomFile], hint: str) -> List[RomFile]:
+    hint_tokens = title_tokens(hint)
+    if not hint_tokens:
+        return []
+    matches = [
+        rom
+        for rom in pool
+        if conservative_token_match(hint_tokens, rom.tokens or frozenset(rom.normalized.split()))
+    ]
+    return sorted(matches, key=lambda rom: str(rom.path))
+
+
+def _bind_and_resolve(identity: GameIdentity, entry, ctx, *, reason: str = "") -> GameIdentityResult:
+    if getattr(ctx, "auto_bind", True):
+        ctx.bindings.set(entry, identity, manual=False)
+    return resolved(identity, reason=reason, save_path=entry.path)

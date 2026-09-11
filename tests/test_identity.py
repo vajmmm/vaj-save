@@ -21,12 +21,14 @@ from vajsave.identity import (
     digest_file,
     display_name_from_stem,
     extract_region,
+    is_supported_rom_path,
     normalize_title,
     partial,
     resolved,
     save_hint,
     sha1_file,
     strip_extension,
+    supported_extensions,
     unresolved,
 )
 from vajsave.models import SaveEntry
@@ -136,6 +138,23 @@ def test_save_hint_prefers_display_name_then_path():
     assert save_hint(make_entry(name="Kirby")) == "Kirby"
     assert save_hint(make_entry(name="", path="/a/b/Fire Red.sav")) == "Fire Red"
     assert save_hint(make_entry(name="", path="/a/b/Folder")) == "Folder"
+
+
+def test_conservative_token_match_is_one_directional_subset():
+    from vajsave.identity.naming import conservative_token_match, title_tokens
+
+    assert conservative_token_match(
+        title_tokens("Pokemon Emerald"), title_tokens("Pokemon Emerald Version")
+    )
+    assert conservative_token_match(
+        title_tokens("Kirby"), title_tokens("Kirby Nightmare in Dream Land")
+    )
+    # A longer save name must not match a shorter, coarser ROM name.
+    assert not conservative_token_match(
+        title_tokens("Pokemon Emerald"), title_tokens("Pokemon")
+    )
+    # An empty hint is never a match.
+    assert not conservative_token_match(title_tokens(""), title_tokens("Pokemon"))
 
 
 # --- digests -----------------------------------------------------------------
@@ -267,6 +286,45 @@ def test_resolver_bind_with_unreadable_rom_path(tmp_path: Path):
     resolver = GameIdentityResolver()
     with pytest.raises(ValueError):
         resolver.bind(make_entry(), rom_path=tmp_path / "missing.gba")
+
+
+def test_resolver_bind_rejects_wrong_extension(tmp_path: Path):
+    rom = tmp_path / "Kirby.zip"
+    rom.write_bytes(make_gba_rom())
+    resolver = GameIdentityResolver(binding_path=tmp_path / "bindings.json")
+    with pytest.raises(ValueError, match="扩展名"):
+        resolver.bind(make_entry(), rom_path=rom)
+    # A rejected ROM must never reach the manual binding store.
+    assert not (tmp_path / "bindings.json").exists()
+
+
+def test_resolver_bind_rejects_non_nds_extension(tmp_path: Path):
+    rom = tmp_path / "Kirby.gba"
+    rom.write_bytes(make_gba_rom())
+    resolver = GameIdentityResolver(binding_path=tmp_path / "bindings.json")
+    with pytest.raises(ValueError, match="扩展名"):
+        resolver.bind(make_entry(platform="nds"), rom_path=rom)
+    assert not (tmp_path / "bindings.json").exists()
+
+
+def test_resolver_bind_accepts_agb_for_gba(tmp_path: Path):
+    rom = tmp_path / "Kirby.agb"
+    rom.write_bytes(make_gba_rom())
+    resolver = GameIdentityResolver(binding_path=tmp_path / "bindings.json")
+    bound = resolver.bind(make_entry(), rom_path=rom)
+    assert bound.source == "manual"
+    assert bound.identity_key.startswith("gba:sha1:")
+
+
+def test_supported_extensions_and_path_helper():
+    assert supported_extensions("GBA") == (".gba", ".agb")
+    assert supported_extensions("nds") == (".nds",)
+    assert is_supported_rom_path("Game.AGB", "gba")
+    assert not is_supported_rom_path("Game.zip", "gba")
+    assert not is_supported_rom_path("Game", "gba")
+    # Platforms without a declared constraint stay permissive.
+    assert supported_extensions("psp") == ()
+    assert is_supported_rom_path("Game.bin", "psp")
 
 
 def test_rom_index_add_root_and_refresh(tmp_path: Path):

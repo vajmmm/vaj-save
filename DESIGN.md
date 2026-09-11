@@ -269,6 +269,10 @@ Right panel, top to bottom:
   path use stable label/value columns so a long path cannot cover another field.
 - **Primary action**: a full-width blue 备份 button.
 - **Secondary actions**: 恢复, 导出 ZIP and 打开位置 in one measured row.
+- **Game-identity binding (contextual)**: shown only when the selected save still
+  needs help. An `ambiguous` save lists its candidate ROMs and offers a measured
+  绑定所选 ROM button; an `unresolved` GBA/NDS save offers a 手动选择 ROM… button
+  that opens the file dialog. The section stays hidden for every other save.
 - **Versions Listbox**: white, blue selection, with a compact monospace row and a
   grid row that occupies the remaining inspector height.
 - **Note entry**: a white input pinned to the bottom.

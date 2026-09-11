@@ -14,8 +14,15 @@ from typing import Iterable, List, Mapping, Optional, Union
 
 from . import gba, nds, psp, switch, threeds, vita
 from .bindings import BindingStore
+from .cache import RomIdentityCache
 from .models import GameIdentity, GameIdentityResult, unresolved
-from .roms import RomIndex, build_identity_from_rom, make_rom_file
+from .roms import (
+    RomIndex,
+    build_identity_from_rom,
+    is_supported_rom_path,
+    make_rom_file,
+    supported_extensions,
+)
 
 _PLATFORM_MODULES = {
     "gba": gba,
@@ -34,6 +41,7 @@ class ResolverContext:
     bindings: BindingStore
     rom_index: RomIndex
     auto_bind: bool = True
+    rom_cache: Optional[RomIdentityCache] = None
 
 
 class GameIdentityResolver:
@@ -43,6 +51,8 @@ class GameIdentityResolver:
         rom_dirs: Optional[Mapping[str, Iterable]] = None,
         bindings: Optional[BindingStore] = None,
         binding_path: Optional[Union[Path, str]] = None,
+        cache: Optional[RomIdentityCache] = None,
+        cache_path: Optional[Union[Path, str]] = None,
         auto_bind: bool = True,
     ) -> None:
         if bindings is not None:
@@ -50,6 +60,7 @@ class GameIdentityResolver:
         else:
             self.bindings = BindingStore(binding_path)
         self.rom_index = RomIndex(rom_dirs)
+        self.rom_cache = cache if cache is not None else RomIdentityCache(cache_path)
         self.auto_bind = bool(auto_bind)
 
     # -- dispatch ------------------------------------------------------------
@@ -63,6 +74,7 @@ class GameIdentityResolver:
             bindings=self.bindings,
             rom_index=self.rom_index,
             auto_bind=self.auto_bind,
+            rom_cache=self.rom_cache,
         )
 
     def resolve(self, entry) -> GameIdentityResult:
@@ -107,7 +119,14 @@ class GameIdentityResolver:
         """
         if identity is None and rom_path is not None:
             platform = (getattr(entry, "platform", "") or "").strip().lower()
-            identity = build_identity_from_rom(make_rom_file(rom_path, platform), platform)
+            if not is_supported_rom_path(rom_path, platform):
+                allowed = "、".join(supported_extensions(platform))
+                raise ValueError(
+                    f"ROM 扩展名不符: {Path(rom_path).name}（{platform} 仅接受 {allowed}）"
+                )
+            identity = build_identity_from_rom(
+                make_rom_file(rom_path, platform), platform, self.rom_cache
+            )
             if identity is None:
                 raise ValueError(f"无法读取 ROM: {rom_path}")
         if identity is None:

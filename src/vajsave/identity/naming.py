@@ -110,6 +110,24 @@ def display_name_from_stem(name: str) -> str:
     return cleaned or strip_extension(name)
 
 
+def title_tokens(name: str) -> frozenset:
+    """Normalised, region-free token set used for conservative fuzzy matching."""
+    return frozenset(normalize_title(name).split())
+
+
+def conservative_token_match(hint_tokens: frozenset, candidate_tokens: frozenset) -> bool:
+    """True when every token of ``hint_tokens`` also appears in ``candidate_tokens``.
+
+    Stage-2 matching is deliberately one-directional: the save name is a
+    *hint* ("Pokemon Emerald") while the ROM name may carry extra words
+    ("Pokemon Emerald Version").  Requiring the hint's tokens to be a non-empty
+    subset of the ROM's tokens avoids the false positive of matching a longer
+    save name against a shorter, coarser ROM name (“Pokemon Emerald” vs
+    “Pokemon”).
+    """
+    return bool(hint_tokens) and hint_tokens <= candidate_tokens
+
+
 def save_hint(entry) -> str:
     """Best available name for a save entry, independent of its absolute path.
 
