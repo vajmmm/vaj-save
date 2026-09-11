@@ -190,6 +190,58 @@ def test_unresolved_gba_offers_manual_rom_dialog(tk_root, tmp_path, monkeypatch)
         _dispose(app, tk_root)
 
 
+def test_manual_rom_dialog_cancel_keeps_save_unresolved(tk_root, tmp_path, monkeypatch):
+    vol = _gba_volume(tmp_path, [])
+    app, state = _app(tk_root, tmp_path, vol)
+    try:
+        entry = app._saves_index[0]
+        app.save_list.select_index(0)
+        monkeypatch.setattr(app_ui.filedialog, "askopenfilename", lambda **kwargs: "")
+        app._manual_rom_button.invoke()
+
+        # Cancelling the dialog must not bind anything nor warn.
+        assert state.resolve_save_identity(entry).status == STATUS_UNRESOLVED
+        assert not (state.library_root / BINDINGS_NAME).is_file()
+        assert app.warning_label_var.get() == ""
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_manual_rom_wrong_extension_is_rejected(tk_root, tmp_path, monkeypatch):
+    vol = _gba_volume(tmp_path, [])
+    bad = tmp_path / "Apotris.zip"
+    bad.write_bytes(make_gba_rom(title="APOTRIS", code="APTR"))
+    app, state = _app(tk_root, tmp_path, vol)
+    try:
+        entry = app._saves_index[0]
+        app.save_list.select_index(0)
+        monkeypatch.setattr(app_ui.filedialog, "askopenfilename", lambda **kwargs: str(bad))
+        app._manual_rom_button.invoke()
+
+        assert state.resolve_save_identity(entry).status == STATUS_UNRESOLVED
+        assert not (state.library_root / BINDINGS_NAME).is_file()
+        assert "扩展名" in app.warning_label_var.get()
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_manual_rom_unreadable_is_rejected(tk_root, tmp_path, monkeypatch):
+    vol = _gba_volume(tmp_path, [])
+    missing = tmp_path / "Apotris.gba"  # valid extension, but no such file
+    app, state = _app(tk_root, tmp_path, vol)
+    try:
+        entry = app._saves_index[0]
+        app.save_list.select_index(0)
+        monkeypatch.setattr(app_ui.filedialog, "askopenfilename", lambda **kwargs: str(missing))
+        app._manual_rom_button.invoke()
+
+        assert state.resolve_save_identity(entry).status == STATUS_UNRESOLVED
+        assert not (state.library_root / BINDINGS_NAME).is_file()
+        assert "绑定失败" in app.warning_label_var.get()
+    finally:
+        _dispose(app, tk_root)
+
+
 def test_manual_binding_survives_a_fresh_state(tk_root, tmp_path, monkeypatch):
     vol = _gba_volume(tmp_path, [])
     rom = tmp_path / "Apotris.gba"

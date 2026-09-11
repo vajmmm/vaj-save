@@ -15,7 +15,13 @@ from typing import Iterable, List, Mapping, Optional, Union
 from . import gba, nds, psp, switch, threeds, vita
 from .bindings import BindingStore
 from .models import GameIdentity, GameIdentityResult, unresolved
-from .roms import RomIndex, build_identity_from_rom, make_rom_file
+from .roms import (
+    RomIndex,
+    build_identity_from_rom,
+    is_supported_rom_path,
+    make_rom_file,
+    supported_extensions,
+)
 
 _PLATFORM_MODULES = {
     "gba": gba,
@@ -107,6 +113,11 @@ class GameIdentityResolver:
         """
         if identity is None and rom_path is not None:
             platform = (getattr(entry, "platform", "") or "").strip().lower()
+            if not is_supported_rom_path(rom_path, platform):
+                allowed = "、".join(supported_extensions(platform))
+                raise ValueError(
+                    f"ROM 扩展名不符: {Path(rom_path).name}（{platform} 仅接受 {allowed}）"
+                )
             identity = build_identity_from_rom(make_rom_file(rom_path, platform), platform)
             if identity is None:
                 raise ValueError(f"无法读取 ROM: {rom_path}")

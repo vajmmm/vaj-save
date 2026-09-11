@@ -72,6 +72,24 @@ def make_rom_file(path, platform: str) -> RomFile:
     )
 
 
+def supported_extensions(platform: str) -> Tuple[str, ...]:
+    """Extensions accepted for ``platform``; empty when it is unconstrained."""
+    return ROM_EXTENSIONS.get((platform or "").strip().lower(), ())
+
+
+def is_supported_rom_path(path, platform: str) -> bool:
+    """Whether ``path`` carries an extension accepted for ``platform``.
+
+    Platforms without a declared constraint accept any path so the generic
+    resolver keeps working for non-cartridge targets; cartridge platforms only
+    accept their declared dumps (e.g. GBA: ``.gba``/``.agb``, NDS: ``.nds``).
+    """
+    exts = supported_extensions(platform)
+    if not exts:
+        return True
+    return Path(path).suffix.lower() in exts
+
+
 def _decode_header_field(raw: bytes) -> Optional[str]:
     if not raw:
         return None

@@ -36,7 +36,14 @@ from .naming import (
     strip_extension,
 )
 from .resolver import GameIdentityResolver, ResolverContext
-from .roms import RomFile, RomIndex, build_identity_from_rom, make_rom_file
+from .roms import (
+    RomFile,
+    RomIndex,
+    build_identity_from_rom,
+    is_supported_rom_path,
+    make_rom_file,
+    supported_extensions,
+)
 from .digest import crc32_file, digest_file, sha1_file
 
 __all__ = [
@@ -50,6 +57,8 @@ __all__ = [
     "RomFile",
     "build_identity_from_rom",
     "make_rom_file",
+    "is_supported_rom_path",
+    "supported_extensions",
     "digest_file",
     "sha1_file",
     "crc32_file",
