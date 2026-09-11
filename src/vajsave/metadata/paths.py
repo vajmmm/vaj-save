@@ -1,11 +1,12 @@
 """Filesystem locations for the metadata layer.
 
-Metadata ``.dat`` files can come from three places, in priority order:
+Metadata indexes can come from three places, in priority order:
 
 1. an explicit directory persisted in the app config (``libretro_dir``);
 2. ``<library_root>/metadata/libretro/`` -- drop-in location next to the archive;
 3. the data files bundled with the package (``vajsave/data/libretro/``), which
-   ship empty by default and exist so a packaged build has a stable path.
+   ship the compact offline index (``gba.json`` / ``nds.json``) built from the
+   real No-Intro DATs by ``tools/build_metadata_index.py``.
 
 None of these must exist; the provider simply finds nothing and every lookup
 returns ``None``.

@@ -246,21 +246,29 @@ def test_cover_helpers_never_raise_on_exotic_entry(tmp_path: Path):
 # --- resolve_cover ----------------------------------------------------------
 
 
-def test_resolve_cover_priority_embedded_then_user_then_none(tmp_path: Path):
+def test_resolve_cover_priority_user_then_downloaded_then_embedded(tmp_path: Path):
     save_dir = tmp_path / "ULJM05800"
     save_dir.mkdir()
     embedded = _write_image(save_dir / "ICON0.PNG")
     lib = tmp_path / "lib"
     user = _write_image(lib / "covers" / "psp" / "ULJM05800.png")
+    identity_key = "psp:ULJM05800"
+    downloaded = lib / "covers" / "psp" / (covers.identity_hash(identity_key) + ".png")
+    downloaded.parent.mkdir(parents=True, exist_ok=True)
+    downloaded.write_bytes(user.read_bytes())
 
     entry = _entry(path=str(save_dir), cover_path=str(embedded))
-    assert covers.resolve_cover(entry, lib) == embedded
+    # user file outranks downloaded and embedded.
+    assert covers.resolve_cover(entry, lib, identity_key=identity_key) == user
+
+    user.unlink()
+    assert covers.resolve_cover(entry, lib, identity_key=identity_key) == downloaded
+
+    downloaded.unlink()
+    assert covers.resolve_cover(entry, lib, identity_key=identity_key) == embedded
 
     entry.cover_path = None
-    assert covers.resolve_cover(entry, lib) == user
-
-    (lib / "covers" / "psp" / "ULJM05800.png").unlink()
-    assert covers.resolve_cover(entry, lib) is None
+    assert covers.resolve_cover(entry, lib, identity_key=identity_key) is None
     assert covers.resolve_cover(None, lib) is None
 
 

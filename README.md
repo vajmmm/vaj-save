@@ -44,9 +44,10 @@ U 盘，以及以 USB 大容量存储（UMS）方式直连的掌机（Hekate UMS
    - `<机种>` 取 `psp` / `vita` / `switch` / `3ds` / `nds` / `gba`
    - `<名称>` 取该存档的 `title_id`（没有时用游戏名），文件名中的 Windows 非法字符（`:` `*` `?` 等）会被替换成 `_`，所以**不会**用含 `:` 的 game key 当文件名
    - 支持的扩展名：`png` `jpg` `jpeg` `webp` `bmp` `gif`，同名时任选一种即可
-2. **下载的封面**（仅 GBA/NDS）：当存档对应的 ROM 摘要（SHA1/CRC32）命中**本地 libretro 元数据索引**（见下文）时，按官方 thumbnail 规则从
+2. **下载的封面**（仅 GBA/NDS）：当存档对应的 ROM 摘要（SHA1/CRC32）命中**内置离线 libretro 元数据索引**（见下文）时，按官方 thumbnail 规则从
    `https://thumbnails.libretro.com/<System>/Named_Boxarts/<名称>.png` 下载，并缓存到
-   `<备份库>/covers_cache/<identity-hash>.png`（同目录 `manifest.json` 记录来源与校验）。
+   `<备份库>/covers/<机种>/<identity-hash>.png`（`<备份库>/covers/manifest.json` 记录
+   `identity_key` / `provider` / `canonical_title` / `remote_url` / `local_path` / `updated_at`）。
    缓存有效命中时**完全不走网络**；下载失败（404 / 超时 / 离线 / 内容不完整 / 非图片）会静默跳过，
    **不会**污染缓存，也不会顶替已有的本地封面。
 3. **存档目录内的内嵌图标**（扫描设备时自动发现，只读，不做整盘递归）：
@@ -74,17 +75,34 @@ U 盘，以及以 USB 大容量存储（UMS）方式直连的掌机（Hekate UMS
 
 ## 游戏信息（GBA/NDS libretro 索引）
 
-GBA/NDS 的存档通过 ROM 摘要（SHA1/CRC32）匹配身份。若再提供一份本地 libretro / No-Intro 索引，就能把摘要解析成规范游戏名（`canonical_title`）与地区（`region`），详情栏会优先显示规范名，并按规范名去下载官方封面。
+GBA/NDS 的存档通过 ROM 摘要（SHA1/CRC32）匹配身份。内置的离线索引把摘要解析成规范游戏名（`canonical_title`）、地区（`region`）与外部 id（`external_ids`，如 No-Intro id 与卡带 serial），详情栏会优先显示规范名，并按规范名去下载官方封面。
 
-索引是标准 `Logiqx` XML（libretro/No-Intro 的 `.dat` 格式），按下述顺序查找（同一摘要以先找到的为准）：
+### 内置完整索引（默认，离线可用）
+
+程序随包内置由**真实 No-Intro DAT** 生成的紧凑索引：
+
+- `vajsave/data/libretro/gba.json`（Nintendo - Game Boy Advance）
+- `vajsave/data/libretro/nds.json`（Nintendo - Nintendo DS，Encrypted + Decrypted）
+- `vajsave/data/libretro/provenance.json`、`TERMS-No-Intro.txt`（数据来源/许可）
+
+索引由 `tools/build_metadata_index.py` 离线生成（解析 Logiqx XML / ClrMamePro 两种 DAT），
+记录按 `(sha1, crc32, title)` 排序，可复现。重新生成：
+
+```bash
+python tools/build_metadata_index.py --platform gba --dat "Nintendo - Game Boy Advance (<version>).dat" --out src/vajsave/data/libretro/gba.json
+```
+
+### 用户自定义索引
+
+也可以额外提供本地 libretro / No-Intro 索引（`.dat` / `.xml` / 紧凑 `.json`），按下述顺序查找（同一摘要以先找到的为准）：
 
 1. 应用配置里的 `libretro_dir`（字符串路径）
 2. `<备份库>/metadata/libretro/`
-3. 程序内置目录 `vajsave/data/libretro/`（默认留空）
+3. 程序内置目录 `vajsave/data/libretro/`
 
 索引只在需要时解析一次并常驻内存；列表刷新等 UI 热路径只读已解析的内存表，不会重复解析 DAT、也不会全盘扫描。查不到、索引损坏、平台不支持（非 GBA/NDS）时统一返回“无元数据”，不影响扫描/备份/封面回退。
 
-解析结果会缓存到 `<备份库>/metadata_cache.json`；缓存命中时**完全不加载索引**。
+解析结果会缓存到 `<备份库>/game_metadata.json`（按 `GameIdentity.identity_key` 为键，原子写入、线程安全）；缓存命中时**完全不加载索引**。
 
 
 ## macOS App（双击打开）

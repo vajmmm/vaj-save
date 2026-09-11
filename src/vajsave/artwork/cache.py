@@ -1,12 +1,18 @@
-"""Content-addressed cover cache with a JSON manifest.
+"""Identity-hash cover cache with a JSON manifest.
 
-Downloaded covers are named after the *identity hash* of the save they belong to
-(``sha1(identity_key)``), so the file name is stable across renames and cannot
-collide with a different game.  A JSON manifest records every cached file so the
-cache can be validated and pruned:
+Downloaded covers are named after the *identity hash* of the save they belong
+to (``sha1(identity_key)``), so the file name is stable across renames and
+cannot collide with a different game.  Each platform gets its own directory::
 
-* a **valid hit** requires both a manifest entry *and* an on-disk file, so a
-  partially written or externally deleted image never looks like a hit;
+    <library_root>/covers/<platform>/<identity-hash>.png
+    <library_root>/covers/manifest.json
+
+The manifest records one entry per cached file with the exact fields the
+contract requires: ``identity_key``, ``platform``, ``provider``,
+``canonical_title``, ``remote_url``, ``local_path`` and ``updated_at``.
+
+* a **valid hit** requires a manifest entry *and* the referenced file to exist,
+  so a partially written or externally deleted image never looks like a hit;
 * an image is only ever committed (file + manifest entry) after Pillow confirms
   it decodes, so a 404 HTML page or a truncated download can never pollute the
   cache;
@@ -17,16 +23,29 @@ The whole module is best-effort: every public method degrades rather than raises
 
 from __future__ import annotations
 
-import hashlib
 import json
+import threading
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
-COVER_CACHE_DIR = "covers_cache"
+from ..covers import DOWNLOADED_COVER_DIR, identity_hash
+
+# Directory (under the library root) that holds the covers/ tree.
+COVER_CACHE_DIR = DOWNLOADED_COVER_DIR
 MANIFEST_NAME = "manifest.json"
 _VERSION = 1
+
+# Fields every manifest record must carry (the acceptance contract).
+MANIFEST_FIELDS = (
+    "identity_key",
+    "provider",
+    "canonical_title",
+    "remote_url",
+    "local_path",
+    "updated_at",
+)
 
 # Same ceiling as the embedded-icon reader: refuse to cache a cover larger than
 # this so a hostile/oversized download cannot fill the library.
@@ -58,6 +77,7 @@ class CoverCache:
     ) -> None:
         self.root: Optional[Path] = Path(root).expanduser() if root else None
         self.max_bytes = int(max_bytes)
+        self._lock = threading.Lock()
         self._entries: Dict[str, Dict[str, Any]] = {}
         self.load()
 
@@ -65,29 +85,40 @@ class CoverCache:
 
     @staticmethod
     def identity_hash(identity_key: str) -> str:
-        return hashlib.sha1(str(identity_key or "").encode("utf-8")).hexdigest()
+        return identity_hash(identity_key)
 
-    def path_for(self, identity_key: str) -> Optional[Path]:
-        if self.root is None:
+    def path_for(self, platform: str, identity_key: str) -> Optional[Path]:
+        if self.root is None or not identity_key:
             return None
-        return self.root / f"{self.identity_hash(identity_key)}.png"
+        plat = (str(platform or "").strip() or "unknown")
+        return self.root / plat / f"{identity_hash(identity_key)}.png"
+
+    @staticmethod
+    def _local_path(platform: str, identity_key: str) -> str:
+        plat = (str(platform or "").strip() or "unknown")
+        return f"{plat}/{identity_hash(identity_key)}.png"
 
     # -- lookup --------------------------------------------------------------
 
-    def lookup(self, identity_key: str) -> Optional[Path]:
+    def lookup(self, platform: str, identity_key: str) -> Optional[Path]:
         """Return the cached cover path for a *valid* hit, else ``None``."""
         if self.root is None or not identity_key:
             return None
-        digest = self.identity_hash(identity_key)
-        record = self._entries.get(digest)
+        with self._lock:
+            record = self._entries.get(str(identity_key))
         if not isinstance(record, dict):
             return None
-        filename = record.get("file") or f"{digest}.png"
-        path = self.root / filename
+        if str(record.get("platform", "")) != str(platform or "").strip():
+            return None
+        relative = record.get("local_path")
+        if not relative:
+            return None
+        path = self.root / str(relative)
         try:
             if not path.is_file():
                 return None
-            if path.stat().st_size <= 0 or path.stat().st_size > self.max_bytes:
+            size = path.stat().st_size
+            if size <= 0 or size > self.max_bytes:
                 return None
         except OSError:
             return None
@@ -97,11 +128,13 @@ class CoverCache:
 
     def store(
         self,
+        platform: str,
         identity_key: str,
         data: Optional[bytes],
         *,
-        url: Optional[str] = None,
-        source: str = "libretro",
+        provider: str = "libretro",
+        canonical_title: str = "",
+        remote_url: str = "",
     ) -> Optional[Path]:
         """Validate and commit ``data`` as the cover for ``identity_key``.
 
@@ -114,13 +147,13 @@ class CoverCache:
             return None
         if not is_valid_image_bytes(data):
             return None
-        path = self.path_for(identity_key)
+        path = self.path_for(platform, identity_key)
         if path is None:
             return None
-        digest = self.identity_hash(identity_key)
+        relative = self._local_path(platform, identity_key)
         tmp = path.with_name(path.name + ".tmp")
         try:
-            self.root.mkdir(parents=True, exist_ok=True)
+            path.parent.mkdir(parents=True, exist_ok=True)
             tmp.write_bytes(data)
             tmp.replace(path)
         except OSError:
@@ -129,22 +162,26 @@ class CoverCache:
             except OSError:
                 pass
             return None
-        self._entries[digest] = {
+        record = {
             "identity_key": str(identity_key),
-            "file": path.name,
-            "url": url or "",
-            "source": source,
-            "sha1": hashlib.sha1(data).hexdigest(),
-            "bytes": len(data),
-            "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "platform": str(platform or "").strip(),
+            "provider": str(provider or ""),
+            "canonical_title": str(canonical_title or ""),
+            "remote_url": str(remote_url or ""),
+            "local_path": relative,
+            "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
-        self.save()
+        with self._lock:
+            self._entries[str(identity_key)] = record
+            payload = {"version": _VERSION, "entries": dict(self._entries)}
+            self._write(payload)
         return path
 
     # -- manifest ------------------------------------------------------------
 
     def manifest(self) -> Dict[str, Dict[str, Any]]:
-        return {key: dict(value) for key, value in self._entries.items()}
+        with self._lock:
+            return {key: dict(value) for key, value in self._entries.items()}
 
     def load(self) -> None:
         entries: Dict[str, Dict[str, Any]] = {}
@@ -161,18 +198,27 @@ class CoverCache:
                         }
             except (OSError, ValueError, UnicodeDecodeError):
                 entries = {}
-        self._entries = entries
+        with self._lock:
+            self._entries = entries
 
     def save(self) -> bool:
+        with self._lock:
+            if self.root is None:
+                return False
+            payload = {"version": _VERSION, "entries": dict(self._entries)}
+            return self._write(payload)
+
+    def _write(self, payload: Dict[str, Any]) -> bool:
         if self.root is None:
             return False
         manifest = self.root / MANIFEST_NAME
-        payload = {"version": _VERSION, "entries": dict(self._entries)}
         tmp = None
         try:
             self.root.mkdir(parents=True, exist_ok=True)
             tmp = manifest.with_name(manifest.name + ".tmp")
-            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
             tmp.replace(manifest)
         except (OSError, TypeError, ValueError):
             if tmp is not None:
@@ -187,19 +233,28 @@ class CoverCache:
         """Drop manifest entries whose file vanished; returns entries removed."""
         if self.root is None:
             return 0
-        removed = 0
-        for digest, record in list(self._entries.items()):
-            filename = record.get("file") or f"{digest}.png"
-            try:
-                exists = (self.root / filename).is_file()
-            except OSError:
-                exists = False
-            if not exists:
-                self._entries.pop(digest, None)
-                removed += 1
-        if removed:
-            self.save()
+        with self._lock:
+            removed = 0
+            for key, record in list(self._entries.items()):
+                relative = record.get("local_path")
+                try:
+                    exists = bool(relative) and (self.root / str(relative)).is_file()
+                except OSError:
+                    exists = False
+                if not exists:
+                    self._entries.pop(key, None)
+                    removed += 1
+            if removed:
+                payload = {"version": _VERSION, "entries": dict(self._entries)}
+                self._write(payload)
         return removed
 
 
-__all__ = ["CoverCache", "COVER_CACHE_DIR", "MANIFEST_NAME", "is_valid_image_bytes"]
+__all__ = [
+    "CoverCache",
+    "COVER_CACHE_DIR",
+    "MANIFEST_NAME",
+    "MANIFEST_FIELDS",
+    "is_valid_image_bytes",
+    "MAX_COVER_BYTES",
+]

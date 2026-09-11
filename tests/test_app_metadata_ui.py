@@ -317,7 +317,7 @@ def test_save_display_prefers_canonical_title(tmp_path):
 
     state = AppState(library_root=tmp_path / "lib")
     entry = SaveEntry(platform="gba", source_id="gba", display_name="Apotris", path="/tmp/Apotris.sav")
-    metadata = GameMetadata(canonical_title="Apotris - Rhythm Game (USA)", platform="gba", region="USA")
+    metadata = GameMetadata(identity_key="gba:sha1:x", canonical_title="Apotris - Rhythm Game (USA)", platform="gba", region="USA")
     view = save_display(state, entry, metadata=metadata)
     assert view["title"] == "Apotris - Rhythm Game (USA)"
     assert save_display(state, entry)["title"] == "Apotris"

@@ -46,3 +46,41 @@ def test_windows_build_scripts_invoke_windows_spec():
     assert "vaj-save-windows.spec" in bat
     assert "vaj-save.exe" in ps1
     assert "vaj-save.exe" in bat
+
+
+def test_specs_bundle_the_metadata_index():
+    for spec in (SPEC, WIN_SPEC):
+        text = spec.read_text(encoding="utf-8")
+        assert '"data"' in text
+        assert 'src" / "vajsave" / "data' in text
+
+
+def test_bundled_index_is_readable_as_a_package_resource():
+    from importlib import resources
+
+    data = resources.files("vajsave.data").joinpath("libretro")
+    text = data.joinpath("gba.json").read_text(encoding="utf-8")
+    assert "vajsave.libretro-index" in text
+    assert data.joinpath("provenance.json").is_file()
+    assert data.joinpath("TERMS-No-Intro.txt").is_file()
+
+
+def test_wheel_contains_bundled_index(tmp_path):
+    import subprocess
+    import sys
+    import zipfile
+
+    subprocess.run(
+        [sys.executable, "-m", "build", "--wheel", "--no-isolation", "--outdir", str(tmp_path)],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    )
+    wheels = list(tmp_path.glob("vajsave-*.whl"))
+    assert wheels, "wheel was not produced"
+    with zipfile.ZipFile(wheels[0]) as archive:
+        names = set(archive.namelist())
+    assert "vajsave/data/libretro/gba.json" in names
+    assert "vajsave/data/libretro/nds.json" in names
+    assert "vajsave/data/libretro/provenance.json" in names
+    assert "vajsave/data/libretro/TERMS-No-Intro.txt" in names

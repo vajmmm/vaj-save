@@ -12,12 +12,23 @@ identity while its ROM is absent from the metadata index (``metadata is None``),
 or carry metadata that never becomes an identity.  Keeping the record frozen and
 dependency-free means it can be cached as JSON and passed across the UI boundary
 without dragging the identity layer along.
+
+Schema (frozen, format version 1)::
+
+    GameMetadata(
+        identity_key: str,               # the GameIdentity it was resolved from
+        platform: str,                   # "gba" / "nds"
+        canonical_title: str,            # No-Intro game name, region tags included
+        region: str | None,              # canonicalised region, e.g. "USA"
+        external_ids: dict[str, str] | None,  # e.g. {"serial": "BPEE", "nointro": "1961"}
+        source: str,                     # provenance tag, e.g. "libretro"
+    )
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 # Source tag for metadata that came from a local libretro / No-Intro index.
 SOURCE_LIBRETRO = "libretro"
@@ -25,48 +36,54 @@ SOURCE_LIBRETRO = "libretro"
 
 @dataclass(frozen=True)
 class GameMetadata:
-    """A canonical description of one ROM, keyed by its digest.
+    """A canonical description of one ROM, keyed by its game identity.
 
     ``canonical_title`` is the index's own game name (region tags included, e.g.
     ``"Pokemon - FireRed Version (USA)"``); ``region`` is the canonicalised
-    region extracted from it (``"USA"``).  ``rom_sha1`` / ``rom_crc32`` are the
-    *keys* the record was found by, stored so the metadata survives a cache
-    round-trip without re-deriving them.
+    region extracted from it (``"USA"``).  ``external_ids`` carries the
+    identifiers the source database exposes (No-Intro's own id and the
+    cartridge serial), which are descriptive only -- the *grouping* key stays
+    :attr:`identity_key`.
     """
 
-    canonical_title: str
+    identity_key: str
     platform: str
+    canonical_title: str
     region: Optional[str] = None
+    external_ids: Optional[Dict[str, str]] = None
     source: str = SOURCE_LIBRETRO
-    rom_sha1: Optional[str] = None
-    rom_crc32: Optional[str] = None
 
     @property
     def display_title(self) -> str:
-        """Title for the UI; falls back to the raw canonical title."""
+        """Title for the UI; falls back to an empty string."""
         return self.canonical_title or ""
 
     def to_dict(self) -> Dict[str, Any]:
         data: Dict[str, Any] = {
-            "canonical_title": self.canonical_title,
+            "identity_key": self.identity_key,
             "platform": self.platform,
+            "canonical_title": self.canonical_title,
             "source": self.source,
         }
-        for key in ("region", "rom_sha1", "rom_crc32"):
-            value = getattr(self, key)
-            if value is not None:
-                data[key] = value
+        if self.region is not None:
+            data["region"] = self.region
+        if self.external_ids:
+            data["external_ids"] = dict(self.external_ids)
         return data
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "GameMetadata":
+    def from_dict(cls, data: Mapping[str, Any]) -> "GameMetadata":
+        raw_ids = data.get("external_ids")
+        external_ids: Optional[Dict[str, str]] = None
+        if isinstance(raw_ids, Mapping):
+            external_ids = {str(k): str(v) for k, v in raw_ids.items()}
         return cls(
-            canonical_title=data.get("canonical_title") or "",
-            platform=data.get("platform") or "",
+            identity_key=str(data.get("identity_key") or ""),
+            platform=str(data.get("platform") or ""),
+            canonical_title=str(data.get("canonical_title") or ""),
             region=data.get("region"),
+            external_ids=external_ids,
             source=data.get("source") or SOURCE_LIBRETRO,
-            rom_sha1=data.get("rom_sha1"),
-            rom_crc32=data.get("rom_crc32"),
         )
 
 

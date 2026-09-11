@@ -86,6 +86,15 @@ def test_appstate_metadata_none_for_unknown_rom(tmp_path: Path):
     assert state.resolve_save_metadata(entry) is None
 
 
+def test_appstate_metadata_unsupported_platform_is_none(tmp_path: Path):
+    from vajsave.identity.models import GameIdentity
+
+    state = AppState(library_root=tmp_path / "lib")
+    identity = GameIdentity(identity_key="psp:ULJM05800", platform="psp", title="Game")
+    assert state.metadata_resolver.resolve(identity) is None
+    assert state.cached_save_metadata(identity) is None
+
+
 def test_appstate_cover_fallback_order(tmp_path: Path):
     library = tmp_path / "lib"
     state = AppState(library_root=library)

@@ -7,7 +7,7 @@ The public fallback order is fixed and tested:
 * **user local** -- ``<library_root>/covers/<platform>/<name>.<ext>`` (the
   existing :func:`vajsave.covers.user_cover_path`);
 * **downloaded** -- an image fetched from a provider and committed to the
-  identity-hash cover cache;
+  identity-hash cover cache (``covers/<platform>/<identity-hash>.png``);
 * **embedded** -- an icon found inside the save folder during the scan;
 * **placeholder** -- no path; the UI paints its light-grey square.
 
@@ -26,7 +26,7 @@ from typing import Iterable, List, Optional, Union
 from ..covers import find_embedded_cover, user_cover_path
 from .cache import CoverCache
 from .downloader import ArtworkDownloader
-from .providers import ArtworkProvider, ArtworkRef, LibretroArtworkProvider
+from .providers import Artwork, ArtworkProvider, LibretroThumbnailProvider
 
 SOURCE_USER = "user"
 SOURCE_DOWNLOADED = "downloaded"
@@ -71,11 +71,15 @@ def _user_path(entry, library_root) -> Optional[Path]:
         return None
 
 
-def _downloaded_path(cache: Optional[CoverCache], identity_key: Optional[str]) -> Optional[Path]:
+def _downloaded_path(
+    cache: Optional[CoverCache],
+    platform: Optional[str],
+    identity_key: Optional[str],
+) -> Optional[Path]:
     if cache is None or not identity_key:
         return None
     try:
-        return cache.lookup(identity_key)
+        return cache.lookup(platform or "", identity_key)
     except Exception:  # noqa: BLE001
         return None
 
@@ -86,14 +90,16 @@ def resolve_artwork(
     *,
     cache: Optional[CoverCache] = None,
     identity_key: Optional[str] = None,
+    platform: Optional[str] = None,
 ) -> ArtworkResolution:
     """Network-free best cover: user local > downloaded cache > embedded."""
     if entry is None:
         return PLACEHOLDER
+    plat = platform if platform is not None else getattr(entry, "platform", None)
     user = _user_path(entry, library_root)
     if user is not None:
         return ArtworkResolution(str(user), SOURCE_USER)
-    downloaded = _downloaded_path(cache, identity_key)
+    downloaded = _downloaded_path(cache, plat, identity_key)
     if downloaded is not None:
         return ArtworkResolution(str(downloaded), SOURCE_DOWNLOADED)
     embedded = _embedded_path(entry)
@@ -115,23 +121,36 @@ class ArtworkService:
         self.cache = cache
         self.downloader = downloader or ArtworkDownloader()
         if providers is None:
-            self.providers: List[ArtworkProvider] = [LibretroArtworkProvider()]
+            self.providers: List[ArtworkProvider] = [LibretroThumbnailProvider()]
         else:
             self.providers = list(providers)
 
     # -- provider selection --------------------------------------------------
 
-    def ref_for(self, platform: str, title: Optional[str]) -> Optional[ArtworkRef]:
-        """First provider that supports ``platform`` and yields a URL."""
+    def cover_for(self, metadata) -> Optional[Artwork]:
+        """First provider that supports the platform and yields artwork."""
+        if metadata is None:
+            return None
+        for provider in self.providers:
+            try:
+                artwork = provider.find_cover(metadata)
+            except Exception:  # noqa: BLE001 - one bad provider must not stop the rest
+                continue
+            if artwork is not None:
+                return artwork
+        return None
+
+    def ref_for(self, platform: str, title: str) -> Optional[Artwork]:
+        """Build artwork from a platform+title via the first provider (compat)."""
         if not title:
             return None
         for provider in self.providers:
             try:
-                ref = provider.ref_for(platform, title)
-            except Exception:  # noqa: BLE001 - one bad provider must not stop the rest
+                artwork = provider.cover_for(platform, title)
+            except Exception:  # noqa: BLE001
                 continue
-            if ref is not None:
-                return ref
+            if artwork is not None:
+                return artwork
         return None
 
     # -- resolution ----------------------------------------------------------
@@ -142,41 +161,55 @@ class ArtworkService:
         library_root,
         *,
         identity_key: Optional[str] = None,
+        platform: Optional[str] = None,
     ) -> ArtworkResolution:
         """Synchronous, no-network resolution (first paint)."""
         return resolve_artwork(
-            entry, library_root, cache=self.cache, identity_key=identity_key
+            entry,
+            library_root,
+            cache=self.cache,
+            identity_key=identity_key,
+            platform=platform,
         )
 
     def ensure_downloaded(
         self,
+        metadata,
         *,
-        platform: str,
-        title: Optional[str],
         identity_key: Optional[str],
+        platform: Optional[str] = None,
     ) -> Optional[Path]:
         """Fetch + cache one cover. A valid cache hit performs zero network I/O."""
         if self.cache is None or not identity_key:
             return None
-        hit = _downloaded_path(self.cache, identity_key)
+        plat = platform if platform is not None else getattr(metadata, "platform", None)
+        hit = _downloaded_path(self.cache, plat, identity_key)
         if hit is not None:
             return hit
-        ref = self.ref_for(platform, title)
-        if ref is None:
+        artwork = self.cover_for(metadata)
+        if artwork is None:
             return None
-        data = self.downloader.fetch(ref.url)
+        data = self.downloader.fetch(artwork.url)
         if not data:
             return None
-        return self.cache.store(identity_key, data, url=ref.url, source=ref.provider)
+        return self.cache.store(
+            plat or artwork.platform,
+            identity_key,
+            data,
+            provider=artwork.provider,
+            canonical_title=artwork.canonical_title
+            or getattr(metadata, "canonical_title", ""),
+            remote_url=artwork.url,
+        )
 
     def ensure_cover(
         self,
         entry,
         *,
-        platform: str,
-        title: Optional[str],
+        metadata,
         identity_key: Optional[str],
         library_root: Union[Path, str, None],
+        platform: Optional[str] = None,
     ) -> ArtworkResolution:
         """Full fallback order including a download attempt.
 
@@ -185,14 +218,15 @@ class ArtworkService:
         """
         if entry is None:
             return PLACEHOLDER
+        plat = platform if platform is not None else getattr(entry, "platform", None)
         user = _user_path(entry, library_root)
         if user is not None:
             return ArtworkResolution(str(user), SOURCE_USER)
-        cached = _downloaded_path(self.cache, identity_key)
+        cached = _downloaded_path(self.cache, plat, identity_key)
         if cached is not None:
             return ArtworkResolution(str(cached), SOURCE_DOWNLOADED)
         downloaded = self.ensure_downloaded(
-            platform=platform, title=title, identity_key=identity_key
+            metadata, identity_key=identity_key, platform=plat
         )
         if downloaded is not None:
             return ArtworkResolution(str(downloaded), SOURCE_DOWNLOADED)

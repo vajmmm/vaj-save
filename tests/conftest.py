@@ -1,3 +1,4 @@
+import gc
 import struct
 import pytest
 from pathlib import Path
@@ -14,6 +15,11 @@ def _isolate_app_config(tmp_path_factory, monkeypatch):
     config_dir = tmp_path_factory.mktemp("app-config")
     monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(config_dir / "config.json"))
     yield
+    # Tk variables from torn-down test windows must be finalised on the main
+    # thread; a background worker thread triggering the cyclic GC instead makes
+    # tkinter's ``Variable.__del__`` run off-thread and can abort the process at
+    # shutdown on macOS.  Collect here, while the main thread is still in charge.
+    gc.collect()
 
 
 def build_sfo(entries: Dict[str, Any]) -> bytes:

@@ -2,17 +2,23 @@
 
 Public surface:
 
-* :class:`ArtworkProvider` / :class:`LibretroArtworkProvider` -- filename + URL
-  rules (official libretro thumbnail layout);
+* :class:`Artwork` / :class:`ArtworkProvider` /
+  :class:`LibretroThumbnailProvider` -- the ``find_cover(metadata)`` contract and
+  the official libretro thumbnail filename + URL rules;
 * :class:`ArtworkDownloader` -- bounded, never-raising HTTP GET;
-* :class:`CoverCache` -- identity-hash named files plus a JSON manifest;
+* :class:`CoverCache` -- ``covers/<platform>/<identity-hash>.png`` files plus a
+  JSON manifest with the required provenance fields;
 * :class:`ArtworkService` / :func:`resolve_artwork` -- the
-  ``user > downloaded > embedded > placeholder`` fallback order.
+  ``user > downloaded > embedded > placeholder`` fallback order;
+* :class:`ArtworkLoader` -- background execution marshalled back via
+  ``schedule`` (``root.after``).
 """
 
 from .cache import (
     COVER_CACHE_DIR,
+    MANIFEST_FIELDS,
     MANIFEST_NAME,
+    MAX_COVER_BYTES,
     CoverCache,
     is_valid_image_bytes,
 )
@@ -21,9 +27,9 @@ from .loader import ArtworkLoader
 from .providers import (
     LIBRETRO_SYSTEM_NAMES,
     LIBRETRO_THUMBNAIL_BASE,
+    Artwork,
     ArtworkProvider,
-    ArtworkRef,
-    LibretroArtworkProvider,
+    LibretroThumbnailProvider,
     sanitize_libretro_filename,
 )
 from .service import (
@@ -37,10 +43,16 @@ from .service import (
     resolve_artwork,
 )
 
+# Historical aliases (pre-rename) kept so older imports keep working.
+LibretroArtworkProvider = LibretroThumbnailProvider
+ArtworkRef = Artwork
+
 __all__ = [
+    "Artwork",
     "ArtworkProvider",
-    "ArtworkRef",
+    "LibretroThumbnailProvider",
     "LibretroArtworkProvider",
+    "ArtworkRef",
     "LIBRETRO_THUMBNAIL_BASE",
     "LIBRETRO_SYSTEM_NAMES",
     "sanitize_libretro_filename",
@@ -51,6 +63,8 @@ __all__ = [
     "CoverCache",
     "COVER_CACHE_DIR",
     "MANIFEST_NAME",
+    "MANIFEST_FIELDS",
+    "MAX_COVER_BYTES",
     "is_valid_image_bytes",
     "ArtworkService",
     "ArtworkResolution",

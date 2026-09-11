@@ -1,96 +1,77 @@
-"""Persistent cache of resolved :class:`GameMetadata`.
+"""Persistent cache of resolved :class:`GameMetadata`, keyed by ``identity_key``.
 
 Looking a ROM up in the index is cheap once the index is in memory, but the
-index itself has to be parsed and the metadata is only ever keyed by a digest we
-already computed.  This cache turns the resolved record into a small JSON
-document so a second launch (or a cache hit within a session) serves metadata
-**without touching the provider at all**.
+index still has to be parsed and the result is stable for a given game
+identity.  This cache turns the resolved record into a small JSON document so a
+second launch (or a cache hit within a session) serves metadata **without
+touching the provider at all**.
 
-The store is best-effort: a missing/corrupt file degrades to an empty cache and
-is rewritten on the next successful lookup.  Keys are ``platform:sha1:<...>``
-with a ``platform:crc32:<...>`` fallback, so a record is reachable even when
-only the weaker digest is known.
+Keying is by :attr:`GameIdentity.identity_key` -- the stable, path-independent
+grouping key -- so a cached record is reusable across renames, moves and slots.
+
+The store is thread-safe (all mutations under one ``Lock``) and atomic (a temp
+file is renamed into place), and best-effort: a missing/corrupt file degrades to
+an empty cache and is rewritten on the next successful lookup.
 """
 
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 from .models import GameMetadata
 
-METADATA_CACHE_NAME = "metadata_cache.json"
+# Name of the persisted cache under ``<library_root>``.
+METADATA_CACHE_NAME = "game_metadata.json"
 _VERSION = 1
 
 
-def metadata_key(
-    platform: str,
-    *,
-    sha1: Optional[str] = None,
-    crc32: Optional[str] = None,
-) -> Optional[str]:
-    """Primary cache key for a metadata record, or ``None`` without a digest."""
-    plat = (platform or "").strip().lower()
-    if not plat:
-        return None
-    if sha1:
-        return f"{plat}:sha1:{str(sha1).strip().lower()}"
-    if crc32:
-        return f"{plat}:crc32:{str(crc32).strip().lower()}"
-    return None
-
-
 class MetadataCache:
-    """A JSON-backed map of metadata keys to :class:`GameMetadata`."""
+    """A JSON-backed map of ``identity_key`` -> :class:`GameMetadata`."""
 
     def __init__(self, path: Optional[Union[Path, str]] = None) -> None:
         self.path: Optional[Path] = Path(path).expanduser() if path else None
+        self._lock = threading.Lock()
         self._entries: Dict[str, Dict[str, Any]] = {}
         if self.path is not None:
             self.load()
 
-    def get(
-        self,
-        platform: str,
-        *,
-        sha1: Optional[str] = None,
-        crc32: Optional[str] = None,
-    ) -> Optional[GameMetadata]:
-        """Return a cached record for either digest, or ``None`` on a miss."""
-        for key in (
-            metadata_key(platform, sha1=sha1),
-            metadata_key(platform, crc32=crc32),
-        ):
-            if not key:
-                continue
-            record = self._entries.get(key)
-            if isinstance(record, dict):
-                try:
-                    return GameMetadata.from_dict(record)
-                except Exception:  # noqa: BLE001 - a bad record must not break lookup
-                    continue
-        return None
+    def get(self, identity_key: Optional[str]) -> Optional[GameMetadata]:
+        """Return the cached record for ``identity_key``, or ``None``."""
+        if not identity_key:
+            return None
+        with self._lock:
+            record = self._entries.get(str(identity_key))
+            if not isinstance(record, dict):
+                return None
+            try:
+                return GameMetadata.from_dict(record)
+            except Exception:  # noqa: BLE001 - a bad record must not break lookup
+                return None
 
-    def put(self, metadata: GameMetadata) -> None:
-        """Store ``metadata`` under both available digest keys (dirty, no write)."""
-        keys = {
-            metadata_key(metadata.platform, sha1=metadata.rom_sha1),
-            metadata_key(metadata.platform, crc32=metadata.rom_crc32),
-        }
-        changed = False
-        for key in keys:
-            if not key:
-                continue
-            record = metadata.to_dict()
-            if self._entries.get(key) != record:
-                self._entries[key] = record
-                changed = True
-        if changed:
-            self.save()
+    def put(self, metadata: GameMetadata) -> bool:
+        """Store ``metadata`` under its ``identity_key`` and persist atomically.
+
+        Returns ``True`` when the cache changed.
+        """
+        key = getattr(metadata, "identity_key", "") or ""
+        if not key:
+            return False
+        record = metadata.to_dict()
+        # Build the snapshot *and* write it under the lock so two concurrent
+        # puts can never interleave into a stale on-disk document.
+        with self._lock:
+            if self._entries.get(key) == record:
+                return False
+            self._entries[key] = record
+            payload = {"version": _VERSION, "entries": dict(self._entries)}
+            return self._write(payload)
 
     def all(self) -> Dict[str, Dict[str, Any]]:
-        return {key: dict(value) for key, value in self._entries.items()}
+        with self._lock:
+            return {key: dict(value) for key, value in self._entries.items()}
 
     def load(self) -> None:
         entries: Dict[str, Dict[str, Any]] = {}
@@ -106,18 +87,28 @@ class MetadataCache:
                         }
             except (OSError, ValueError, UnicodeDecodeError):
                 entries = {}
-        self._entries = entries
+        with self._lock:
+            self._entries = entries
 
     def save(self) -> bool:
-        if self.path is None:
+        with self._lock:
+            if self.path is None:
+                return False
+            payload = {"version": _VERSION, "entries": dict(self._entries)}
+            return self._write(payload)
+
+    def _write(self, payload: Dict[str, Any]) -> bool:
+        path = self.path
+        if path is None:
             return False
-        payload = {"version": _VERSION, "entries": dict(self._entries)}
         tmp = None
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_name(self.path.name + ".tmp")
-            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(self.path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            tmp.replace(path)
         except (OSError, TypeError, ValueError):
             if tmp is not None:
                 try:
@@ -128,4 +119,4 @@ class MetadataCache:
         return True
 
 
-__all__ = ["MetadataCache", "METADATA_CACHE_NAME", "metadata_key"]
+__all__ = ["MetadataCache", "METADATA_CACHE_NAME"]

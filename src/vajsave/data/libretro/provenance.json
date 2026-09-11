@@ -1,0 +1,42 @@
+{
+  "format": "vajsave.libretro-provenance",
+  "format_version": 1,
+  "generator": "tools/build_metadata_index.py",
+  "indexes": [
+    {
+      "platform": "gba",
+      "sources": [
+        {
+          "name": "Nintendo - Game Boy Advance",
+          "sha1": "e3fb7e37d5d796fd93af6d3736ee3c85876d44d3",
+          "url": "https://datomatic.no-intro.org/",
+          "version": "20260707-143610"
+        }
+      ]
+    },
+    {
+      "platform": "nds",
+      "sources": [
+        {
+          "name": "Nintendo - Nintendo DS (Decrypted)",
+          "sha1": "c4f5275c49fdfe4d5afd4030d645baa42f55681d",
+          "url": "https://datomatic.no-intro.org/",
+          "version": "20260707-052245"
+        },
+        {
+          "name": "Nintendo - Nintendo DS (Encrypted)",
+          "sha1": "5be9c0d562819cbb4c3cc3d65b9981101bb8ae8b",
+          "url": "https://datomatic.no-intro.org/",
+          "version": "20260707-052245"
+        }
+      ]
+    }
+  ],
+  "license": {
+    "datomatic": "https://datomatic.no-intro.org",
+    "homepage": "https://www.no-intro.org",
+    "name": "No-Intro DAT-o-MATIC datafiles",
+    "notice": "No-Intro datafiles are maintained by the No-Intro project and distributed under the terms published at DAT-o-MATIC. Product names are trademarks of their respective owners; No-Intro is not affiliated with them. This package redistributes only the derived hash/title index, never ROM images.",
+    "terms": "https://datomatic.no-intro.org/stuff/terms.txt"
+  }
+}

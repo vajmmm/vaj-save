@@ -36,9 +36,9 @@ from .artwork import (
 from .metadata import (
     METADATA_CACHE_NAME,
     GameMetadata,
+    GameMetadataResolver,
     LibretroMetadataProvider,
     MetadataCache,
-    MetadataService,
     default_libretro_dirs,
 )
 from .identity import (
@@ -149,7 +149,7 @@ class AppState:
         self.gba_rom_dir, self.nds_rom_dir = self._resolve_rom_dirs()
         self.libretro_dir: Optional[Path] = self._resolve_libretro_dir()
         self._identity_resolver: Optional[GameIdentityResolver] = None
-        self._metadata_service: Optional[MetadataService] = None
+        self._metadata_service: Optional[GameMetadataResolver] = None
         self._artwork_service: Optional[ArtworkService] = None
         self.last_import_path: Optional[Path] = None
         self.last_backup: Optional[BackupResult] = None
@@ -333,17 +333,20 @@ class AppState:
         )
 
     @property
-    def metadata_service(self) -> MetadataService:
+    def metadata_resolver(self) -> GameMetadataResolver:
         """Cache-first metadata resolver backed by the local libretro index."""
         if self._metadata_service is None:
             provider = LibretroMetadataProvider(self._libretro_dirs())
             cache = MetadataCache(self.library_root / METADATA_CACHE_NAME)
-            self._metadata_service = MetadataService(provider, cache)
+            self._metadata_service = GameMetadataResolver(provider, cache)
         return self._metadata_service
+
+    # Back-compat alias for callers written before the resolver was renamed.
+    metadata_service = metadata_resolver
 
     @property
     def artwork_service(self) -> ArtworkService:
-        """Cover provider/downloader bound to the library's cache directory."""
+        """Cover provider/downloader bound to the library's ``covers/`` tree."""
         if self._artwork_service is None:
             cache = CoverCache(self.library_root / COVER_CACHE_DIR)
             self._artwork_service = ArtworkService(cache=cache)
@@ -371,7 +374,7 @@ class AppState:
                 identity = self.resolve_save_identity(entry).identity
             if identity is None:
                 return None
-            return self.metadata_service.for_identity(identity)
+            return self.metadata_resolver.resolve(identity)
         except Exception:  # noqa: BLE001 - metadata is best-effort
             return None
 
@@ -382,11 +385,7 @@ class AppState:
         if identity is None:
             return None
         try:
-            return self.metadata_service.cached(
-                getattr(identity, "platform", "") or "",
-                sha1=getattr(identity, "rom_sha1", None),
-                crc32=getattr(identity, "rom_crc32", None),
-            )
+            return self.metadata_resolver.cached(identity)
         except Exception:  # noqa: BLE001
             return None
 
@@ -404,7 +403,10 @@ class AppState:
                 identity = self.resolve_save_identity(entry).identity
             key = identity.identity_key if identity is not None else None
             return self.artwork_service.resolve(
-                entry, self.library_root, identity_key=key
+                entry,
+                self.library_root,
+                identity_key=key,
+                platform=getattr(entry, "platform", None),
             )
         except Exception:  # noqa: BLE001 - a cover must never break the UI
             return PLACEHOLDER
@@ -431,7 +433,7 @@ class AppState:
             return self.artwork_service.ensure_cover(
                 entry,
                 platform=getattr(entry, "platform", "") or "",
-                title=metadata.canonical_title,
+                metadata=metadata,
                 identity_key=key,
                 library_root=self.library_root,
             )

@@ -8,13 +8,18 @@ The module is intentionally self-contained and side-effect free:
 * it **does not import tkinter** — thumbnails come back as Pillow ``RGBA``
   images, and the UI layer wraps them in ``ImageTk.PhotoImage`` itself.
 
-Cover resolution follows a three layer priority:
+Cover resolution follows a four layer priority:
 
-1. ``SaveEntry.cover_path`` — an icon found inside the save folder during the
+1. the user cover directory ``<library_root>/covers/<platform>/<name>.<ext>``
+   (see :func:`user_cover_path`) — an explicit file the user dropped in;
+2. a downloaded cover ``<library_root>/covers/<platform>/<identity-hash>.png``
+   (see :func:`downloaded_cover_path`) — the identity-hash cover cache;
+3. ``SaveEntry.cover_path`` — an icon found inside the save folder during the
    device scan (see :func:`find_embedded_cover`);
-2. the user cover directory ``<library_root>/covers/<platform>/<name>.<ext>``
-   (see :func:`user_cover_path`);
-3. ``None`` — the UI then paints the pastel fallback face.
+4. ``None`` — the UI then paints the pastel fallback face.
+
+This module stays pure-local: it never touches the network.  Downloading lives
+in :mod:`vajsave.artwork`, which writes into the same ``covers/`` tree.
 
 A hard file-size ceiling (:data:`MAX_COVER_BYTES`) guards every lookup: a tiny
 PNG can still declare an enormous canvas (e.g. ``200000x1``), so oversized files
@@ -26,6 +31,7 @@ size, so no aspect-inflated intermediate buffer is ever produced.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -82,6 +88,19 @@ _GENERIC_NAME_HINTS = ("cover", "icon", "box")
 # Vita location, so it has to beat the plain alphabetical order that would
 # otherwise reach ``icon/`` first.
 _CANONICAL_SUBDIRS = ("sce_sys", "media", "icon")
+
+# Directory (under the library root) holding every downloaded/user cover, plus
+# the manifest that records the downloaded ones.
+DOWNLOADED_COVER_DIR = "covers"
+
+
+def identity_hash(identity_key: Any) -> str:
+    """Stable on-disk name for a game identity: ``sha1(identity_key)`` hex.
+
+    Using a hash instead of the raw ``platform:sha1:...`` key keeps the file
+    name short, filesystem-safe and independent of the title.
+    """
+    return hashlib.sha1(str(identity_key or "").encode("utf-8")).hexdigest()
 
 
 def _as_path(value: Any) -> Optional[Path]:
@@ -313,15 +332,50 @@ def user_cover_path(entry: Any, library_root: Any) -> Optional[Path]:
         return None
 
 
-def resolve_cover(entry: Any, library_root: Any) -> Optional[Path]:
-    """Resolve the cover for ``entry`` using the three layer priority."""
+def downloaded_cover_path(
+    library_root: Any, platform: Any, identity_key: Any
+) -> Optional[Path]:
+    """Return the cached downloaded cover for an identity, or ``None``.
+
+    The file lives at ``<library_root>/covers/<platform>/<identity-hash>.png``
+    and is only a hit when it exists and is size-bounded.
+    """
+    try:
+        root = _as_path(library_root)
+        if root is None or not identity_key:
+            return None
+        plat = _safe_component(platform) or "unknown"
+        candidate = root / DOWNLOADED_COVER_DIR / plat / f"{identity_hash(identity_key)}.png"
+        return candidate if _within_size_limit(candidate) else None
+    except Exception:  # noqa: BLE001 - a cover lookup must never break the UI
+        return None
+
+
+def resolve_cover(
+    entry: Any,
+    library_root: Any,
+    *,
+    identity_key: Any = None,
+    platform: Any = None,
+) -> Optional[Path]:
+    """Resolve the cover for ``entry``: user > downloaded > embedded > ``None``.
+
+    Pure-local (never touches the network) and never raises.
+    """
     try:
         if entry is None:
             return None
+        user = user_cover_path(entry, library_root)
+        if user is not None:
+            return user
+        plat = platform if platform is not None else getattr(entry, "platform", None)
+        downloaded = downloaded_cover_path(library_root, plat, identity_key)
+        if downloaded is not None:
+            return downloaded
         embedded = _as_path(getattr(entry, "cover_path", None))
         if embedded is not None and _is_file(embedded):
             return embedded
-        return user_cover_path(entry, library_root)
+        return None
     except Exception:  # noqa: BLE001 - a cover lookup must never break the UI
         return None
 
@@ -429,8 +483,11 @@ __all__ = [
     "MAX_COVER_BYTES",
     "MAX_COVER_RESIZE_DIMENSION",
     "DEFAULT_THUMBNAIL_RADIUS",
+    "DOWNLOADED_COVER_DIR",
+    "identity_hash",
     "find_embedded_cover",
     "user_cover_path",
+    "downloaded_cover_path",
     "resolve_cover",
     "load_thumbnail",
 ]

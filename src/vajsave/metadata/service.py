@@ -1,39 +1,51 @@
-"""Metadata lookup service: cache-first, provider-backed, never raising.
+"""Metadata provider + resolver: cache-first, provider-backed, never raising.
 
-The service is the single entry point the rest of the app (and the UI) uses:
+The layering is:
 
-* a **cache hit returns immediately without consulting the provider** (the
-  acceptance requirement "cache hit -> zero provider");
-* a cache miss asks the :class:`MetadataProvider` (the local libretro index) and
-  stores a positive result;
-* any failure at either layer degrades to ``None`` -- metadata is a nice-to-have
-  and must never break scanning, identity or the UI.
+* :class:`MetadataProvider` -- the interface, ``resolve(identity)``;
+* :class:`LibretroMetadataProvider` -- the local libretro/No-Intro index, loaded
+  lazily and exactly once;
+* :class:`GameMetadataResolver` -- the application entry point.  A **cache hit
+  returns immediately without consulting the provider** ("cache hit -> zero
+  provider"); a cache miss asks the provider and stores a positive result.
 
-``LibretroMetadataProvider`` loads its index lazily and exactly once: the first
-lookup parses the configured ``.dat`` files and builds the in-memory digest maps,
-and every later lookup is a plain dict access.
+Any failure at either layer degrades to ``None``: metadata is a nice-to-have and
+must never break scanning, identity, backup or the UI.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 from typing import Iterable, List, Optional, Union
 
 from .cache import MetadataCache
-from .libretro import LibretroIndex
+from .libretro import SUPPORTED_PLATFORMS, LibretroIndex
 from .models import GameMetadata
+from .paths import default_libretro_dirs
+
+__all__ = [
+    "MetadataProvider",
+    "LibretroMetadataProvider",
+    "GameMetadataResolver",
+]
+
+
+def _platform_of(identity) -> str:
+    return str(getattr(identity, "platform", "") or "").strip().lower()
+
+
+def _digests(identity):
+    return (
+        getattr(identity, "rom_sha1", None),
+        getattr(identity, "rom_crc32", None),
+    )
 
 
 class MetadataProvider:
-    """Interface for a metadata source (implemented by the libretro index)."""
+    """Interface for a metadata source, keyed by a game identity."""
 
-    def lookup(
-        self,
-        *,
-        platform: str,
-        sha1: Optional[str] = None,
-        crc32: Optional[str] = None,
-    ) -> Optional[GameMetadata]:  # pragma: no cover - interface
+    def resolve(self, identity) -> Optional[GameMetadata]:  # pragma: no cover - interface
         raise NotImplementedError
 
 
@@ -46,7 +58,11 @@ class LibretroMetadataProvider(MetadataProvider):
         *,
         index: Optional[LibretroIndex] = None,
     ) -> None:
-        self._dirs: List[Path] = [Path(d).expanduser() for d in (dirs or [])]
+        # ``None`` means "the default search path": the app config dir, the
+        # library drop-in dir and the bundled compact index.  An explicit (even
+        # empty) iterable is honoured as-is.
+        resolved_dirs = default_libretro_dirs() if dirs is None else dirs
+        self._dirs: List[Path] = [Path(d).expanduser() for d in resolved_dirs]
         self._index = index
         self._loaded = index is not None
 
@@ -54,26 +70,35 @@ class LibretroMetadataProvider(MetadataProvider):
     def loaded(self) -> bool:
         return self._loaded
 
+    @property
+    def dirs(self) -> List[Path]:
+        return list(self._dirs)
+
     def _ensure_index(self) -> LibretroIndex:
         if self._index is None:
             self._index = LibretroIndex.from_paths(self._dirs)
         self._loaded = True
         return self._index
 
-    def lookup(
-        self,
-        *,
-        platform: str,
-        sha1: Optional[str] = None,
-        crc32: Optional[str] = None,
-    ) -> Optional[GameMetadata]:
+    def resolve(self, identity) -> Optional[GameMetadata]:
+        if identity is None:
+            return None
+        platform = _platform_of(identity)
+        if platform not in SUPPORTED_PLATFORMS:
+            return None
+        sha1, crc32 = _digests(identity)
+        if not sha1 and not crc32:
+            return None
         try:
-            return self._ensure_index().lookup(platform=platform, sha1=sha1, crc32=crc32)
+            found = self._ensure_index().lookup(platform=platform, sha1=sha1, crc32=crc32)
         except Exception:  # noqa: BLE001 - metadata must never break the caller
             return None
+        if found is None:
+            return None
+        return dataclasses.replace(found, identity_key=getattr(identity, "identity_key", "") or found.identity_key)
 
 
-class MetadataService:
+class GameMetadataResolver:
     """Cache-first metadata resolver with a pluggable provider."""
 
     def __init__(
@@ -84,22 +109,17 @@ class MetadataService:
         self.provider = provider
         self.cache = cache if cache is not None else MetadataCache()
 
-    def lookup(
-        self,
-        platform: str,
-        *,
-        sha1: Optional[str] = None,
-        crc32: Optional[str] = None,
-    ) -> Optional[GameMetadata]:
-        if not platform or (not sha1 and not crc32):
+    def resolve(self, identity) -> Optional[GameMetadata]:
+        """Metadata for ``identity``; cache first, provider on a miss."""
+        if identity is None:
             return None
-        cached = self.cached(platform, sha1=sha1, crc32=crc32)
+        cached = self.cached(identity)
         if cached is not None:
             return cached
         if self.provider is None:
             return None
         try:
-            found = self.provider.lookup(platform=platform, sha1=sha1, crc32=crc32)
+            found = self.provider.resolve(identity)
         except Exception:  # noqa: BLE001 - a broken provider is just "no metadata"
             return None
         if found is not None:
@@ -109,30 +129,14 @@ class MetadataService:
                 pass
         return found
 
-    def cached(
-        self,
-        platform: str,
-        *,
-        sha1: Optional[str] = None,
-        crc32: Optional[str] = None,
-    ) -> Optional[GameMetadata]:
+    def cached(self, identity) -> Optional[GameMetadata]:
         """Cache-only lookup: never touches the provider (UI hot path)."""
-        if not platform or (not sha1 and not crc32):
-            return None
-        try:
-            return self.cache.get(platform, sha1=sha1, crc32=crc32)
-        except Exception:  # noqa: BLE001
-            return None
-
-    def for_identity(self, identity) -> Optional[GameMetadata]:
-        """Convenience wrapper around a :class:`GameIdentity`-like object."""
         if identity is None:
             return None
-        return self.lookup(
-            getattr(identity, "platform", "") or "",
-            sha1=getattr(identity, "rom_sha1", None),
-            crc32=getattr(identity, "rom_crc32", None),
-        )
-
-
-__all__ = ["MetadataProvider", "LibretroMetadataProvider", "MetadataService"]
+        key = getattr(identity, "identity_key", None)
+        if not key:
+            return None
+        try:
+            return self.cache.get(key)
+        except Exception:  # noqa: BLE001
+            return None
