@@ -1,4 +1,6 @@
+import os
 import queue
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -40,6 +42,18 @@ PLATFORM_ORDER = ["all", "psp", "vita", "switch", "3ds", "nds", "gba"]
 # Sentinel distinguishing "leave this setting untouched" from an explicit None
 # (which clears a persisted ROM directory) in ``set_rom_dirs``.
 _UNSET = object()
+
+# Folders that mean "this mount is a handheld card", so we may search it for ROMs
+# even when the volume is not marked removable (e.g. a folder added via 添加设备).
+_HANDHELD_ROM_MARKERS = (
+    "SAVEGAME",
+    "SAVER",
+    "SAVES",
+    "GBASYS",
+    "roms",
+    "ROMS",
+    "_nds",
+)
 
 PLATFORM_LABELS = {
     "all": "全部",
@@ -218,12 +232,58 @@ class AppState:
         self._identity_resolver = None
         return (self.gba_rom_dir, self.nds_rom_dir)
 
+    def _should_search_volume_for_roms(self, root: Path) -> bool:
+        """True when ``root`` is a handheld card, not the OS system drive."""
+        try:
+            resolved = root.resolve()
+        except OSError:
+            resolved = root
+        if sys.platform == "win32":
+            system = os.environ.get("SystemDrive", "C:").rstrip("\\").upper()
+            drive = (resolved.drive or "").rstrip("\\").upper()
+            if drive and drive == system:
+                return False
+        else:
+            posix = resolved.as_posix()
+            if posix in ("/", "/System", "/Applications"):
+                return False
+        for volume in self.volumes:
+            try:
+                if Path(volume.mount_point).resolve() == resolved and volume.is_removable:
+                    return True
+            except OSError:
+                if Path(volume.mount_point) == root and volume.is_removable:
+                    return True
+        for name in _HANDHELD_ROM_MARKERS:
+            try:
+                if (resolved / name).is_dir():
+                    return True
+            except OSError:
+                continue
+        return False
+
+    def _volume_rom_search_roots(self) -> List[Path]:
+        if self.current_mount is None:
+            return []
+        try:
+            root = Path(self.current_mount).expanduser()
+            if not root.is_dir():
+                return []
+        except OSError:
+            return []
+        if not self._should_search_volume_for_roms(root):
+            return []
+        return [root]
+
     def _build_identity_resolver(self) -> GameIdentityResolver:
+        extra = self._volume_rom_search_roots()
         rom_dirs: Dict[str, List[Path]] = {}
-        if self.gba_rom_dir is not None:
-            rom_dirs["gba"] = [self.gba_rom_dir]
-        if self.nds_rom_dir is not None:
-            rom_dirs["nds"] = [self.nds_rom_dir]
+        gba_roots = ([self.gba_rom_dir] if self.gba_rom_dir is not None else []) + extra
+        nds_roots = ([self.nds_rom_dir] if self.nds_rom_dir is not None else []) + extra
+        if gba_roots:
+            rom_dirs["gba"] = gba_roots
+        if nds_roots:
+            rom_dirs["nds"] = nds_roots
         bindings = BindingStore(self.library_root / BINDINGS_NAME)
         return GameIdentityResolver(rom_dirs=rom_dirs, bindings=bindings)
 
@@ -502,6 +562,7 @@ class AppState:
         path = Path(mount_point)
         self.current_mount = path
         self._auto_selected_mount = auto
+        self._identity_resolver = None
         try:
             res = self.scan_fn(path)
         except Exception as e:

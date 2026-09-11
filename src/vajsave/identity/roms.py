@@ -30,6 +30,18 @@ ROM_EXTENSIONS: Dict[str, Tuple[str, ...]] = {
     "nds": (".nds",),
 }
 
+# Directories that must never be walked when a whole volume is used as a ROM root.
+_SKIP_DIR_NAMES = frozenset(
+    {
+        "$recycle.bin",
+        "system volume information",
+        ".git",
+        ".trashes",
+        "node_modules",
+    }
+)
+_MAX_WALK_DEPTH = 6
+
 # (title offset, game-code offset) inside a ROM header.
 _HEADER_OFFSETS: Dict[str, Tuple[int, int]] = {
     "gba": (0xA0, 0xAC),
@@ -166,13 +178,24 @@ class RomIndex:
         out: List[RomFile] = []
         try:
             if recursive:
+                root_depth = len(base.resolve().parts) if base.exists() else len(base.parts)
                 for dirpath, dirnames, filenames in os.walk(base):
+                    current = Path(dirpath)
                     dirnames[:] = [
-                        name for name in dirnames if not (Path(dirpath) / name).is_symlink()
+                        name
+                        for name in dirnames
+                        if name.lower() not in _SKIP_DIR_NAMES
+                        and not (current / name).is_symlink()
                     ]
+                    try:
+                        depth = len(current.resolve().parts) - root_depth
+                    except OSError:
+                        depth = len(current.parts) - len(base.parts)
+                    if depth >= _MAX_WALK_DEPTH:
+                        dirnames[:] = []
                     for filename in filenames:
                         if filename.lower().endswith(exts):
-                            out.append(make_rom_file(Path(dirpath) / filename, platform))
+                            out.append(make_rom_file(current / filename, platform))
             else:
                 if not base.is_dir():
                     return []

@@ -424,6 +424,23 @@ def test_save_display_resolved_gba_fills_title_id(tmp_path: Path):
     assert view["title"] == "Apotris"
 
 
+def test_save_display_finds_rom_on_selected_volume_without_settings(tmp_path: Path):
+    from vajsave.app_ui import save_display
+
+    vol = tmp_path / "SD"
+    (vol / "SAVEGAME").mkdir(parents=True)
+    (vol / "GBA").mkdir()
+    sav = vol / "SAVEGAME" / "Apotris.sav"
+    sav.write_bytes(b"x")
+    (vol / "GBA" / "Apotris.gba").write_bytes(make_gba_rom(title="APOTRIS", code="APTR"))
+    state = AppState(library_root=tmp_path / "lib")
+    state.select_mount(vol)
+    entry = make_entry(name="Apotris", path=str(sav))
+    view = save_display(state, entry)
+    assert view["identity_status"] == "已识别"
+    assert view["title_id"] == "APTR"
+
+
 def test_truncate_ui_text_caps_long_names():
     from vajsave.app_ui import _truncate_ui_text
 
