@@ -755,6 +755,15 @@ class SaveList(tk.Canvas):
         x1, y1, x2, y2 = self._boxes[index]
         self._draw_row(index, self._rows[index], x1, y1, x2, y2)
 
+    def refresh_row(self, index: int) -> None:
+        """Repaint one row after its backing dict was updated in place.
+
+        Background enrichment mutates the same dict objects handed to
+        :meth:`set_rows`; this exposes the single-row redraw so a late cover can
+        land without rebuilding the whole list.
+        """
+        self._redraw_index(index)
+
     def _cover_photo(self, path, width: int, height: int):
         """Return a reference-kept ``PhotoImage`` for ``path`` (or ``None``).
 
@@ -1031,6 +1040,12 @@ class VajSaveApp:
         # can never overwrite the cover/title of the current one.
         self._enrich_token = 0
         self._detail_cover_path: Optional[str] = None
+        # Eager list enrichment: every refresh owns a generation and the row
+        # objects/indices it produced, so a late result is attributed back to the
+        # exact row (by save path) of the refresh it belongs to.
+        self._list_generation = 0
+        self._rows_by_path: Dict[str, dict] = {}
+        self._row_index_by_path: Dict[str, int] = {}
         self._watch_var = tk.BooleanVar(value=True)
         self._hide_unchanged_var = tk.BooleanVar(value=True)
         self._poll_interval_ms = 200
@@ -1749,6 +1764,71 @@ class VajSaveApp:
         if path and not getattr(cover, "is_placeholder", False) and path != self._detail_cover_path:
             self._render_detail_cover(save, cover_path=path)
 
+    def _schedule_list_enrichment(
+        self,
+        saves: List[SaveEntry],
+        result_by_path: Dict[str, GameIdentityResult],
+        generation: int,
+    ) -> None:
+        """Kick off metadata/cover work for every resolved visible save.
+
+        ``generation`` is the list refresh this pass belongs to: a result whose
+        generation is no longer current is dropped instead of painting a row of a
+        newer list.  Unresolved/ambiguous saves are skipped so the app never
+        guesses a cover name (and never downloads) for an unknown game.
+        """
+        for save in saves:
+            result = result_by_path.get(save.path)
+            if result is None or not result.is_resolved or result.identity is None:
+                continue
+            self._submit_row_enrichment(save, result, generation)
+
+    def _submit_row_enrichment(
+        self, save: SaveEntry, result: GameIdentityResult, generation: int
+    ) -> None:
+        identity = result.identity
+
+        def task():
+            metadata = self.state.resolve_save_metadata(save, identity)
+            cover = self.state.ensure_save_cover(save, result, metadata)
+            return metadata, cover
+
+        def callback(payload) -> None:
+            if generation != self._list_generation:
+                return  # stale: a newer refresh already replaced this list
+            self._apply_row_enrichment(save, result, payload)
+
+        try:
+            self._artwork_loader.submit(save.path, task, callback)
+        except Exception:  # noqa: BLE001 - enrichment is strictly best-effort
+            pass
+
+    def _apply_row_enrichment(
+        self, save: SaveEntry, result: GameIdentityResult, payload
+    ) -> None:
+        """Apply a finished background result to its list row (if still present)."""
+        if not payload:
+            return
+        index = self._row_index_by_path.get(save.path)
+        row = self._rows_by_path.get(save.path)
+        if row is None or index is None:
+            return
+        metadata, cover = payload
+        changed = False
+        if metadata is not None and getattr(metadata, "canonical_title", ""):
+            view = save_display(self.state, save, result=result, metadata=metadata)
+            if row.get("title") != view["title"]:
+                row["title"] = view["title"]
+                changed = True
+        path = getattr(cover, "path", None)
+        if path and not getattr(cover, "is_placeholder", False) and row.get("cover") != path:
+            row["cover"] = path
+            changed = True
+        if changed:
+            self.save_list.refresh_row(index)
+        if save is self._selected_save:
+            self._apply_enrichment(save, payload)
+
     def on_row_activated(self, index: int) -> None:
         """Double-clicking a row runs the primary backup action."""
         if 0 <= index < len(self._saves_index):
@@ -2031,6 +2111,10 @@ class VajSaveApp:
         self.update_status(self.state.status_text)
 
     def refresh_saves_ui(self) -> None:
+        self._list_generation += 1
+        generation = self._list_generation
+        self._rows_by_path = {}
+        self._row_index_by_path = {}
         previous = self._selected_save
         self._selected_save = None
         self._saves_index = []
@@ -2057,8 +2141,11 @@ class VajSaveApp:
                 row["title_id"] = view["title_id"]
                 row["last_backup"] = _format_ui_timestamp(status.last_backup_at)
                 row["version_count"] = len(self.state.versions_for_entry(save))
+                index = len(rows)
                 rows.append(row)
                 self._saves_index.append(save)
+                self._rows_by_path[save.path] = row
+                self._row_index_by_path[save.path] = index
                 if previous and previous.path == save.path:
                     restore_index = len(self._saves_index) - 1
         self.save_list.set_rows(rows)
@@ -2070,6 +2157,9 @@ class VajSaveApp:
             self._clear_detail()
             self.refresh_versions_ui()
         self.update_status(self.state.status_text)
+        # After the first paint, enrich *every* resolved row in the background so
+        # the whole list fills its covers, not just the selected inspector row.
+        self._schedule_list_enrichment(visible, result_by_path, generation)
 
     def refresh_versions_ui(self) -> None:
         self.version_list.delete(0, tk.END)
@@ -2120,6 +2210,7 @@ class VajSaveApp:
         self.state.stop_watch(timeout=0.5)
         # Drop any pending enrichment result and stop the worker pool.
         self._enrich_token += 1
+        self._list_generation += 1
         loader = getattr(self, "_artwork_loader", None)
         if loader is not None:
             try:

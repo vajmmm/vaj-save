@@ -10,6 +10,7 @@ from .common import (
     collect_unique_dirs,
     find_pattern_dirs,
     is_safe_path,
+    iter_save_files,
     resolved_key,
     safe_iterdir,
 )
@@ -68,9 +69,7 @@ def _scan_ezflash_saver(
     seen_source_roots: Set[Path],
     seen_save_paths: Set[Path],
 ) -> None:
-    for item in safe_iterdir(saver_dir, warnings):
-        if not item.is_file() or item.suffix.lower() != ".sav":
-            continue
+    for item in iter_save_files(saver_dir, root_resolved, warnings, frozenset({".sav"})):
         _add_file_save(
             path=item,
             source_id="gba_ezflash",
@@ -94,9 +93,7 @@ def _scan_everdrive_save(
     seen_source_roots: Set[Path],
     seen_save_paths: Set[Path],
 ) -> None:
-    for item in safe_iterdir(save_dir, warnings):
-        if not item.is_file() or item.suffix.lower() not in _EVERDRIVE_EXTS:
-            continue
+    for item in iter_save_files(save_dir, root_resolved, warnings, _EVERDRIVE_EXTS):
         _add_file_save(
             path=item,
             source_id="gba_everdrive",
@@ -165,9 +162,7 @@ def _scan_sav_folder(
 ) -> None:
     if not save_dir.is_dir() or not is_safe_path(save_dir, root_resolved):
         return
-    for item in safe_iterdir(save_dir, warnings):
-        if not item.is_file() or item.suffix.lower() != ".sav":
-            continue
+    for item in iter_save_files(save_dir, root_resolved, warnings, frozenset({".sav"})):
         _add_file_save(
             path=item,
             source_id=source_id,

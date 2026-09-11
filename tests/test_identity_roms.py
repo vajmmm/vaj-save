@@ -169,6 +169,64 @@ def test_gba_stable_crc32_and_sha1(tmp_path: Path):
     assert first.identity_key == f"gba:sha1:{first.identity.rom_sha1}"
 
 
+def test_gba_rom_in_category_subdirectory_is_found(tmp_path: Path):
+    """A ROM sorted into catalogue subfolders is still recognised recursively."""
+    rom_root = tmp_path / "roms"
+    (rom_root / "GBA" / "RPG").mkdir(parents=True)
+    (rom_root / "GBA" / "RPG" / "Golden Sun.gba").write_bytes(make_gba_rom(title="GOLDEN SUN"))
+    resolver = GameIdentityResolver(rom_dirs={"gba": [rom_root]})
+
+    result = resolver.resolve(entry("gba", "Golden Sun", tmp_path / "Golden Sun.sav"))
+    assert result.is_resolved
+    assert result.identity.identity_key.startswith("gba:sha1:")
+
+
+def test_gba_duplicate_same_content_rom_paths_are_not_ambiguous(tmp_path: Path):
+    """The same ROM present under two category folders is one identity, not two."""
+    payload = make_gba_rom(title="KIRBY GAME", code="KBRD")
+    first = _rom_dir(tmp_path) / "Action"
+    second = tmp_path / "roms" / "RPG"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    (first / "Kirby.gba").write_bytes(payload)
+    (second / "Kirby.gba").write_bytes(payload)
+    resolver = GameIdentityResolver(rom_dirs={"gba": [first, second]})
+
+    result = resolver.resolve(entry("gba", "Kirby", tmp_path / "Kirby.sav"))
+    assert result.is_resolved
+    assert result.identity.identity_key.startswith("gba:sha1:")
+
+
+def test_gba_same_name_different_content_roms_remain_ambiguous(tmp_path: Path):
+    """Two same-named ROMs with different payloads are still two candidates."""
+    first = _rom_dir(tmp_path) / "Action"
+    second = tmp_path / "roms" / "RPG"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    (first / "Kirby.gba").write_bytes(make_gba_rom(title="KIRBY ONE", code="KB1"))
+    (second / "Kirby.gba").write_bytes(make_gba_rom(title="KIRBY TWO", code="KB2"))
+    resolver = GameIdentityResolver(rom_dirs={"gba": [first, second]})
+
+    result = resolver.resolve(entry("gba", "Kirby", tmp_path / "Kirby.sav"))
+    assert result.status == "ambiguous"
+    assert len(result.candidates) == 2
+    assert len({c.identity_key for c in result.candidates}) == 2
+
+
+def test_gba_fuzzy_duplicate_same_content_rom_paths_are_not_ambiguous(tmp_path: Path):
+    payload = make_gba_rom(title="POKEMON EMERALD")
+    first = tmp_path / "cat-a"
+    second = tmp_path / "cat-b"
+    first.mkdir()
+    second.mkdir()
+    (first / "Pokemon Emerald Version.gba").write_bytes(payload)
+    (second / "Pokemon Emerald Version.gba").write_bytes(payload)
+    resolver = GameIdentityResolver(rom_dirs={"gba": [first, second]})
+
+    result = resolver.resolve(entry("gba", "Pokemon Emerald", tmp_path / "Pokemon Emerald.sav"))
+    assert result.is_resolved
+
+
 def test_gba_never_reads_save_bytes(tmp_path: Path, monkeypatch):
     rom_dir = _rom_dir(tmp_path)
     (rom_dir / "Kirby.gba").write_bytes(make_gba_rom())

@@ -65,15 +65,22 @@ def _dispose(app, root) -> None:
 
 
 def _gba_volume(tmp_path: Path, rom_names, save_name: str = "Apotris") -> Path:
-    """A GBA card: SAVEGAME/<save>.sav plus optional ROMs under GBA/."""
+    """A GBA card: SAVEGAME/<save>.sav plus optional ROMs under GBA/.
+
+    Each ROM is given distinct content so two same-named ROMs stay two genuine
+    identities; identical payloads would (correctly) collapse into one game and
+    would no longer be an ambiguous match.
+    """
     vol = tmp_path / "SD"
     save_dir = vol / "SAVEGAME"
     save_dir.mkdir(parents=True)
     (save_dir / f"{save_name}.sav").write_bytes(b"save-data")
     rom_dir = vol / "GBA"
     rom_dir.mkdir()
-    for name in rom_names:
-        (rom_dir / name).write_bytes(make_gba_rom())
+    for index, name in enumerate(rom_names):
+        (rom_dir / name).write_bytes(
+            make_gba_rom(title=Path(name).stem[:12], code=f"R{index:03d}")
+        )
     return vol
 
 

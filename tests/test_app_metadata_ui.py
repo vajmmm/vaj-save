@@ -89,6 +89,29 @@ class InlineExecutor:
         pass
 
 
+class DeferredExecutor:
+    """Queues submitted work until ``run_all`` is called.
+
+    A real app runs enrichment on a thread pool, so a task is never finished by
+    the time the refresh returns.  This executor models that gap so tests can
+    assert the pre-completion UI and drive completion deterministically.
+    """
+
+    def __init__(self):
+        self._tasks = []
+
+    def submit(self, fn, *args, **kwargs):
+        self._tasks.append((fn, args, kwargs))
+
+    def shutdown(self, wait=False, cancel_futures=False):
+        pass
+
+    def run_all(self):
+        tasks, self._tasks = self._tasks, []
+        for fn, args, kwargs in tasks:
+            fn(*args, **kwargs)
+
+
 @pytest.fixture(scope="module")
 def tk_root():
     try:
@@ -120,6 +143,16 @@ def _sync_loader():
     return ArtworkLoader(schedule, executor=InlineExecutor()), schedule
 
 
+def _deferred_loader():
+    schedule = SyncSchedule()
+    executor = DeferredExecutor()
+    return ArtworkLoader(schedule, executor=executor), schedule, executor
+
+
+def _offline_opener(url, timeout=None):
+    raise urllib.error.URLError("offline")
+
+
 def _write_dat(directory: Path, header: str, games) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     parts = ['<?xml version="1.0"?>', "<datafile>", f"<header><name>{header}</name></header>"]
@@ -148,6 +181,12 @@ def _state(tmp_path: Path, vol: Path) -> AppState:
     state = AppState(
         provider=FakeVolumeProvider([VolumeInfo(name="SD", mount_point=vol)]),
         library_root=tmp_path / "lib",
+    )
+    # Never let the background enrichment layer reach the real network in tests;
+    # individual tests opt in to a recording downloader via ``_inject_downloader``.
+    state._artwork_service = ArtworkService(
+        cache=CoverCache(state.library_root / COVER_CACHE_DIR),
+        downloader=ArtworkDownloader(urlopen=_offline_opener),
     )
     state.refresh_volumes()
     return state
@@ -180,7 +219,7 @@ def test_canonical_title_promoted_after_background_metadata(tk_root, tmp_path, m
 
     state = _state(tmp_path, vol)
     state.set_libretro_dir(dat_dir)
-    loader, schedule = _sync_loader()
+    loader, schedule, executor = _deferred_loader()
     app = build_app(state=state, root=tk_root, loader=loader)
     try:
         state.select_mount(vol)
@@ -191,6 +230,7 @@ def test_canonical_title_promoted_after_background_metadata(tk_root, tmp_path, m
         tk_root.update_idletasks()
         # First paint: scanned file name, before the index answered.
         assert app.detail_name.get() == "Apotris"
+        executor.run_all()
         schedule.flush()
         assert app.detail_name.get() == "Apotris - Rhythm Game (USA)"
     finally:
@@ -227,13 +267,14 @@ def test_downloaded_cover_replaces_placeholder(tk_root, tmp_path, monkeypatch):
     state = _state(tmp_path, vol)
     state.set_libretro_dir(dat_dir)
     calls = _inject_downloader(state)
-    loader, schedule = _sync_loader()
+    loader, schedule, executor = _deferred_loader()
     app = build_app(state=state, root=tk_root, loader=loader)
     try:
         state.select_mount(vol)
         app.refresh_saves_ui()
         app.save_list.select_index(0)
         assert app._detail_cover_path is None  # placeholder before the download
+        executor.run_all()
         schedule.flush()
 
         assert calls and calls[0].startswith("https://thumbnails.libretro.com/")
@@ -289,6 +330,7 @@ def test_repeat_selection_coalesces_background_work(tk_root, tmp_path, monkeypat
     try:
         state.select_mount(vol)
         app.refresh_saves_ui()
+        schedule.flush()  # let the eager list enrichment finish first
 
         calls = []
 
@@ -304,6 +346,217 @@ def test_repeat_selection_coalesces_background_work(tk_root, tmp_path, monkeypat
         assert calls == [1]
         schedule.flush()
         assert app.detail_name.get() == "Apotris (USA)"
+    finally:
+        _dispose(app, tk_root)
+
+
+# --- eager list enrichment ---------------------------------------------------
+
+
+def test_list_refresh_enriches_every_resolved_row(tk_root, tmp_path, monkeypatch):
+    vol = _gba_volume(tmp_path, [("One", "One"), ("Two", "Two")])
+    state = _state(tmp_path, vol)
+    loader, schedule, executor = _deferred_loader()
+    app = build_app(state=state, root=tk_root, loader=loader)
+    try:
+        state.select_mount(vol)
+        calls = []
+
+        def counting(entry, result=None, metadata=None):
+            calls.append(entry.path)
+            return PLACEHOLDER
+
+        monkeypatch.setattr(state, "ensure_save_cover", counting, raising=False)
+
+        app.refresh_saves_ui()
+        executor.run_all()
+        schedule.flush()
+
+        assert set(calls) == {
+            str(vol / "SAVEGAME" / "One.sav"),
+            str(vol / "SAVEGAME" / "Two.sav"),
+        }
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_list_refresh_defers_cover_work_off_the_ui_thread(tk_root, tmp_path, monkeypatch):
+    vol = _gba_volume(tmp_path, [("One", "One")])
+    state = _state(tmp_path, vol)
+    loader, schedule, executor = _deferred_loader()
+    app = build_app(state=state, root=tk_root, loader=loader)
+    try:
+        state.select_mount(vol)
+        calls = []
+        monkeypatch.setattr(
+            state, "ensure_save_cover", lambda *a, **k: calls.append(1) or PLACEHOLDER, raising=False
+        )
+
+        app.refresh_saves_ui()
+        # The refresh (UI) path must not perform the network-bound resolution.
+        assert calls == []
+
+        executor.run_all()
+        schedule.flush()
+        assert calls
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_list_row_cover_is_filled_in_background(tk_root, tmp_path):
+    vol = _gba_volume(tmp_path, [("Apotris", "Apotris")])
+    rom = vol / "GBA" / "Apotris.gba"
+    sha1, crc = digest(rom.read_bytes())
+    dat_dir = _write_dat(
+        tmp_path / "dats", "Nintendo - Game Boy Advance", [("Apotris (USA)", sha1, crc)]
+    )
+
+    state = _state(tmp_path, vol)
+    state.set_libretro_dir(dat_dir)
+    calls = _inject_downloader(state)
+    loader, schedule = _sync_loader()
+    app = build_app(state=state, root=tk_root, loader=loader)
+    try:
+        state.select_mount(vol)
+        app.refresh_saves_ui()
+        schedule.flush()
+
+        assert calls  # a download was attempted for the visible row
+        row = app.save_list._rows[0]
+        assert row["cover"] is not None
+        assert row["cover"].endswith(".png")
+        assert Path(row["cover"]).is_file()
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_unresolved_rows_do_not_start_cover_download(tk_root, tmp_path, monkeypatch):
+    vol = tmp_path / "SD"
+    (vol / "SAVEGAME").mkdir(parents=True)
+    (vol / "SAVEGAME" / "Ghost.sav").write_bytes(b"g")
+
+    state = _state(tmp_path, vol)
+    loader, schedule, executor = _deferred_loader()
+    app = build_app(state=state, root=tk_root, loader=loader)
+    try:
+        state.select_mount(vol)
+        entry = state.all_saves()[0]
+        assert state.resolve_save_identity(entry).status == "unresolved"
+        calls = []
+        monkeypatch.setattr(
+            state, "ensure_save_cover", lambda *a, **k: calls.append(1) or PLACEHOLDER, raising=False
+        )
+
+        app.refresh_saves_ui()
+        executor.run_all()
+        schedule.flush()
+        assert calls == []
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_ambiguous_rows_do_not_start_cover_download(tk_root, tmp_path, monkeypatch):
+    vol = tmp_path / "SD"
+    (vol / "SAVEGAME").mkdir(parents=True)
+    (vol / "SAVEGAME" / "Apotris.sav").write_bytes(b"save")
+    (vol / "GBA").mkdir()
+    (vol / "GBA" / "Apotris.gba").write_bytes(make_gba_rom(title="APOTRIS A"))
+    (vol / "GBA" / "Apotris (Japan).gba").write_bytes(make_gba_rom(title="APOTRIS B"))
+
+    state = _state(tmp_path, vol)
+    loader, schedule, executor = _deferred_loader()
+    app = build_app(state=state, root=tk_root, loader=loader)
+    try:
+        state.select_mount(vol)
+        entry = state.all_saves()[0]
+        assert state.resolve_save_identity(entry).status == "ambiguous"
+        calls = []
+        monkeypatch.setattr(
+            state, "ensure_save_cover", lambda *a, **k: calls.append(1) or PLACEHOLDER, raising=False
+        )
+
+        app.refresh_saves_ui()
+        executor.run_all()
+        schedule.flush()
+        assert calls == []
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_stale_list_generation_result_is_dropped(tk_root, tmp_path, monkeypatch):
+    vol = _gba_volume(tmp_path, [("One", "One")])
+    state = _state(tmp_path, vol)
+    loader, schedule, executor = _deferred_loader()
+    app = build_app(state=state, root=tk_root, loader=loader)
+    try:
+        state.select_mount(vol)
+        applied = []
+        monkeypatch.setattr(
+            app, "_apply_row_enrichment", lambda *a, **k: applied.append(a), raising=False
+        )
+
+        app.refresh_saves_ui()  # generation 1 -> task queued
+        app.refresh_saves_ui()  # generation 2 -> same key coalesced, old callback stale
+        executor.run_all()
+        schedule.flush()
+
+        assert len(applied) == 1  # only the current generation was applied
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_list_enrichment_task_failure_is_swallowed(tk_root, tmp_path, monkeypatch):
+    vol = _gba_volume(tmp_path, [("One", "One")])
+    state = _state(tmp_path, vol)
+    loader, schedule = _sync_loader()
+    app = build_app(state=state, root=tk_root, loader=loader)
+    try:
+        state.select_mount(vol)
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("worker exploded")
+
+        monkeypatch.setattr(state, "ensure_save_cover", boom, raising=False)
+        app.refresh_saves_ui()
+        schedule.flush()  # a failed background task must not break the list
+
+        assert app.save_list.size() == 1
+        assert app.save_list._rows[0]["cover"] is None
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_list_enrichment_submit_failure_is_swallowed(tk_root, tmp_path, monkeypatch):
+    vol = _gba_volume(tmp_path, [("One", "One")])
+    state = _state(tmp_path, vol)
+    loader, schedule = _sync_loader()
+    app = build_app(state=state, root=tk_root, loader=loader)
+    try:
+        state.select_mount(vol)
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("executor is gone")
+
+        monkeypatch.setattr(app._artwork_loader, "submit", boom, raising=False)
+        app.refresh_saves_ui()  # must not raise when the pool is unavailable
+        assert app.save_list.size() == 1
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_row_enrichment_for_missing_row_is_ignored(tk_root, tmp_path):
+    vol = _gba_volume(tmp_path, [("One", "One")])
+    state = _state(tmp_path, vol)
+    app = build_app(state=state, root=tk_root)
+    try:
+        state.select_mount(vol)
+        app.refresh_saves_ui()
+        ghost = SaveEntry(
+            platform="gba", source_id="gba", display_name="Gone", path="/tmp/does-not-exist.sav"
+        )
+        # A late result for a save no longer in the list must be a no-op.
+        app._apply_row_enrichment(ghost, None, (None, PLACEHOLDER))
+        assert app.save_list.size() == 1
     finally:
         _dispose(app, tk_root)
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .digest import digest_file
 from .models import (
@@ -183,6 +183,25 @@ def _dedupe(roms: Iterable[RomFile]) -> List[RomFile]:
     return out
 
 
+def _dedupe_identities(identities: Iterable[GameIdentity]) -> List[GameIdentity]:
+    """Collapse identities that describe the very same game.
+
+    The same ROM content (same ``identity_key``) can legitimately live under
+    several catalogue folders, and the same save may be reachable through more
+    than one scanned path.  Those are one game, not an ambiguity; only genuinely
+    different content (a different ``identity_key``) stays a candidate.
+    """
+    out: List[GameIdentity] = []
+    seen: Set[str] = set()
+    for identity in identities:
+        key = identity.identity_key
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(identity)
+    return out
+
+
 class RomIndex:
     """A cache of ROM locations used to match saves by name.
 
@@ -307,7 +326,9 @@ def resolve_rom_identity(entry, ctx, *, platform: str) -> GameIdentityResult:
     cache = getattr(ctx, "rom_cache", None)
 
     # Stage 1: exact normalised-name match has the highest priority.
-    exact = _build_identities(ctx.rom_index.find(platform, hint, extra_dirs), platform, cache)
+    exact = _dedupe_identities(
+        _build_identities(ctx.rom_index.find(platform, hint, extra_dirs), platform, cache)
+    )
     if len(exact) > 1:
         return ambiguous(tuple(exact), reason="匹配到多个 ROM", save_path=entry.path)
     if len(exact) == 1:
@@ -316,8 +337,10 @@ def resolve_rom_identity(entry, ctx, *, platform: str) -> GameIdentityResult:
     # Stage 2: token Jaccard over the whole ROM pool.  Only a single candidate
     # that clears ``FUZZY_MIN_JACCARD`` is auto-matched; anything else stays
     # ambiguous/unresolved rather than guessing.
-    fuzzy = _build_identities(
-        _fuzzy_candidates(ctx.rom_index.pool(platform, extra_dirs), hint), platform, cache
+    fuzzy = _dedupe_identities(
+        _build_identities(
+            _fuzzy_candidates(ctx.rom_index.pool(platform, extra_dirs), hint), platform, cache
+        )
     )
     if len(fuzzy) > 1:
         return ambiguous(tuple(fuzzy), reason="模糊匹配到多个 ROM", save_path=entry.path)
