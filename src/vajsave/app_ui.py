@@ -1934,11 +1934,17 @@ class VajSaveApp:
         self._saves_index = []
         rows: List[dict] = []
         restore_index: Optional[int] = None
-        for _group_name, saves in self.state.grouped_saves():
+        groups = self.state.grouped_saves()
+        # Resolve every visible save in one batch: the ROM identity cache then
+        # flushes once for the whole list instead of after every row.
+        visible = [save for _group_name, saves in groups for save in saves]
+        resolved = self.state.resolve_identities(visible)
+        result_by_path = {save.path: result for save, result in zip(visible, resolved)}
+        for _group_name, saves in groups:
             for save in saves:
                 status = self.state.save_status(save)
                 row = save_row(save, status, starred=self.state.is_starred(save))
-                view = save_display(self.state, save)
+                view = save_display(self.state, save, result=result_by_path.get(save.path))
                 row["title"] = view["title"]
                 row["subtitle"] = view["subtitle"]
                 row["cover"] = resolve_cover(save, self.state.library_root)

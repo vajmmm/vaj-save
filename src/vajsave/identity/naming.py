@@ -110,22 +110,39 @@ def display_name_from_stem(name: str) -> str:
     return cleaned or strip_extension(name)
 
 
+# Stage-2 fuzzy matching threshold.  A ROM is only auto-bound when the save
+# hint and the ROM name share at least this share of their combined tokens, so
+# a merely loose overlap stays unresolved instead of binding a wrong game.
+FUZZY_MIN_JACCARD = 0.6
+
+
 def title_tokens(name: str) -> frozenset:
-    """Normalised, region-free token set used for conservative fuzzy matching."""
+    """Normalised, region-free token set used for fuzzy matching."""
     return frozenset(normalize_title(name).split())
 
 
-def conservative_token_match(hint_tokens: frozenset, candidate_tokens: frozenset) -> bool:
-    """True when every token of ``hint_tokens`` also appears in ``candidate_tokens``.
+def jaccard_similarity(a: frozenset, b: frozenset) -> float:
+    """Jaccard index of two token sets in ``[0.0, 1.0]``; ``0.0`` if empty."""
+    union = a | b
+    if not union:
+        return 0.0
+    return len(a & b) / len(union)
 
-    Stage-2 matching is deliberately one-directional: the save name is a
-    *hint* ("Pokemon Emerald") while the ROM name may carry extra words
-    ("Pokemon Emerald Version").  Requiring the hint's tokens to be a non-empty
-    subset of the ROM's tokens avoids the false positive of matching a longer
-    save name against a shorter, coarser ROM name (“Pokemon Emerald” vs
-    “Pokemon”).
+
+def fuzzy_token_match(
+    hint_tokens: frozenset,
+    candidate_tokens: frozenset,
+    *,
+    min_jaccard: float = FUZZY_MIN_JACCARD,
+) -> bool:
+    """True when the two token sets are similar enough to auto-match.
+
+    Stage-2 matching uses the symmetric token Jaccard index rather than a
+    one-directional subset test: "Pokemon Emerald" matches "Pokemon Emerald
+    Version" (2/3) but neither a much longer unrelated name nor a one-word
+    coarser ROM ("Pokemon", 1/2) clears the threshold.
     """
-    return bool(hint_tokens) and hint_tokens <= candidate_tokens
+    return jaccard_similarity(hint_tokens, candidate_tokens) >= min_jaccard
 
 
 def save_hint(entry) -> str:

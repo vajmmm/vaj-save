@@ -11,6 +11,11 @@ because its fingerprint no longer matches.
 
 The store is JSON-backed and best-effort: a missing, corrupt or unreadable file
 degrades to an empty cache and is rewritten on the next successful lookup.
+
+Writes are throttled: :meth:`put` marks the store dirty and only :meth:`flush`
+touches the disk.  Resolving a cold volume hits every ROM in turn, so writing
+the growing document after each :meth:`put` would cost O(N^2) bytes; batching
+the flush at the end of a resolution pass keeps it linear.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ class RomIdentityCache:
         self.path: Optional[Path] = Path(path).expanduser() if path else None
         self._entries: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
+        self._dirty = False
         if self.path is not None:
             self.load()
 
@@ -72,7 +78,11 @@ class RomIdentityCache:
             return None
 
     def put(self, path, platform: str, identity: GameIdentity) -> None:
-        """Store ``identity``; persists only when the record actually changed."""
+        """Store ``identity`` in memory; the caller flushes when the batch ends.
+
+        Only an actual change marks the store dirty, so repeated lookups of the
+        same ROM stay write-free.
+        """
         fingerprint = self.fingerprint(path)
         if fingerprint is None:
             return
@@ -87,7 +97,20 @@ class RomIdentityCache:
             if self._entries.get(key) == record:
                 return
             self._entries[key] = record
-        self.save()
+            self._dirty = True
+
+    @property
+    def dirty(self) -> bool:
+        """Whether there are unflushed changes waiting to be written."""
+        with self._lock:
+            return self._dirty
+
+    def flush(self) -> bool:
+        """Persist pending changes once; a no-op (``False``) when clean."""
+        with self._lock:
+            if not self._dirty or self.path is None:
+                return False
+        return self.save()
 
     def all(self) -> Dict[str, Dict[str, Any]]:
         with self._lock:
@@ -128,6 +151,8 @@ class RomIdentityCache:
                 except OSError:
                     pass
             return False
+        with self._lock:
+            self._dirty = False
         return True
 
 

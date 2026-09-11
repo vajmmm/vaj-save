@@ -23,9 +23,10 @@ from .models import (
     unresolved,
 )
 from .naming import (
-    conservative_token_match,
+    FUZZY_MIN_JACCARD,
     display_name_from_stem,
     extract_region,
+    fuzzy_token_match,
     normalize_title,
     save_hint,
     strip_extension,
@@ -312,8 +313,9 @@ def resolve_rom_identity(entry, ctx, *, platform: str) -> GameIdentityResult:
     if len(exact) == 1:
         return _bind_and_resolve(exact[0], entry, ctx)
 
-    # Stage 2: conservative token containment.  Only a single trustworthy
-    # candidate is auto-matched; anything else stays ambiguous/unresolved.
+    # Stage 2: token Jaccard over the whole ROM pool.  Only a single candidate
+    # that clears ``FUZZY_MIN_JACCARD`` is auto-matched; anything else stays
+    # ambiguous/unresolved rather than guessing.
     fuzzy = _build_identities(
         _fuzzy_candidates(ctx.rom_index.pool(platform, extra_dirs), hint), platform, cache
     )
@@ -343,7 +345,11 @@ def _fuzzy_candidates(pool: Iterable[RomFile], hint: str) -> List[RomFile]:
     matches = [
         rom
         for rom in pool
-        if conservative_token_match(hint_tokens, rom.tokens or frozenset(rom.normalized.split()))
+        if fuzzy_token_match(
+            hint_tokens,
+            rom.tokens or frozenset(rom.normalized.split()),
+            min_jaccard=FUZZY_MIN_JACCARD,
+        )
     ]
     return sorted(matches, key=lambda rom: str(rom.path))
 

@@ -317,6 +317,61 @@ def test_rom_cache_miss_on_platform_mismatch_and_stale_stats(tmp_path: Path, mon
     assert cache.get(rom, "gba") is None
 
 
+# --- write throttling (dirty + flush) ---------------------------------------
+
+
+def test_rom_cache_put_defers_write_until_flush(tmp_path: Path):
+    from vajsave.identity import GameIdentity
+    from vajsave.identity.cache import RomIdentityCache
+
+    rom = tmp_path / "Kirby.gba"
+    rom.write_bytes(make_gba_rom())
+    cache_path = tmp_path / "cache.json"
+    cache = RomIdentityCache(cache_path)
+    identity = GameIdentity(identity_key="gba:sha1:aa", platform="gba", title="Kirby")
+
+    cache.put(rom, "gba", identity)
+    # The record is only in memory; nothing touches the disk until flush().
+    assert not cache_path.exists()
+    assert cache.dirty is True
+    assert cache.get(rom, "gba").identity_key == "gba:sha1:aa"
+
+    assert cache.flush() is True
+    assert cache_path.is_file()
+    assert cache.dirty is False
+    # A clean cache never rewrites the file again.
+    assert cache.flush() is False
+
+
+def test_resolve_many_flushes_rom_cache_once(tmp_path: Path, monkeypatch):
+    from vajsave.identity.cache import RomIdentityCache
+
+    rom_dir = _rom_dir(tmp_path)
+    saves = []
+    for i in range(6):
+        name = f"Game{i}"
+        (rom_dir / f"{name}.gba").write_bytes(make_gba_rom(title=f"GAME{i}"))
+        saves.append(entry("gba", name, tmp_path / "SAVER" / f"{name}.sav"))
+
+    cache_path = tmp_path / "rom_cache.json"
+    resolver = GameIdentityResolver(rom_dirs={"gba": [rom_dir]}, cache_path=cache_path)
+
+    writes = []
+    real_save = RomIdentityCache.save
+
+    def counting_save(self):
+        writes.append(1)
+        return real_save(self)
+
+    monkeypatch.setattr(RomIdentityCache, "save", counting_save)
+
+    results = resolver.resolve_many(saves)
+    assert all(r.is_resolved for r in results)
+    # Six cold ROMs still cost exactly one atomic write, not six.
+    assert writes == [1]
+    assert cache_path.is_file()
+
+
 def test_rom_cache_get_tolerates_bad_identity_payload(tmp_path: Path):
     from vajsave.identity.cache import RomIdentityCache
 

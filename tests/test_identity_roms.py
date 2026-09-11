@@ -233,7 +233,7 @@ def test_missing_rom_dirs_are_harmless(tmp_path: Path):
     assert result.status == "unresolved"
 
 
-# --- conservative fuzzy / token matching (stage 2) ---------------------------
+# --- fuzzy token matching (stage 2, Jaccard >= FUZZY_MIN_JACCARD) ------------
 
 
 def test_gba_fuzzy_unique_rom_matches_when_exact_fails(tmp_path: Path):
@@ -252,20 +252,32 @@ def test_gba_fuzzy_unique_rom_matches_when_exact_fails(tmp_path: Path):
 def test_gba_fuzzy_sibling_rom_is_found_without_config(tmp_path: Path):
     saver = tmp_path / "SAVER"
     saver.mkdir()
-    (saver / "Apotris.sav").write_bytes(b"save")
+    (saver / "Apotris Rhythm.sav").write_bytes(b"save")
     (saver / "Apotris - Rhythm Game.gba").write_bytes(make_gba_rom(title="APOTRIS"))
 
-    result = GameIdentityResolver().resolve(entry("gba", "Apotris", saver / "Apotris.sav"))
+    result = GameIdentityResolver().resolve(
+        entry("gba", "Apotris Rhythm", saver / "Apotris Rhythm.sav")
+    )
     assert result.is_resolved
+
+
+def test_gba_fuzzy_single_word_hint_stays_unresolved(tmp_path: Path):
+    """A one-word hint is too weak for Jaccard 0.6 once the ROM adds words."""
+    rom_dir = _rom_dir(tmp_path)
+    (rom_dir / "Apotris - Rhythm Game.gba").write_bytes(make_gba_rom(title="APOTRIS"))
+    resolver = GameIdentityResolver(rom_dirs={"gba": [rom_dir]})
+
+    result = resolver.resolve(entry("gba", "Apotris", tmp_path / "Apotris.sav"))
+    assert result.status == "unresolved"
 
 
 def test_gba_fuzzy_multiple_candidates_are_ambiguous(tmp_path: Path):
     rom_dir = _rom_dir(tmp_path)
-    (rom_dir / "Pokemon Emerald.gba").write_bytes(make_gba_rom(title="EMERALD"))
-    (rom_dir / "Pokemon Ruby.gba").write_bytes(make_gba_rom(title="RUBY"))
+    (rom_dir / "Mario Kart DS Deluxe.gba").write_bytes(make_gba_rom(title="MK DELUXE"))
+    (rom_dir / "Mario Kart DS Advance.gba").write_bytes(make_gba_rom(title="MK ADVANCE"))
     resolver = GameIdentityResolver(rom_dirs={"gba": [rom_dir]})
 
-    result = resolver.resolve(entry("gba", "Pokemon", tmp_path / "Pokemon.sav"))
+    result = resolver.resolve(entry("gba", "Mario Kart DS", tmp_path / "Mario Kart DS.sav"))
     assert result.status == "ambiguous"
     assert len(result.candidates) == 2
 
