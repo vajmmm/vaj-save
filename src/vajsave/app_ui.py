@@ -13,6 +13,8 @@ from .identity import (
     STATUS_PARTIAL,
     STATUS_RESOLVED,
     STATUS_UNRESOLVED,
+    GameIdentity,
+    GameIdentityResult,
 )
 from .library import Snapshot
 from .models import SaveEntry, VolumeInfo
@@ -112,10 +114,19 @@ _IDENTITY_STATUS_LABELS = {
 _DETAIL_NAME_MAX_CHARS = 28
 
 
-def save_display(state: AppState, save: SaveEntry) -> Dict[str, str]:
-    """List/inspector text for one save, including GameIdentity when resolved."""
+def save_display(
+    state: AppState,
+    save: SaveEntry,
+    result: Optional[GameIdentityResult] = None,
+) -> Dict[str, str]:
+    """List/inspector text for one save, including GameIdentity when resolved.
+
+    ``result`` lets a caller that already resolved the save reuse that result
+    instead of matching/hashing the ROMs a second time.
+    """
     filename = save.display_name or Path(save.path).name
-    result = state.resolve_save_identity(save)
+    if result is None:
+        result = state.resolve_save_identity(save)
     identity = result.identity
     title_id = save.title_id or ""
     header_title = ""
@@ -993,6 +1004,7 @@ class VajSaveApp:
         self._volumes_index: List[VolumeInfo] = []
         self._versions_index: List[Snapshot] = []
         self._platform_rows: Dict[str, dict] = {}
+        self._identity_candidates: List[GameIdentity] = []
         self._watch_var = tk.BooleanVar(value=True)
         self._hide_unchanged_var = tk.BooleanVar(value=True)
         self._poll_interval_ms = 200
@@ -1334,6 +1346,57 @@ class VajSaveApp:
         location.grid(row=0, column=2, sticky="ew", padx=(5, 0))
         self._action_buttons.extend((restore, export))
 
+        # Contextual game-identity binding: hidden until the selected save is
+        # ambiguous (pick a candidate ROM) or an unresolved GBA/NDS save (pick a
+        # ROM file by hand). The frame is gridded/removed in place so the rest of
+        # the inspector does not move when it is not needed.
+        identity = tk.Frame(right, bg=PANEL_BG)
+        identity.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 10))
+        identity.grid_columnconfigure(0, weight=1)
+        self.identity_frame = identity
+        identity_head = tk.Frame(identity, bg=PANEL_BG)
+        identity_head.grid(row=0, column=0, sticky="ew")
+        tk.Label(identity_head, text="游戏身份", bg=PANEL_BG, fg=INK, font=ui_font(12, "bold")).pack(side=tk.LEFT)
+        self.identity_state_var = tk.StringVar(value="")
+        tk.Label(identity_head, textvariable=self.identity_state_var, bg=PANEL_BG, fg=MUTED_STRONG, font=ui_font(10)).pack(side=tk.RIGHT)
+        self.identity_hint_var = tk.StringVar(value="")
+        tk.Label(
+            identity,
+            textvariable=self.identity_hint_var,
+            bg=PANEL_BG,
+            fg=MUTED_STRONG,
+            font=ui_font(10),
+            wraplength=380,
+            justify="left",
+            anchor="w",
+        ).grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        self.identity_list = tk.Listbox(
+            identity,
+            bg=CARD,
+            fg=INK,
+            selectbackground=SELECTED_LIST,
+            selectforeground=INK,
+            font=ui_font(10),
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground=BORDER_SOFT,
+            bd=0,
+            activestyle="none",
+            selectborderwidth=0,
+            height=3,
+            exportselection=False,
+        )
+        self.identity_list.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+        identity_actions = tk.Frame(identity, bg=PANEL_BG)
+        identity_actions.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        self._bind_candidate_button = CanvasButton(
+            identity_actions, text="绑定所选 ROM", command=self.on_bind_candidate_clicked
+        )
+        self._manual_rom_button = CanvasButton(
+            identity_actions, text="手动选择 ROM…", command=self.on_manual_rom_clicked
+        )
+        identity.grid_remove()
+
         versions = tk.Frame(right, bg=PANEL_BG)
         versions.grid(row=4, column=0, sticky="nsew", padx=20, pady=(0, 10))
         versions.grid_rowconfigure(1, weight=1)
@@ -1535,6 +1598,7 @@ class VajSaveApp:
             var.set("—")
         self.detail_hint_var.set("")
         self.note_var.set("")
+        self._hide_identity_section()
         self._render_detail_cover(None)
 
     def _render_detail_cover(self, save: Optional[SaveEntry]) -> None:
@@ -1576,7 +1640,8 @@ class VajSaveApp:
         save = self._saves_index[index]
         self._selected_save = save
         status = self.state.save_status(save)
-        view = save_display(self.state, save)
+        result = self.state.resolve_save_identity(save)
+        view = save_display(self.state, save, result=result)
         self.detail_name.set(_truncate_ui_text(view["title"], _DETAIL_NAME_MAX_CHARS))
         self.detail_subtitle_var.set(_truncate_ui_text(view["subtitle"], 40))
         self._render_detail_cover(save)
@@ -1591,6 +1656,7 @@ class VajSaveApp:
         self.detail_vars["path"].set(save.path)
         stale = "卡上时间早于上次备份（可能是回档或拷贝）" if status.mtime_stale else ""
         self.detail_hint_var.set(stale or view["hint"])
+        self._update_identity_section(save, result)
         self.note_var.set(self.state.game_note(save))
         self.refresh_versions_ui()
 
@@ -1668,6 +1734,105 @@ class VajSaveApp:
         ok, msg = open_in_file_manager(self._selected_save.path)
         self.update_status(msg if ok else "定位存档失败")
         self.update_warning("" if ok else msg)
+
+    # -- game identity binding ---------------------------------------------
+
+    @staticmethod
+    def _candidate_label(identity: GameIdentity) -> str:
+        name = identity.title or identity.identity_key
+        if identity.rom_path:
+            name = f"{name}  ·  {Path(identity.rom_path).name}"
+        return _truncate_ui_text(name, 60)
+
+    def _show_identity_frame(self) -> None:
+        frame = getattr(self, "identity_frame", None)
+        if frame is not None and not frame.winfo_manager():
+            frame.grid()
+
+    def _hide_identity_section(self) -> None:
+        self._identity_candidates = []
+        frame = getattr(self, "identity_frame", None)
+        if frame is not None and frame.winfo_manager():
+            frame.grid_remove()
+
+    def _update_identity_section(self, save: Optional[SaveEntry], result: Optional[GameIdentityResult]) -> None:
+        """Show the contextual ROM binding controls for the selected save.
+
+        Ambiguous saves list their candidate ROMs; unresolved GBA/NDS saves get a
+        manual "选择 ROM" file dialog. Every other save hides the section.
+        """
+        if getattr(self, "identity_frame", None) is None:
+            return
+        if save is None or result is None:
+            self._hide_identity_section()
+            return
+        platform = (getattr(save, "platform", "") or "").lower()
+        if result.status == STATUS_AMBIGUOUS and result.candidates:
+            self._identity_candidates = list(result.candidates)
+            self.identity_state_var.set("多个候选")
+            self.identity_hint_var.set("匹配到多个 ROM，选择要绑定的游戏身份")
+            self.identity_list.delete(0, tk.END)
+            for candidate in self._identity_candidates:
+                self.identity_list.insert(tk.END, self._candidate_label(candidate))
+            self.identity_list.selection_clear(0, tk.END)
+            self.identity_list.selection_set(0)
+            self.identity_list.grid()
+            self._manual_rom_button.pack_forget()
+            if not self._bind_candidate_button.winfo_manager():
+                self._bind_candidate_button.pack(side=tk.LEFT)
+            self._show_identity_frame()
+        elif result.status == STATUS_UNRESOLVED and platform in ("gba", "nds"):
+            self._identity_candidates = []
+            self.identity_state_var.set("未识别")
+            self.identity_hint_var.set("未匹配到 ROM，可手动选择该存档对应的 ROM 文件")
+            self.identity_list.delete(0, tk.END)
+            self.identity_list.grid_remove()
+            self._bind_candidate_button.pack_forget()
+            if not self._manual_rom_button.winfo_manager():
+                self._manual_rom_button.pack(side=tk.LEFT)
+            self._show_identity_frame()
+        else:
+            self._hide_identity_section()
+
+    def on_bind_candidate_clicked(self) -> None:
+        """Bind the candidate ROM the user picked from the ambiguous list."""
+        save = self._selected_save
+        if save is None:
+            return
+        selection = self.identity_list.curselection()
+        if not selection or selection[0] >= len(self._identity_candidates):
+            self.update_warning("先选择一个候选 ROM")
+            return
+        self._bind_identity(save, identity=self._identity_candidates[selection[0]])
+
+    def on_manual_rom_clicked(self) -> None:
+        """Pick a ROM file by hand for an unresolved GBA/NDS save."""
+        save = self._selected_save
+        if save is None:
+            return
+        platform = (getattr(save, "platform", "") or "").lower()
+        if platform == "gba":
+            filetypes = [("GBA ROM", "*.gba *.agb"), ("所有文件", "*.*")]
+        elif platform == "nds":
+            filetypes = [("NDS ROM", "*.nds"), ("所有文件", "*.*")]
+        else:
+            filetypes = [("所有文件", "*.*")]
+        chosen = filedialog.askopenfilename(title="选择 ROM 文件", filetypes=filetypes)
+        if not chosen:
+            return
+        self._bind_identity(save, rom_path=chosen)
+
+    def _bind_identity(self, save: SaveEntry, *, identity=None, rom_path=None) -> None:
+        """Persist a manual binding, then refresh the list/inspector in place."""
+        try:
+            bound = self.state.bind_save_identity(save, identity=identity, rom_path=rom_path)
+        except Exception as e:  # noqa: BLE001 - a bad ROM file must not crash the app
+            self.update_warning(f"绑定失败: {e}")
+            return
+        title = bound.title or bound.identity_key
+        self.state.status_text = f"已绑定游戏身份: {title}"
+        self.update_warning("")
+        self.refresh_saves_ui()
 
     def _apply_library_root(self, path: str) -> None:
         """Apply a new library root chosen in the settings dialog."""
