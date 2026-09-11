@@ -28,6 +28,7 @@ from .library import (
 )
 from .identity import (
     BINDINGS_NAME,
+    ROM_CACHE_NAME,
     BindingStore,
     GameIdentity,
     GameIdentityResolver,
@@ -285,7 +286,11 @@ class AppState:
         if nds_roots:
             rom_dirs["nds"] = nds_roots
         bindings = BindingStore(self.library_root / BINDINGS_NAME)
-        return GameIdentityResolver(rom_dirs=rom_dirs, bindings=bindings)
+        return GameIdentityResolver(
+            rom_dirs=rom_dirs,
+            bindings=bindings,
+            cache_path=self.library_root / ROM_CACHE_NAME,
+        )
 
     @property
     def identity_resolver(self) -> GameIdentityResolver:

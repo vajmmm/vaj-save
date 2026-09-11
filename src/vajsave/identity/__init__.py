@@ -5,10 +5,12 @@ Public surface:
 * :class:`GameIdentity` / :class:`GameIdentityResult` value objects
 * :class:`GameIdentityResolver` platform dispatcher (``resolve`` / ``resolve_many``)
 * :class:`BindingStore` path-independent manual/automatic bindings
+* :class:`RomIdentityCache` persistent ROM digest/identity cache
 * :class:`RomIndex` / :class:`RomFile` ROM discovery and matching
 """
 
 from .bindings import BINDINGS_NAME, BindingStore
+from .cache import ROM_CACHE_NAME, RomIdentityCache
 from .models import (
     SOURCE_BINDING,
     SOURCE_FILENAME,
@@ -46,6 +48,8 @@ __all__ = [
     "ResolverContext",
     "BindingStore",
     "BINDINGS_NAME",
+    "RomIdentityCache",
+    "ROM_CACHE_NAME",
     "RomIndex",
     "RomFile",
     "build_identity_from_rom",
