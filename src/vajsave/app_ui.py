@@ -1275,6 +1275,11 @@ class VajSaveApp:
         self.update_status(f"备份库已切换到 {self.state.library_root}")
         self.update_warning("")
 
+    def _apply_rom_dirs(self, gba_rom_dir, nds_rom_dir) -> None:
+        """Apply the optional cartridge ROM directories chosen in the settings dialog."""
+        self.state.set_rom_dirs(gba_rom_dir, nds_rom_dir)
+        self.update_status("ROM 目录已更新")
+
     def on_settings_clicked(self) -> None:
         dialog = tk.Toplevel(self.root)
         dialog.title("设置")
@@ -1282,38 +1287,49 @@ class VajSaveApp:
         dialog.transient(self.root)
         dialog.resizable(False, False)
 
-        tk.Label(dialog, text="本地备份库路径", bg=BG, fg=TEXT, font=ui_font(13, "bold")).pack(anchor="w", padx=16, pady=(16, 6))
-        path_var = tk.StringVar(value=str(self.state.library_root))
-        entry = ttk.Entry(dialog, textvariable=path_var, width=52)
-        entry.pack(fill=tk.X, padx=16)
+        def add_dir_row(label: str, value: str, browse_title: str) -> tk.StringVar:
+            """A labelled directory entry with its own 浏览… button."""
+            tk.Label(dialog, text=label, bg=BG, fg=TEXT, font=ui_font(13, "bold")).pack(anchor="w", padx=16, pady=(12, 6))
+            row = tk.Frame(dialog, bg=BG)
+            row.pack(fill=tk.X, padx=16)
+            var = tk.StringVar(value=value)
+            ttk.Entry(row, textvariable=var, width=42).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        def browse() -> None:
-            chosen = filedialog.askdirectory(
-                title="选择备份库目录",
-                parent=dialog,
-                initialdir=path_var.get() or None,
-            )
-            if chosen:
-                path_var.set(chosen)
+            def browse() -> None:
+                chosen = filedialog.askdirectory(
+                    title=browse_title,
+                    parent=dialog,
+                    initialdir=var.get() or None,
+                )
+                if chosen:
+                    var.set(chosen)
+
+            CanvasButton(row, text="浏览…", command=browse).pack(side=tk.LEFT, padx=(8, 0))
+            return var
+
+        path_var = add_dir_row("本地备份库路径", str(self.state.library_root), "选择备份库目录")
+        gba_var = add_dir_row("GBA ROM 目录（可选）", str(self.state.gba_rom_dir or ""), "选择 GBA ROM 目录")
+        nds_var = add_dir_row("NDS ROM 目录（可选）", str(self.state.nds_rom_dir or ""), "选择 NDS ROM 目录")
 
         def save() -> None:
             chosen = path_var.get().strip()
             if not chosen:
                 return
+            gba = gba_var.get().strip()
+            nds = nds_var.get().strip()
             dialog.destroy()
             self._apply_library_root(chosen)
+            self._apply_rom_dirs(gba or None, nds or None)
 
         def cancel() -> None:
             dialog.destroy()
 
         btn_row = tk.Frame(dialog, bg=BG)
         btn_row.pack(fill=tk.X, padx=16, pady=16)
-        CanvasButton(btn_row, text="浏览…", command=browse).pack(side=tk.LEFT)
         CanvasButton(btn_row, text="取消", command=cancel).pack(side=tk.RIGHT)
         CanvasButton(btn_row, text="保存", variant="accent", command=save).pack(side=tk.RIGHT, padx=(0, 8))
 
         dialog.grab_set()
-        entry.focus_set()
 
     def _poll_events(self) -> None:
         drained = self.state.drain_events()

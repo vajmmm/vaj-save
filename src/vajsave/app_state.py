@@ -24,11 +24,22 @@ from .library import (
     set_game_meta,
     versions_for,
 )
+from .identity import (
+    BINDINGS_NAME,
+    BindingStore,
+    GameIdentity,
+    GameIdentityResolver,
+    GameIdentityResult,
+)
 from .models import SaveEntry, ScanResult, VolumeInfo
 from .scanner import scan
 from .volume import MountedVolumeProvider, VolumeProvider, watch_volumes
 
 PLATFORM_ORDER = ["all", "psp", "vita", "switch", "3ds", "nds", "gba"]
+
+# Sentinel distinguishing "leave this setting untouched" from an explicit None
+# (which clears a persisted ROM directory) in ``set_rom_dirs``.
+_UNSET = object()
 
 PLATFORM_LABELS = {
     "all": "全部",
@@ -105,6 +116,8 @@ class AppState:
         self.scan_fn: Callable[[Union[Path, str]], ScanResult] = scan_fn or scan
         self.backend: Optional[StorageBackend] = backend
         self.library_root: Path = self._resolve_library_root(library_root)
+        self.gba_rom_dir, self.nds_rom_dir = self._resolve_rom_dirs()
+        self._identity_resolver: Optional[GameIdentityResolver] = None
         self.last_import_path: Optional[Path] = None
         self.last_backup: Optional[BackupResult] = None
 
@@ -135,6 +148,27 @@ class AppState:
             return Path(configured).expanduser()
         return default_library_root()
 
+    @staticmethod
+    def _coerce_dir(value: object) -> Optional[Path]:
+        """Normalise a config/dialog directory value; ``None``/blank means unset."""
+        if isinstance(value, Path):
+            text = str(value)
+        elif isinstance(value, str):
+            text = value
+        else:
+            return None
+        text = text.strip()
+        return Path(text).expanduser() if text else None
+
+    @staticmethod
+    def _resolve_rom_dirs() -> Tuple[Optional[Path], Optional[Path]]:
+        """Read the persisted GBA/NDS ROM directories (invalid values -> None)."""
+        config = load_app_config()
+        return (
+            AppState._coerce_dir(config.get("gba_rom_dir")),
+            AppState._coerce_dir(config.get("nds_rom_dir")),
+        )
+
     def set_library_root(self, library_root: Union[Path, str]) -> Path:
         """Switch the local backup library and persist it to the app config.
 
@@ -143,6 +177,7 @@ class AppState:
         """
         self.library_root = Path(library_root).expanduser()
         self._backup_statuses = {}
+        self._identity_resolver = None
         config = load_app_config()
         config["library_root"] = str(self.library_root)
         save_app_config(config)
@@ -154,6 +189,66 @@ class AppState:
         else:
             self.status_text = f"备份库路径已更新: {self.library_root}"
         return self.library_root
+
+    def set_rom_dirs(
+        self,
+        gba_rom_dir: object = _UNSET,
+        nds_rom_dir: object = _UNSET,
+    ) -> Tuple[Optional[Path], Optional[Path]]:
+        """Persist the GBA/NDS ROM directories used for cartridge identity.
+
+        Only the arguments that are passed are touched: the default sentinel
+        keeps the current value, ``None``/blank clears it.  Returns the new
+        ``(gba_rom_dir, nds_rom_dir)`` pair.
+        """
+        config = load_app_config()
+        if gba_rom_dir is not _UNSET:
+            self.gba_rom_dir = self._coerce_dir(gba_rom_dir)
+            if self.gba_rom_dir is not None:
+                config["gba_rom_dir"] = str(self.gba_rom_dir)
+            else:
+                config.pop("gba_rom_dir", None)
+        if nds_rom_dir is not _UNSET:
+            self.nds_rom_dir = self._coerce_dir(nds_rom_dir)
+            if self.nds_rom_dir is not None:
+                config["nds_rom_dir"] = str(self.nds_rom_dir)
+            else:
+                config.pop("nds_rom_dir", None)
+        save_app_config(config)
+        self._identity_resolver = None
+        return (self.gba_rom_dir, self.nds_rom_dir)
+
+    def _build_identity_resolver(self) -> GameIdentityResolver:
+        rom_dirs: Dict[str, List[Path]] = {}
+        if self.gba_rom_dir is not None:
+            rom_dirs["gba"] = [self.gba_rom_dir]
+        if self.nds_rom_dir is not None:
+            rom_dirs["nds"] = [self.nds_rom_dir]
+        bindings = BindingStore(self.library_root / BINDINGS_NAME)
+        return GameIdentityResolver(rom_dirs=rom_dirs, bindings=bindings)
+
+    @property
+    def identity_resolver(self) -> GameIdentityResolver:
+        if self._identity_resolver is None:
+            self._identity_resolver = self._build_identity_resolver()
+        return self._identity_resolver
+
+    def resolve_save_identity(self, entry: SaveEntry) -> GameIdentityResult:
+        return self.identity_resolver.resolve(entry)
+
+    def resolve_identities(
+        self, entries: Optional[List[SaveEntry]] = None
+    ) -> List[GameIdentityResult]:
+        target = list(entries) if entries is not None else self.all_saves()
+        return self.identity_resolver.resolve_many(target)
+
+    def bind_save_identity(
+        self,
+        entry: SaveEntry,
+        identity: Optional[GameIdentity] = None,
+        rom_path: Optional[Union[Path, str]] = None,
+    ) -> GameIdentity:
+        return self.identity_resolver.bind(entry, identity=identity, rom_path=rom_path)
 
     def all_saves(self) -> List[SaveEntry]:
         if not self.current_result:

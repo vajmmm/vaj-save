@@ -15,6 +15,13 @@ from .backend import (
     FakeStorageBackend,
 )
 from .app_state import AppState
+from .identity import (
+    BindingStore,
+    GameIdentity,
+    GameIdentityResolver,
+    GameIdentityResult,
+    RomIndex,
+)
 
 __version__ = "0.1.0"
 __all__ = [
@@ -32,4 +39,9 @@ __all__ = [
     "MountedVolumeBackend",
     "FakeStorageBackend",
     "AppState",
+    "GameIdentity",
+    "GameIdentityResult",
+    "GameIdentityResolver",
+    "BindingStore",
+    "RomIndex",
 ]
