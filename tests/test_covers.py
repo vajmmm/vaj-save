@@ -6,6 +6,10 @@ is strictly read-only. The UI wraps the returned Pillow images itself.
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -51,7 +55,9 @@ def test_find_embedded_cover_vita_sce_sys(tmp_path: Path):
     save_dir = tmp_path / "PCSE00120"
     (save_dir / "sce_sys").mkdir(parents=True)
     icon = _write_image(save_dir / "sce_sys" / "icon0.png")
-    assert covers.find_embedded_cover(save_dir, "vita") == icon
+    # ``sce_sys`` is a depth-1 layout; the depth-0 lookup must not reach it.
+    assert covers.find_embedded_cover(save_dir) is None
+    assert covers.find_embedded_cover(save_dir, max_depth=1) == icon
 
 
 def test_find_embedded_cover_sibling_for_raw_sav_file(tmp_path: Path):
@@ -71,6 +77,82 @@ def test_find_embedded_cover_missing_returns_none(tmp_path: Path):
     lone = tmp_path / "lonely.sav"
     lone.write_bytes(b"x")
     assert covers.find_embedded_cover(lone) is None
+
+
+def test_embedded_icon_names_cover_common_exports():
+    names = list(covers.EMBEDDED_ICON_NAMES)
+    name_set = set(names)
+    # The design spec's ``EMBEDDED_COVER_NAMES`` name aliases the same list.
+    assert covers.EMBEDDED_COVER_NAMES is covers.EMBEDDED_ICON_NAMES
+    assert {"icon0.png", "icon0.jpg", "pic1.png", "pic1.jpg"} <= name_set
+    assert any(name.startswith("thumb.") for name in names)
+    assert any(name.startswith("preview.") for name in names)
+    assert any(name.startswith("folder.") for name in names)
+    # Every entry is a known stem + a supported image extension.
+    for name in names:
+        _, _, ext = name.rpartition(".")
+        assert ext in covers.IMAGE_EXTENSIONS
+    # Case-insensitive matching still resolves an upper-cased PSP icon.
+    assert name_set == {name.lower() for name in names}
+
+
+def test_find_embedded_cover_generic_scan_is_deterministic(tmp_path: Path):
+    save_dir = tmp_path / "generic"
+    save_dir.mkdir()
+    first = _write_image(save_dir / "aaa.png")
+    _write_image(save_dir / "bbb.png")
+    (save_dir / "notes.txt").write_text("not an image")
+    # No fixed name present -> generic scan, alphabetical for equal-rank names.
+    assert covers.find_embedded_cover(save_dir) == first
+
+
+def test_find_embedded_cover_generic_scan_prefers_name_hints(tmp_path: Path):
+    save_dir = tmp_path / "hinted"
+    save_dir.mkdir()
+    _write_image(save_dir / "aaa.png")
+    hinted = _write_image(save_dir / "zzz_cover_art.png")
+    # ``cover``/``icon``/``box`` names win even though they sort later.
+    assert covers.find_embedded_cover(save_dir) == hinted
+
+
+def test_find_embedded_cover_generic_scan_requires_image_extension(tmp_path: Path):
+    save_dir = tmp_path / "no_images"
+    save_dir.mkdir()
+    (save_dir / "cover.png.bak").write_bytes(b"x")
+    (save_dir / "tile.bin").write_bytes(b"x")
+    assert covers.find_embedded_cover(save_dir) is None
+
+
+def test_find_embedded_cover_depth_one_scan(tmp_path: Path):
+    save_dir = tmp_path / "sub"
+    nested = save_dir / "media"
+    nested.mkdir(parents=True)
+    icon = _write_image(nested / "art.png")
+    assert covers.find_embedded_cover(save_dir) is None
+    assert covers.find_embedded_cover(save_dir, max_depth=1) == icon
+
+
+def test_find_embedded_cover_depth_one_skips_symlinked_dirs(tmp_path: Path):
+    payload = tmp_path / "payload"
+    payload.mkdir()
+    _write_image(payload / "cover.png")
+    save_dir = tmp_path / "save"
+    save_dir.mkdir()
+    try:
+        (save_dir / "linked").symlink_to(payload, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not supported on this platform")
+    assert covers.find_embedded_cover(save_dir, max_depth=1) is None
+
+
+def test_find_embedded_cover_skips_oversized_files(tmp_path: Path):
+    save_dir = tmp_path / "huge"
+    save_dir.mkdir()
+    (save_dir / "icon0.png").write_bytes(b"\x00" * (covers.MAX_COVER_BYTES + 1))
+    assert covers.find_embedded_cover(save_dir) is None
+    # A small fallback still wins over the oversized fixed-name candidate.
+    fallback = _write_image(save_dir / "art.png")
+    assert covers.find_embedded_cover(save_dir) == fallback
 
 
 def test_find_embedded_cover_is_read_only(tmp_path: Path):
@@ -113,6 +195,14 @@ def test_user_cover_path_missing_returns_none(tmp_path: Path):
     assert covers.user_cover_path(_entry(), lib) is None
     assert covers.user_cover_path(_entry(), None) is None
     assert covers.user_cover_path(None, lib) is None
+
+
+def test_user_cover_path_skips_oversized_file(tmp_path: Path):
+    lib = tmp_path / "lib"
+    directory = lib / "covers" / "psp"
+    directory.mkdir(parents=True)
+    (directory / "ULJM05800.png").write_bytes(b"\x00" * (covers.MAX_COVER_BYTES + 1))
+    assert covers.user_cover_path(_entry(), lib) is None
 
 
 def test_cover_helpers_never_raise_on_exotic_entry(tmp_path: Path):
@@ -201,6 +291,133 @@ def test_load_thumbnail_never_raises_on_bad_input(tmp_path: Path):
     assert covers.load_thumbnail(good, 0, 32) is None
     assert covers.load_thumbnail(good, 32, -1) is None
     assert covers.load_thumbnail(good, "wide", 32) is None
+
+
+def test_load_thumbnail_skips_oversized_file(tmp_path: Path):
+    big = tmp_path / "big.png"
+    big.write_bytes(b"\x00" * (covers.MAX_COVER_BYTES + 1))
+    assert covers.load_thumbnail(big, 32, 32) is None
+
+
+def test_max_cover_bytes_is_eight_mib():
+    assert covers.MAX_COVER_BYTES == 8 * 1024 * 1024
+
+
+def test_load_thumbnail_bounds_target_dimensions(tmp_path: Path):
+    good = _write_image(tmp_path / "ok.png", size=(64, 64))
+    limit = covers.MAX_COVER_RESIZE_DIMENSION
+    assert limit >= 104
+    assert covers.load_thumbnail(good, limit, 66, radius=0) is not None
+    # Targets above the explicit ceiling are refused (bounded scaling target).
+    assert covers.load_thumbnail(good, limit + 1, 66) is None
+    assert covers.load_thumbnail(good, 32, limit + 1) is None
+
+
+def test_cover_fit_resize_target_is_bounded(tmp_path: Path, monkeypatch):
+    """Deterministic proof that no aspect-inflated intermediate is allocated."""
+    calls = []
+    real_resize = PIL.Image.resize
+
+    def spy(self, size, *args, **kwargs):
+        calls.append(tuple(size))
+        return real_resize(self, size, *args, **kwargs)
+
+    monkeypatch.setattr(PIL.Image, "resize", spy)
+
+    wide = tmp_path / "wide.png"
+    PIL.new("RGB", (5000, 2), (1, 2, 3)).save(wide)
+    tall = tmp_path / "tall.png"
+    PIL.new("RGB", (200000, 1), (1, 2, 3)).save(tall)
+
+    for source in (wide, tall):
+        thumb = covers.load_thumbnail(source, 104, 66, radius=0)
+        assert thumb is not None and thumb.size == (104, 66)
+    assert calls  # the bounded resize actually ran
+    # The pre-fix code asked Pillow for a 165000x66 / 13200000x66 buffer here.
+    assert all(0 < w <= 104 and 0 < h <= 66 for (w, h) in calls)
+
+
+def test_cover_fit_fills_tile_for_common_ratios(tmp_path: Path):
+    for size in ((400, 300), (320, 180)):  # 4:3 and 16:9
+        source = tmp_path / f"{size[0]}x{size[1]}.png"
+        PIL.new("RGB", size, (200, 30, 30)).save(source)
+        thumb = covers.load_thumbnail(source, 104, 66, radius=0)
+        assert thumb is not None and thumb.size == (104, 66)
+        # The cover fit fills the whole tile (no transparent letterbox bars).
+        assert thumb.getpixel((0, 0))[3] == 255
+        assert thumb.getpixel((103, 65))[3] == 255
+        assert thumb.getpixel((52, 33))[3] == 255
+
+
+# --- RSS regression (real memory, not tracemalloc) --------------------------
+
+# Run the probe in a child process so ``ru_maxrss`` starts from a clean slate.
+# PIL is imported *before* the baseline is captured so the lazy import inside
+# ``load_thumbnail`` is not charged to the decode resize.
+_RSS_PROBE = r'''
+import json, os, resource, sys, tempfile, time
+from PIL import Image  # noqa: F401 - pre-import so the lazy import is not timed
+from vajsave import covers
+
+path, out = sys.argv[1], sys.argv[2]
+width, height = int(sys.argv[3]), int(sys.argv[4])
+
+def rss_bytes():
+    value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # macOS reports bytes, Linux/KB; normalise to bytes.
+    return int(value) if sys.platform == "darwin" else int(value) * 1024
+
+# Warm up the PNG codec / Pillow internals on a tiny image so the measured
+# call reflects the decode+resize of the target only (the warm-up allocates
+# almost nothing, so the pathological peak is still fully attributed below).
+fd, tiny = tempfile.mkstemp(suffix=".png")
+os.close(fd)
+Image.new("RGB", (2, 2), (0, 0, 0)).save(tiny)
+covers.load_thumbnail(tiny, width, height, radius=0)
+os.unlink(tiny)
+
+before = rss_bytes()
+start = time.perf_counter()
+image = covers.load_thumbnail(path, width, height, radius=0)
+elapsed = (time.perf_counter() - start) * 1000.0
+peak = rss_bytes()
+with open(out, "w", encoding="utf-8") as handle:
+    json.dump({"delta_mb": (peak - before) / 1024 / 1024, "ms": elapsed,
+               "ok": image is not None,
+               "size": list(image.size) if image is not None else None}, handle)
+'''
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="resource.getrusage is POSIX-only")
+@pytest.mark.parametrize(
+    "shape, max_mb, max_ms",
+    [
+        ((5000, 2), 8.0, 50.0),      # pre-fix: ~95-98 MB / ~300 ms
+        ((200000, 1), 50.0, 200.0),  # pre-fix: ~3.9 GB / ~20-31 s
+    ],
+)
+def test_load_thumbnail_pathological_aspect_is_bounded(tmp_path: Path, shape, max_mb, max_ms):
+    pytest.importorskip("resource")
+    source = tmp_path / f"{shape[0]}x{shape[1]}.png"
+    PIL.new("RGB", shape, (10, 20, 30)).save(source)
+    assert source.stat().st_size < covers.MAX_COVER_BYTES
+
+    out = tmp_path / "rss.json"
+    env = dict(os.environ)
+    src_root = str(Path(covers.__file__).resolve().parents[1])
+    env["PYTHONPATH"] = src_root + os.pathsep + env.get("PYTHONPATH", "")
+    proc = subprocess.run(
+        [sys.executable, "-c", _RSS_PROBE, str(source), str(out), "104", "66"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["ok"] is True
+    assert data["size"] == [104, 66]
+    assert data["delta_mb"] < max_mb, data
+    assert data["ms"] < max_ms, data
 
 
 # --- module hygiene ---------------------------------------------------------

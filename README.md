@@ -39,11 +39,12 @@ U 盘，以及以 USB 大容量存储（UMS）方式直连的掌机（Hekate UMS
 
 中间「游戏」列的每个存档瓦片会优先显示真实封面图，按下面的优先级取图：
 
-1. **存档目录内的内嵌图标**（扫描设备时自动发现，只读、不递归全盘）：
-   - PSP `SAVEDATA/<游戏>/ICON0.PNG`
-   - Vita `.../savedata/<游戏>/sce_sys/icon0.png`
-   - 其余平台识别 `icon0.png` / `icon.png` / `cover.png` / `banner.png` / `boxart.png`（含 `sce_sys/`、`media/` 等常见子目录，大小写不敏感）
+1. **存档目录内的内嵌图标**（扫描设备时自动发现，只读，不做整盘递归）：
+   - 先按固定名单匹配（大小写不敏感，优先级从高到低）：`icon0.*` → `icon.*` → `pic1.*` → `thumb.*` → `preview.*` → `folder.*` → `cover.*` → `banner.*` → `boxart.*`，扩展名支持 `png` `jpg` `jpeg` `webp` `bmp` `gif`
+   - 例：PSP `SAVEDATA/<游戏>/ICON0.PNG`、Vita `.../savedata/<游戏>/sce_sys/icon0.png`
+   - 固定名单未命中时，对存档目录做一次**通用扫描**：只取图片扩展名，按「文件名含 `cover`/`icon`/`box` 优先，其次按小写升序」的确定顺序；再对每个一级子目录（按名排序、跳过 symlink）重复同样逻辑，因此 `sce_sys/`、`media/` 等常见布局仍能命中
    - 裸存档文件（GBA/NDS 的 `.sav`）会找同名的 `<游戏名>.png` / `.jpg`
+   - **超过 8 MiB 的候选文件一律跳过**（避免极小体积却声明超大画布的 PNG 拖垮界面）
 2. **用户投放的封面**：放到本地备份库的
    `<备份库>/covers/<机种>/<名称>.<扩展名>`
    - `<机种>` 取 `psp` / `vita` / `switch` / `3ds` / `nds` / `gba`
@@ -61,7 +62,7 @@ U 盘，以及以 USB 大容量存储（UMS）方式直连的掌机（Hekate UMS
 ~/Documents/vaj-save/covers/vita/Persona 4 Golden.jpg
 ```
 
-封面缩略图会保持宽高比、按瓦片尺寸裁剪为圆角图；文件缺失或损坏时静默回退到 pastel 面色，UI 不会报错。
+封面缩略图采用 **「cover」填充**语义：先按瓦片比例居中裁剪、再缩放到 `104x66` 的圆角图。因此瓦片一定会被填满，但极端宽高比的图片会被**裁掉上下或左右边缘**（不会被拉伸变形，也不会留黑边）。超过 8 MiB 的文件、以及超出上限的目标尺寸会被跳过；文件缺失或损坏时静默回退到 pastel 面色，UI 不会报错。
 
 
 ## macOS App（双击打开）

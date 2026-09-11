@@ -8,6 +8,7 @@ click), scrolling into view, and the wiring into ``VajSaveApp``.
 from __future__ import annotations
 
 import inspect
+import time
 from pathlib import Path
 
 import pytest
@@ -627,3 +628,96 @@ def test_resolve_cover_priority_flows_into_faces(tk_root, tmp_path, psp_sfo_byte
         assert app.save_list._tiles[0].get("cover") == cover_dir / "ULJM05800.png"
     finally:
         _dispose(app, tk_root)
+
+
+# --- 200-tile performance ----------------------------------------------------
+
+
+def _cover_faces(tmp_path: Path, count: int = 200):
+    """``count`` tile faces backed by real (small) cover files."""
+    from PIL import Image
+
+    faces = []
+    for i in range(count):
+        entry = SaveEntry(
+            platform="psp",
+            source_id="psp",
+            display_name=f"Game {i}",
+            path=f"/tmp/vol/PSP/SAVEDATA/ULJM{i:05d}",
+            title_id=f"ULJM{i:05d}",
+        )
+        face = tile_face(entry, "new" if i % 2 == 0 else "changed")
+        cover = tmp_path / f"cover{i}.png"
+        if not cover.exists():
+            Image.new("RGB", (240, 160), (i % 255, 40, 90)).save(cover)
+        face["cover"] = cover
+        faces.append(face)
+    return faces
+
+
+def _median_ms(call, repeats: int = 7) -> float:
+    samples = []
+    for _ in range(repeats):
+        start = time.perf_counter()
+        call()
+        samples.append((time.perf_counter() - start) * 1000.0)
+    samples.sort()
+    return samples[len(samples) // 2]
+
+
+def test_two_hundred_tile_layout_stays_bounded(tk_root, tmp_path):
+    grid = _grid(tk_root, faces=_cover_faces(tmp_path, 200))
+    try:
+        assert len(grid._boxes) == 200
+        assert len(grid.find_withtag("tile")) == 200
+        # A full relayout of a 200-tile grid is a rare (refresh/resize) event, so
+        # it only needs to stay bounded; the interactive requirement is on hover.
+        median = _median_ms(grid._layout, repeats=9)
+        assert median < 1000.0, f"200-tile _layout() median was {median:.1f} ms"
+    finally:
+        grid.destroy()
+
+
+def test_two_hundred_tile_hover_is_tag_scoped_and_fast(tk_root, tmp_path, monkeypatch):
+    grid = _grid(tk_root, faces=_cover_faces(tmp_path, 200))
+    try:
+        # Time a full relayout first; the spy is installed afterwards so this
+        # baseline does not pollute the "hover never relayouts" assertion.
+        full_layout = _median_ms(grid._layout, repeats=5)
+
+        # A full relayout must never be triggered from the hover path.
+        full_layouts = []
+        original_layout = grid._layout
+
+        def spy_layout():
+            full_layouts.append(1)
+            return original_layout()
+
+        monkeypatch.setattr(grid, "_layout", spy_layout)
+        grid._layout()  # warm the cover cache before timing
+        full_layouts.clear()
+        items_before = len(grid.find_all())
+
+        def sweep():
+            for index in range(4):
+                grid.set_hover(index)
+
+        median = _median_ms(sweep, repeats=5)
+        assert full_layouts == [], "hover must use tag-scoped partial redraw"
+        assert median < 150.0, f"hover redraw sweep median was {median:.1f} ms"
+        # Partial redraw is dramatically cheaper than a full 200-tile relayout.
+        assert median < full_layout / 2, (median, full_layout)
+        assert grid.hover_index == 3
+        # Only the tiles' items are replaced in place; the item count is stable.
+        assert len(grid.find_all()) == items_before
+        fills = [grid.itemcget(item, "fill") for item in grid.find_withtag("tile")]
+        assert SWITCH["hover"] in fills
+
+        # Clearing the hover restores the un-hovered fill and still stays scoped.
+        grid.set_hover(None)
+        assert full_layouts == []
+        assert grid.hover_index is None
+        fills = [grid.itemcget(item, "fill") for item in grid.find_withtag("tile")]
+        assert SWITCH["hover"] not in fills
+    finally:
+        grid.destroy()

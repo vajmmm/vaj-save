@@ -341,7 +341,10 @@ class SaveTileGrid(tk.Canvas):
         # holding either a live ``PhotoImage`` or ``None`` (negative cache).
         # Bounded so a long browsing session cannot grow without limit.
         self._cover_cache: "dict[Tuple[str, int, int, int], object]" = {}
-        self._cover_refs: List[object] = []
+        # One strong reference per displayed tile (indexed by tile), so an LRU
+        # eviction of ``_cover_cache`` can never garbage-collect a PhotoImage
+        # that is still drawn on the canvas.
+        self._cover_refs: "dict[int, object]" = {}
 
         self.bind("<Enter>", self._on_pointer_enter)
         self.bind("<Leave>", self._on_pointer_leave)
@@ -382,13 +385,20 @@ class SaveTileGrid(tk.Canvas):
         return self._hover
 
     def set_hover(self, index: Optional[int]) -> None:
-        """Highlight the tile under the pointer (``None`` clears it)."""
+        """Highlight the tile under the pointer (``None`` clears it).
+
+        Only the tiles whose hover state actually changed are redrawn (tag scoped),
+        so a pointer sweep across a 200-tile grid never triggers a full relayout.
+        """
         if index is not None and not (0 <= index < len(self._tiles)):
             index = None
         if index == self._hover:
             return
+        previous = self._hover
         self._hover = index
-        self._layout()
+        for changed in (previous, index):
+            if changed is not None:
+                self._redraw_index(changed)
 
     def curselection(self) -> Tuple[int, ...]:
         return tuple(sorted(self._selected))
@@ -550,7 +560,7 @@ class SaveTileGrid(tk.Canvas):
         try:
             self.delete("all")
             self._boxes = []
-            self._cover_refs = []
+            self._cover_refs = {}
             total = len(self._tiles)
             width = self._canvas_width()
             if total == 0:
@@ -577,6 +587,18 @@ class SaveTileGrid(tk.Canvas):
             self.configure(scrollregion=(0, 0, width, content_h))
         finally:
             self._laying_out = False
+
+    def _redraw_index(self, index: int) -> None:
+        """Redraw a single tile in place, leaving the other tiles untouched.
+
+        Used by hover changes so a 200-tile grid stays responsive; the tile's
+        canvas items all carry the per-index ``idx<N>`` tag.
+        """
+        if not (0 <= index < len(self._boxes)) or not (0 <= index < len(self._tiles)):
+            return
+        self.delete(f"idx{index}")
+        x1, y1, x2, y2 = self._boxes[index]
+        self._draw_tile(index, self._tiles[index], x1, y1, x2, y2)
 
     def _cover_photo(self, path, width: int, height: int):
         """Return a reference-kept ``PhotoImage`` for ``path`` (or ``None``).
@@ -626,7 +648,7 @@ class SaveTileGrid(tk.Canvas):
                 fill="",
                 outline=colors["ring"],
                 width=TILE_RING_WIDTH,
-                tags=("tile-ring", f"ring{index}"),
+                tags=("tile-ring", f"ring{index}", f"idx{index}"),
             )
 
         if hovered and not selected:
@@ -642,7 +664,7 @@ class SaveTileGrid(tk.Canvas):
             fill=fill,
             outline=outline,
             width=1,
-            tags=("tile", f"tile{index}"),
+            tags=("tile", f"tile{index}", f"idx{index}"),
         )
 
         accent = face.get("accent", colors["accent"])
@@ -661,22 +683,23 @@ class SaveTileGrid(tk.Canvas):
             photo = self._cover_photo(cover_path, cover_w, cover_h)
         if photo is not None:
             # Keep a hard reference for as long as this layout is displayed.
-            self._cover_refs.append(photo)
+            self._cover_refs[index] = photo
             self.create_image(
                 cover_x,
                 cover_y,
                 image=photo,
                 anchor="nw",
-                tags=("tile-cover", f"cover{index}"),
+                tags=("tile-cover", f"cover{index}", f"idx{index}"),
             )
         else:
+            self._cover_refs.pop(index, None)
             self.create_text(
                 center,
                 cover_y + cover_h / 2,
                 text=face.get("monogram", "?"),
                 fill=accent,
                 font=ui_font(24, "bold"),
-                tags=("tile-mono", f"mono{index}"),
+                tags=("tile-mono", f"mono{index}", f"idx{index}"),
             )
 
         # Full-width platform colour bar hugging the bottom edge.
@@ -687,7 +710,7 @@ class SaveTileGrid(tk.Canvas):
             y2,
             fill=accent,
             outline="",
-            tags=("tile-bar", f"bar{index}"),
+            tags=("tile-bar", f"bar{index}", f"idx{index}"),
         )
 
         # Wrapped title directly under the artwork.
@@ -700,7 +723,7 @@ class SaveTileGrid(tk.Canvas):
             width=max(1, int(x2 - x1) - 12),
             anchor="n",
             justify="center",
-            tags=("tile-title", f"title{index}"),
+            tags=("tile-title", f"title{index}", f"idx{index}"),
         )
         if face.get("subtitle"):
             self.create_text(
@@ -712,7 +735,7 @@ class SaveTileGrid(tk.Canvas):
                 width=max(1, int(x2 - x1) - 12),
                 anchor="s",
                 justify="center",
-                tags=("tile-sub", f"sub{index}"),
+                tags=("tile-sub", f"sub{index}", f"idx{index}"),
             )
 
         # Status pill overlay (top-left corner badge, drawn over the artwork).
@@ -730,7 +753,7 @@ class SaveTileGrid(tk.Canvas):
                 splinesteps=24,
                 fill=pill.get("bg", colors["surface_alt"]),
                 outline="",
-                tags=("tile-pill", f"pill{index}"),
+                tags=("tile-pill", f"pill{index}", f"idx{index}"),
             )
             self.create_text(
                 (px1 + px2) / 2,
@@ -738,7 +761,7 @@ class SaveTileGrid(tk.Canvas):
                 text=label,
                 fill=pill.get("fg", colors["muted"]),
                 font=ui_font(10, "bold"),
-                tags=("tile-pill-label", f"pilltext{index}"),
+                tags=("tile-pill-label", f"pilltext{index}", f"idx{index}"),
             )
 
         # Starred overlay on the opposite corner.
@@ -749,7 +772,7 @@ class SaveTileGrid(tk.Canvas):
                 text="★",
                 fill=colors["star"],
                 font=ui_font(13, "bold"),
-                tags=("tile-star", f"star{index}"),
+                tags=("tile-star", f"star{index}", f"idx{index}"),
             )
 
 

@@ -179,7 +179,7 @@ def scan(root_path: Union[Path, str]) -> ScanResult:
     for entry in saves:
         if entry.cover_path:
             continue
-        cover = find_embedded_cover(entry.path, entry.platform)
+        cover = find_embedded_cover(entry.path, max_depth=1)
         if cover is not None:
             entry.cover_path = str(cover)
 

@@ -15,6 +15,13 @@ Cover resolution follows a three layer priority:
 2. the user cover directory ``<library_root>/covers/<platform>/<name>.<ext>``
    (see :func:`user_cover_path`);
 3. ``None`` — the UI then paints the pastel fallback face.
+
+A hard file-size ceiling (:data:`MAX_COVER_BYTES`) guards every lookup: a tiny
+PNG can still declare an enormous canvas (e.g. ``200000x1``), so oversized files
+are treated as "no cover" before any decode work happens. The thumbnail resize
+itself is likewise bounded (:data:`MAX_COVER_RESIZE_DIMENSION`): the source is
+cropped to the target aspect ratio *first* and resized straight to the requested
+size, so no aspect-inflated intermediate buffer is ever produced.
 """
 
 from __future__ import annotations
@@ -27,31 +34,49 @@ from .library import sanitize_name
 # Supported cover/thumbnail extensions, in lookup order.
 IMAGE_EXTENSIONS = ("png", "jpg", "jpeg", "webp", "bmp", "gif")
 
-# Icon file names that consoles/backup tools drop inside a save folder. Matched
-# case-insensitively, in this priority order, so ``ICON0.PNG`` (PSP) and
-# ``sce_sys/icon0.png`` (Vita) both resolve.
-EMBEDDED_ICON_NAMES = (
-    "icon0.png",
-    "icon0.jpg",
-    "icon0.jpeg",
-    "icon.png",
-    "icon.jpg",
-    "icon.jpeg",
-    "icon.bmp",
-    "cover.png",
-    "cover.jpg",
-    "cover.jpeg",
-    "banner.png",
-    "banner.jpg",
-    "boxart.png",
-    "boxart.jpg",
+# File-name stems that consoles/backup tools drop inside a save folder. Matched
+# case-insensitively, in this priority order, so ``ICON0.PNG`` (PSP),
+# ``sce_sys/icon0.png`` (Vita), ``pic1.png`` (PS3/PSP background) and the
+# homebrew/backup-tool staples (``thumb``/``preview``/``folder``/``cover``) all
+# resolve. Expanding the stems over :data:`IMAGE_EXTENSIONS` keeps the ordering
+# explicit: e.g. every ``icon0.*`` before every ``icon.*``.
+_EMBEDDED_ICON_STEMS = (
+    "icon0",
+    "icon",
+    "pic1",
+    "thumb",
+    "preview",
+    "folder",
+    "cover",
+    "banner",
+    "boxart",
+)
+EMBEDDED_ICON_NAMES = tuple(
+    f"{stem}.{ext}" for stem in _EMBEDDED_ICON_STEMS for ext in IMAGE_EXTENSIONS
 )
 
-# Sub-directories probed inside a save folder, relative to the save itself.
-_COVER_SUBDIRS = ("", "sce_sys", "media", "icon")
+# Back-compat alias: the design spec refers to this list as
+# ``EMBEDDED_COVER_NAMES``; ``EMBEDDED_ICON_NAMES`` is the historical code name.
+# Both expose the same priority-ordered tuple.
+EMBEDDED_COVER_NAMES = EMBEDDED_ICON_NAMES
+
+# Hard cap on a single cover/icon file we are willing to read or decode. Cheap
+# pre-filter (one ``stat``) that rejects the "tiny file, huge canvas" class of
+# resource-exhaustion inputs before Pillow touches them.
+MAX_COVER_BYTES = 8 * 1024 * 1024
+
+# Upper bound on any single resize target used while fitting a cover. The crop
+# is taken before the resize, so a tile-sized request (104x66) never asks Pillow
+# for an oversized intermediate; requests above this ceiling are refused outright
+# so the bound is explicit and regression-testable without memory probes.
+MAX_COVER_RESIZE_DIMENSION = 4096
 
 # Default corner radius for the rounded thumbnail produced by ``load_thumbnail``.
 DEFAULT_THUMBNAIL_RADIUS = 12
+
+# Substrings that promote a generically-scanned file to the front of the list,
+# so ``cover_art.png`` beats ``aaa.png`` even though it sorts later.
+_GENERIC_NAME_HINTS = ("cover", "icon", "box")
 
 
 def _as_path(value: Any) -> Optional[Path]:
@@ -70,6 +95,27 @@ def _is_file(path: Path) -> bool:
         return False
 
 
+def _within_size_limit(path: Path) -> bool:
+    """True when ``path`` is a regular file no larger than ``MAX_COVER_BYTES``.
+
+    A missing/unreadable path or a directory returns ``False`` so callers can
+    treat "unusable" and "too large" identically (never raise).
+    """
+    try:
+        if not path.is_file():
+            return False
+        return path.stat().st_size <= MAX_COVER_BYTES
+    except (OSError, ValueError):
+        return False
+
+
+def _sort_key(path: Path) -> tuple:
+    """Deterministic generic-scan order: name hints first, then lowercase name."""
+    name = path.name.lower()
+    hinted = 0 if any(hint in name for hint in _GENERIC_NAME_HINTS) else 1
+    return (hinted, name)
+
+
 def _dir_entries(path: Path) -> List[Path]:
     try:
         if not path.is_dir():
@@ -86,13 +132,50 @@ def _match_icon(directory: Path) -> Optional[Path]:
         return None
     by_name = {}
     for entry in entries:
-        if _is_file(entry):
+        if _within_size_limit(entry):
             by_name.setdefault(entry.name.lower(), entry)
     for name in EMBEDDED_ICON_NAMES:
         found = by_name.get(name)
         if found is not None:
             return found
     return None
+
+
+def _generic_icon_candidates(directory: Path) -> List[Path]:
+    """Image files in ``directory`` eligible as a fallback icon, sorted."""
+    candidates: List[Path] = []
+    for entry in _dir_entries(directory):
+        if entry.suffix.lower().lstrip(".") not in IMAGE_EXTENSIONS:
+            continue
+        if not _within_size_limit(entry):
+            continue
+        candidates.append(entry)
+    candidates.sort(key=_sort_key)
+    return candidates
+
+
+def _scan_dir_for_icon(directory: Path) -> Optional[Path]:
+    """Fixed-name lookup, then a generic image scan, inside one directory."""
+    found = _match_icon(directory)
+    if found is not None:
+        return found
+    candidates = _generic_icon_candidates(directory)
+    return candidates[0] if candidates else None
+
+
+def _sorted_subdirs(directory: Path) -> List[Path]:
+    """Real (non-symlink) child directories, sorted by lowercase name."""
+    subs: List[Path] = []
+    for entry in _dir_entries(directory):
+        try:
+            if entry.is_symlink():
+                continue
+            if entry.is_dir():
+                subs.append(entry)
+        except OSError:
+            continue
+    subs.sort(key=lambda item: item.name.lower())
+    return subs
 
 
 def _sibling_cover(save_file: Path) -> Optional[Path]:
@@ -103,7 +186,7 @@ def _sibling_cover(save_file: Path) -> Optional[Path]:
         return None
     by_name = {}
     for entry in entries:
-        if _is_file(entry):
+        if _within_size_limit(entry):
             by_name.setdefault(entry.name.lower(), entry)
     stem = save_file.stem.lower()
     for ext in IMAGE_EXTENSIONS:
@@ -117,12 +200,15 @@ def _sibling_cover(save_file: Path) -> Optional[Path]:
     return None
 
 
-def find_embedded_cover(save_path: Any, platform: Optional[str] = None) -> Optional[Path]:
+def find_embedded_cover(save_path: Any, *, max_depth: int = 0) -> Optional[Path]:
     """Find an icon embedded in a save folder (or next to a raw save file).
 
-    ``platform`` is accepted for callers that want to hint the layout, but the
-    lookup is layout-agnostic and based on well-known icon file names. Returns
-    the first match, or ``None``. Never raises.
+    The lookup is layout-agnostic and based on well-known icon file names, then
+    a bounded generic scan of image files whose names hint at artwork. When
+    ``max_depth >= 1`` the same logic is repeated for each (non-symlink) child
+    directory of the save folder, which is how ``sce_sys/icon0.png`` (Vita) and
+    similar nested layouts resolve. Returns the first match, or ``None``. Never
+    raises, never recurses beyond the requested depth, and skips oversized files.
     """
     path = _as_path(save_path)
     if path is None:
@@ -134,11 +220,14 @@ def find_embedded_cover(save_path: Any, platform: Optional[str] = None) -> Optio
             return None
     except OSError:
         return None
-    for sub in _COVER_SUBDIRS:
-        directory = path if not sub else path / sub
-        found = _match_icon(directory)
-        if found is not None:
-            return found
+    found = _scan_dir_for_icon(path)
+    if found is not None:
+        return found
+    if max_depth >= 1:
+        for sub in _sorted_subdirs(path):
+            found = _scan_dir_for_icon(sub)
+            if found is not None:
+                return found
     return None
 
 
@@ -174,7 +263,7 @@ def user_cover_path(entry: Any, library_root: Any) -> Optional[Path]:
 
     Looks under ``<library_root>/covers/<platform>/`` for any
     ``<name>.<ext>`` where ``<name>`` is the sanitized title id or display name.
-    Only existing files are returned.
+    Only existing, size-bounded files are returned.
     """
     try:
         root = _as_path(library_root)
@@ -190,7 +279,7 @@ def user_cover_path(entry: Any, library_root: Any) -> Optional[Path]:
             return None
         by_name = {}
         for candidate in entries:
-            if _is_file(candidate):
+            if _within_size_limit(candidate):
                 by_name.setdefault(candidate.name.lower(), candidate)
         for stem in stems:
             for ext in IMAGE_EXTENSIONS:
@@ -215,6 +304,27 @@ def resolve_cover(entry: Any, library_root: Any) -> Optional[Path]:
         return None
 
 
+def _cover_crop_box(src_w: int, src_h: int, target_w: int, target_h: int) -> tuple:
+    """Largest centred source rect whose aspect matches ``target_w:target_h``.
+
+    Returns integer ``(left, top, right, bottom)`` pixel bounds. Cropping before
+    the resize is what keeps the downstream resize target bounded: a very wide
+    source (200000x1) yields a thin crop (about 2x1) instead of an inflated
+    scaled buffer.
+    """
+    target_ratio = target_w / target_h
+    src_ratio = src_w / src_h
+    if src_ratio > target_ratio:
+        crop_w = max(1, min(src_w, int(round(src_h * target_ratio))))
+        crop_h = src_h
+    else:
+        crop_h = max(1, min(src_h, int(round(src_w / target_ratio))))
+        crop_w = src_w
+    left = (src_w - crop_w) // 2
+    top = (src_h - crop_h) // 2
+    return (left, top, left + crop_w, top + crop_h)
+
+
 def _cover_fit(image: Any, width: int, height: int) -> Any:
     """Scale+crop ``image`` to exactly ``width``x``height`` keeping its ratio."""
     from PIL import Image
@@ -223,12 +333,11 @@ def _cover_fit(image: Any, width: int, height: int) -> Any:
     src_w, src_h = rgba.size
     if src_w <= 0 or src_h <= 0:
         return Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    scale = max(width / src_w, height / src_h)
-    scaled = (max(1, int(round(src_w * scale))), max(1, int(round(src_h * scale))))
-    resized = rgba.resize(scaled, Image.LANCZOS)
-    left = max(0, (scaled[0] - width) // 2)
-    top = max(0, (scaled[1] - height) // 2)
-    return resized.crop((left, top, left + width, top + height))
+    # Crop to the target aspect first, then resize straight to the requested
+    # thumbnail. The resize target is therefore the tile geometry, never a
+    # source-ratio-inflated intermediate (which could be hundreds of MB/GB).
+    box = _cover_crop_box(src_w, src_h, width, height)
+    return rgba.crop(box).resize((width, height), Image.LANCZOS)
 
 
 def _round_corners(image: Any, radius: int) -> Any:
@@ -258,9 +367,10 @@ def load_thumbnail(
 ) -> Optional[Any]:
     """Load ``path`` as an exact ``width``x``height`` rounded RGBA image.
 
-    Aspect ratio is preserved by centre-cropping ("cover" fit). Returns ``None``
-    for a missing/corrupt/unreadable file, a non-positive size, or when Pillow
-    is unavailable. Never raises.
+    Aspect ratio is preserved by centre-cropping ("cover" fit, which may trim
+    the source edges). Returns ``None`` for a missing/corrupt/unreadable file, a
+    file above :data:`MAX_COVER_BYTES`, a target size outside ``(0,
+    MAX_COVER_RESIZE_DIMENSION]``, or when Pillow is unavailable. Never raises.
     """
     try:
         target_w = int(width)
@@ -269,8 +379,12 @@ def load_thumbnail(
         return None
     if target_w <= 0 or target_h <= 0:
         return None
+    if target_w > MAX_COVER_RESIZE_DIMENSION or target_h > MAX_COVER_RESIZE_DIMENSION:
+        return None
     source = _as_path(path)
     if source is None:
+        return None
+    if not _within_size_limit(source):
         return None
     try:
         from PIL import Image
@@ -289,6 +403,9 @@ def load_thumbnail(
 __all__ = [
     "IMAGE_EXTENSIONS",
     "EMBEDDED_ICON_NAMES",
+    "EMBEDDED_COVER_NAMES",
+    "MAX_COVER_BYTES",
+    "MAX_COVER_RESIZE_DIMENSION",
     "DEFAULT_THUMBNAIL_RADIUS",
     "find_embedded_cover",
     "user_cover_path",

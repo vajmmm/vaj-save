@@ -249,14 +249,14 @@ The device Listbox (`vol_list`) and versions Listbox (`version_list`) remain `tk
 ### Save Tile
 Compact rounded card (`116x124`, 14px corners). The card face is a pastel tint (`mix(platform_colour, white, 0.86)`), and the upper **cover region** (inset 6px, height 66px) shows, in priority order:
 
-1. the cover returned by `vajsave.covers.resolve_cover` — an embedded console icon (`ICON0.PNG`, `sce_sys/icon0.png`, …) found during the scan, then a user cover at `<library_root>/covers/<platform>/<name>.<ext>`;
+1. the cover returned by `vajsave.covers.resolve_cover` — an embedded console icon found during the scan (fixed names `icon0.*` → `icon.*` → `pic1.*` → `thumb.*` → `preview.*` → `folder.*` → `cover.*` → `banner.*` → `boxart.*`, then a deterministic generic image scan of the save folder and its depth-1 sub-directories), then a user cover at `<library_root>/covers/<platform>/<name>.<ext>`;
 2. otherwise a **24pt bold monogram** in the platform colour on the pastel face.
 
 Below the artwork sits the wrapped 11pt title, an optional 9pt subtitle drawn just above the bottom bar, an optional `★` overlay (top-right, star colour) and the **status pill as a top-left corner badge overlaid on the artwork**. A **full-width 4px platform colour bar** hugs the bottom edge.
 
 - **Hover**: face becomes `hover` (`#e2e2e2`) with a 1px `line` outline.
 - **Selected**: the tile grows 8px overall, a 3px `ring` outline is drawn 6px outside it, and the title turns bold.
-- **Covers**: thumbnails are loaded through `covers.load_thumbnail` (exact `104x66` rounded RGBA, aspect-preserving centre crop) and cached by path + mtime + size in a bounded, reference-keeping, negative-aware cache (max 256). A missing/corrupt file silently falls back to the pastel face.
+- **Covers**: thumbnails are loaded through `covers.load_thumbnail` (exact `104x66` rounded RGBA) and cached by path + mtime + size in a bounded, reference-keeping, negative-aware cache (max 256). The fit is a deliberate **cover crop**: the source is centre-cropped to the target aspect ratio *before* resizing, so the tile is always fully filled and very wide/tall artwork **loses its outer edges** (it is never stretched out of aspect or letterboxed). Concretely, against the `104x66` (1.576:1) cover region a 4:3 source keeps ~84.6% of its height (≈7.7% trimmed top and bottom) while a 16:9 source keeps ~88.6% of its width (≈5.7% trimmed per side). Files larger than `covers.MAX_COVER_BYTES` (8 MiB) are skipped up front, and resize targets are capped at `covers.MAX_COVER_RESIZE_DIMENSION` (4096), so a pathological aspect ratio (e.g. a 122-byte `5000x2` PNG) cannot allocate an oversized intermediate or block the UI. A missing/corrupt file silently falls back to the pastel face.
 
 ### Status Pills
 - **新** — accent text on a light blue tint (`mix(accent, white, 0.86)`).
@@ -287,7 +287,7 @@ White field background, dark text, `#d6d6d6` border, 6px padding.
 - **DO** pull every colour from `vajsave.ui_theme` (`SWITCH`, `PLATFORM_COLORS`) — no ad-hoc hex literals in widgets.
 - **DO** keep the vertical structure: top status bar → three-column body → bottom system bar → status line.
 - **DO** render saves as compact rounded Canvas cover tiles; one tile per visible save.
-- **DO** show the resolved cover first (embedded icon → user cover → pastel), keep the aspect ratio, and round the thumbnail corners.
+- **DO** show the resolved cover first (embedded icon → user cover → pastel), keep the aspect ratio by centre-cropping to the tile (cover fit; edges may be trimmed), and round the thumbnail corners.
 - **DO** keep the status pill and `★` as small overlay badges on the cover, never as full-width bars that eat the artwork.
 - **DO** fall back silently to the pastel face + small monogram when a cover is missing/corrupt.
 - **DO** use `CanvasButton` for every button and toggle so states stay consistent.
