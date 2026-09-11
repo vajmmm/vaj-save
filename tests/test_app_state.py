@@ -918,10 +918,11 @@ def test_app_ui_detail_scroll_and_volume_index(tk_root, tmp_path: Path, psp_sfo_
     app = build_app(state=state, root=tk_root)
     try:
         assert hasattr(app, "on_settings_clicked")
-        # The right panel is the inspector: action buttons sit in its header and
-        # the versions Listbox fills the remaining height.
+        # The right panel is the inspector: the versions Listbox fills the
+        # flexible inspector row beneath the action area.
         assert app.actions_frame is not None
-        assert str(app.versions_frame.pack_info().get("expand")).lower() in ("1", "true")
+        assert set(app.versions_frame.grid_info().get("sticky") or "") == set("nsew")
+        assert int(app.versions_frame.grid_rowconfigure(1)["weight"]) == 1
 
         assert len(app._volumes_index) == 1
         tk_root.update_idletasks()

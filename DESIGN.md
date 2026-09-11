@@ -1,23 +1,36 @@
 ---
-name: vaj-save Switch Basic White
-description: Handheld console archive & backup manager design system
+name: vaj-save Archive Desk
+description: Desktop archive workspace for handheld console save backups
 colors:
   bg: "#ebebeb"
   surface: "#f2f2f2"
   surface_alt: "#e7e7e7"
   card: "#ffffff"
   text: "#2d2d2d"
+  text_strong: "#1f2733"
+  ink: "#14233b"
   muted: "#8b8b8b"
+  muted_strong: "#687383"
   line: "#d6d6d6"
+  line_soft: "#e3e6ea"
+  border_soft: "#e1e7f0"
+  window: "#ffffff"
+  panel: "#ffffff"
+  panel_alt: "#f7f9fc"
   line_strong: "#b0b0b0"
   hover: "#e2e2e2"
   accent: "#0a84ff"
+  selected: "#e4f1ff"
+  selected_soft: "#eaf3ff"
   accent_hover: "#409cff"
   on_accent: "#ffffff"
   primary: "#0a84ff"
   success: "#30d158"
   warning: "#ff9f0a"
   danger: "#ff453a"
+  status_blue: "#2563eb"
+  status_green: "#16a34a"
+  status_orange: "#f59e0b"
   green: "#30d158"
   orange: "#ff9f0a"
   red: "#ff453a"
@@ -61,21 +74,21 @@ spacing:
   lg: 16px
   xl: 24px
 components:
-  top-status-bar:
+  top-brand-bar:
     backgroundColor: "{colors.surface}"
     textColor: "{colors.text}"
-    height: 56px
+    height: 68px
   panel:
     backgroundColor: "{colors.surface}"
     textColor: "{colors.text}"
     rounded: "{rounded.md}"
   list-row:
-    backgroundColor: "{colors.bg}"
-    height: 44px
+    backgroundColor: "{colors.window}"
+    height: 70px
     pipWidth: 3px
-    coverSize: 32px
+    coverSize: 52px
     coverRadius: 6px
-    selectedBackgroundColor: "#e4f1ff"
+    selectedBackgroundColor: "#eaf3ff"
     hoverBackgroundColor: "{colors.hover}"
     textColor: "{colors.text}"
     mutedTextColor: "{colors.muted}"
@@ -83,13 +96,13 @@ components:
     backgroundColor: "{colors.accent}"
     hoverColor: "{colors.accent_hover}"
     textColor: "{colors.on_accent}"
-    height: 28px
+    height: 32px
     rounded: "{rounded.sm}"
   button-neutral:
     backgroundColor: "{colors.surface_alt}"
     hoverColor: "{colors.hover}"
     textColor: "{colors.text}"
-    height: 28px
+    height: 30px
     rounded: "{rounded.sm}"
   input:
     backgroundColor: "{colors.card}"
@@ -97,7 +110,7 @@ components:
     borderColor: "{colors.line}"
     padding: 6px
   platform-pip:
-    backgroundColor: "{colors.primary}"
+    backgroundColor: "{colors.panel}"
     width: 3px
   divider:
     backgroundColor: "{colors.line}"
@@ -108,26 +121,23 @@ components:
 
 ## Overview
 
-A quiet, text-first desktop backup utility for handheld console saves (PSP,
-PS Vita, Nintendo Switch, 3DS, NDS, GBA). The interface follows the Switch
-**Basic White** system theme: light gray surfaces, near-black ink and a single
-system-blue accent.
+A dense desktop archive workspace for handheld console saves (PSP, PS Vita,
+Nintendo Switch, 3DS, NDS, GBA). The visual target is a white, high-contrast
+three-column workbench: navigation on the left, a data-rich archive table in
+the center and an actionable inspector on the right.
 
 Design philosophy:
-- **Quiet list, not showroom.** The middle column is a plain, single-column（单列）list
-  of save rows. Each row carries only what you need to pick a save: a 3px
-  platform pip, a small cover square (or light-gray placeholder), the title and a
-  plain text status. No card grid, no grow-on-select, no glow ring, no star, no
-  full-width platform bar and no oversized monogram.
-- **Inspector on the right.** Selection opens a readable detail panel: a
-  definition list of key/value facts, a versions list that fills the remaining
-  height, and a note field. The only page-level colour fill is the blue 备份
-  button.
-- **Platform identity stays subtle.** The canonical neon accents (PSP cyan, Vita
-  turquoise, Switch Joy-Con red, 3DS gold, NDS violet, GBA green) appear only as
-  3px pips in the platform rows and list rows.
-- **Everything is text.** Status is written out ("新" / "有变化" / "已备份") in
-  muted ink instead of coloured badge chrome.
+- **Archive table, not a card gallery.** The middle column remains a flat,
+  single-column（单列）list, but each row carries the information needed for a fast
+  decision: cover, title, subtitle, platform, Title ID, latest backup and
+  version count. Selection is a pale blue row tint, never a floating card.
+- **Inspector on the right.** Selection opens a complete action surface with a
+  large cover, metadata, a full-width blue 备份 action, secondary actions,
+  version history and an editable note.
+- **Platform identity stays compact.** Platform rows use small geometric marks
+  and counts; save rows use the platform name and a restrained accent marker.
+- **Status is scannable.** Status remains written out ("新" / "有变化" /
+  "已备份"), with a small semantic dot and version count beneath it.
 
 ## Colors
 
@@ -137,27 +147,29 @@ re-exported by `src/vajsave/app_ui.py`. Nothing in the UI may hardcode a colour
 literal.
 
 ### Structural surfaces (top to bottom)
-- **Page background (`#ebebeb`)** — the window canvas, the save list and the status line.
-- **Panels (`#f2f2f2`)** — the top status bar, the left platform/device panel, the right inspector and the bottom system bar.
-- **Subtle alt (`#e7e7e7`)** — neutral buttons, input borders, inactive states and the empty cover placeholder square.
+- **Window (`#ffffff`)** — the main canvas and all three work areas.
+- **Panel alt (`#f7f9fc`)** — the local library card and empty cover placeholder.
+- **Subtle borders (`#e1e7f0`)** — column separators, inputs, table borders and row dividers.
+- **Legacy tokens (`#ebebeb` / `#f2f2f2`)** remain exported for compatibility with
+  the existing pure-theme tests; new widgets use the white workspace tokens.
 - **Cards / inputs (`#ffffff`)** — the device Listbox, the versions Listbox and entries.
 - **Hover (`#e2e2e2`)** — the face of a hovered row and of a hovered neutral button.
 - **Divider lines (`#d6d6d6`)** — 1px row separators; **strong lines (`#b0b0b0`)** for emphasised edges.
 
 ### Text & information
-- **Primary text (`#2d2d2d`)** — titles, list labels, definition values, numbers.
-- **Muted text (`#8b8b8b`)** — metadata, list subtitles, row status text, panel captions.
+- **Primary ink (`#14233b`)** — titles, list labels, definition values and numbers.
+- **Muted ink (`#687383`)** — metadata, subtitles, timestamps and captions.
 
 ### Interaction
-- **Accent (`#0a84ff`)** — the primary 备份 button and the "all" platform pip. The 备份 button is the only saturated accent fill on the page.
+- **Accent (`#0a84ff`)** — the primary 备份 button and the selected platform mark. The 备份 button is the only saturated accent fill used as a large surface.
 - **Accent hover (`#409cff`)** — the 备份 button while hovered.
-- **Selected list row (`#e4f1ff`, a tint of the accent)** — the default selection background for Listbox rows and list rows.
+- **Selected list row (`#eaf3ff`, a tint of the accent)** — the default selection background for navigation, Listbox rows and save rows.
 
 ### Handheld platform identifiers
-- **All (`#0a84ff`)**, **PSP (`#64d2ff`)**, **PS Vita (`#63e6be`)**, **Nintendo Switch (`#ff3c28`)**, **Nintendo 3DS (`#ffd60a`)**, **Nintendo DS (`#bf5af2`)**, **Game Boy Advance (`#30d158`)** — used as 3px pips only.
+- **All (`#0a84ff`)**, **PSP (`#64d2ff`)**, **PS Vita (`#63e6be`)**, **Nintendo Switch (`#ff3c28`)**, **Nintendo 3DS (`#ffd60a`)**, **Nintendo DS (`#bf5af2`)**, **Game Boy Advance (`#30d158`)** — used in compact platform marks and row accents.
 
 ### Functional status colors
-- **Success (`#30d158`)**, **Warning (`#ff9f0a`)**, **Danger (`#ff453a`)** — reserved for confirmations and destructive prompts; status is otherwise written as text.
+- **Success (`#16a34a`)**, **Warning (`#f59e0b`)**, **Danger (`#ff453a`)** — used for status dots, confirmations and destructive prompts.
 
 ## Typography
 
@@ -168,41 +180,37 @@ Cross-platform stack: macOS `PingFang SC`, Windows `Microsoft YaHei`, Linux
 
 ## Layout
 
-The window is composed of four vertical bands: **顶部状态栏** (top status bar) →
-**三栏主体** (three-column body) → **底部系统栏** (bottom system bar) → **状态行**
-(status line).
+The window is composed of three vertical bands: **顶部品牌栏** (top brand bar) →
+**三栏主体** (three-column body) → **底部操作栏** (combined action/status bar).
 
-- **Dimensions**: min-size `1080x680`, default geometry `1180x740`.
-- **1. Top status bar (`#f2f2f2`)** — app identity on the left ("vaj-save" plus a
-  single-line subtitle) and the backup stats on the right. No round monogram
-  badge and no clock. The subtitle must stay fully visible at both the default
-  and the minimum window size.
+- **Dimensions**: min-size `1320x780`, default geometry `1480x900`.
+- **1. Top brand bar (`#ffffff`)** — app identity on the left ("vaj-save" plus
+  a subtitle) and archive statistics on the right. The mark is geometric and
+  restrained: no round monogram badge and no clock.
 - **2. Three-column body**:
-  1. **Left panel (220px fixed, `#f2f2f2`)**: platform filter rows (3px colour pip
-     + label + count, `hand2` cursor) above the detected **device Listbox**
-     (`tk.Listbox`, white rows, blue selected row).
-  2. **Middle column (flexible, `#ebebeb`)**: the **single-column（单列）save list** — a
-     `tk.Canvas` (`SaveList`) drawing one 44px row per *visible* save.
-  3. **Right panel (360px fixed, `#f2f2f2`)**: the **inspector** — a header row
-     ("详情" plus the three small actions 备份 / 恢复 / 导出 ZIP), a definition list
-     of facts, the **versions Listbox** filling the remaining height, and a note
-     entry pinned to the bottom.
-- **3. Bottom system bar (`#f2f2f2`)**: quick actions ("刷新", "打开文件夹",
-  "打开本地库", "设置") and the monitoring toggles ("监听插拔", "隐藏已备份"),
-  all rendered as `CanvasButton`s.
-- **4. Status line (`#ebebeb`)**: left-aligned status text and a right-aligned warning label.
+  1. **Left panel (236px fixed, `#ffffff`)**: platform navigation rows with a
+     geometric mark, label and count above the detected **device Listbox**
+     (`tk.Listbox`, white rows, blue selected row) and a local-library card.
+  2. **Middle column (flexible, `#ffffff`)**: the **single-column（单列）archive
+     table** — a `tk.Canvas` (`SaveList`) drawing one 70px row per *visible* save,
+     with 游戏 / 平台 / Title ID / 最近备份 / 状态 columns.
+  3. **Right panel (430px fixed, `#ffffff`)**: the **inspector** — a large cover
+     and metadata block, a full-width primary 备份 action, three secondary actions,
+     the **versions Listbox** and an editable note.
+- **3. Bottom status bar (`#ffffff`)**: connection state, archive state and warning
+  text only. Quick actions live next to the relevant content instead of forming a
+  bottom button wall.
 
 ## Save List Behavior
 
 The middle column is a `SaveList` Canvas, not a Listbox and not a grid. The
 number of rows always equals `len(state.visible_saves())`.
 
-A row is `PAD + index * 44` tall and spans the column width minus `12px` padding:
-a 3px platform pip hugs the left edge, then a 32px cover square (a rounded
-thumbnail when a cover resolves, otherwise a plain `#e7e7e7` square), then the
-title (13pt) with an optional 11pt subtitle, and the status text (12pt, muted)
-right-aligned. There is no selection grow, no ring, no star, no platform bar and
-no monogram.
+A row is `PAD + index * 70` tall and spans the flexible center column:
+a 3px neutral edge and a 52px cover square lead into the title and subtitle;
+platform, Title ID and latest backup occupy the metadata columns, while the
+status column shows a small semantic dot, status text and version count. There
+is no selection grow, ring, star or full-width platform bar.
 
 - **Single click** — selects exactly one row (clears the rest) and shows its details.
 - **Ctrl/Command + click** — toggles that row in the multi-selection.
@@ -212,16 +220,16 @@ no monogram.
 - **Double click / Return** — activates the row and runs the primary 备份 action.
 - **Hover** (`<Enter>` / `<Motion>` / `<Leave>`) — the row under the pointer repaints on the `hover` face; leaving clears it.
 - **Auto-scroll** — whenever the selection moves, the row is scrolled into view (`yview_moveto`).
-- **Wheel** — scrolls the list.
+- **Wheel** — scrolls the list. There is no visible scrollbar chrome.
 
 The device Listbox (`vol_list`) and versions Listbox (`version_list`) remain
 `tk.Listbox` widgets and keep their native wheel handling.
 
 ## Elevation & Depth
 
-- **Flat by design**: `ttk` "clam" style, flat relief, no blur drop-shadows.
-- **Contrast layering** creates depth: `#ebebeb` page → `#f2f2f2` panel →
-  `#ffffff` listboxes/inputs.
+- **Flat by design**: `ttk` "clam" style, flat relief and no blur drop-shadows.
+- **Separator layering** creates depth: `#ffffff` workspace → `#f7f9fc` utility
+  card → `#e1e7f0` borders.
 - **Selection** is expressed with a light accent tint (`#e4f1ff`), never by
   growing or outlining a card.
 
@@ -229,44 +237,48 @@ The device Listbox (`vol_list`) and versions Listbox (`version_list`) remain
 
 - **List rows**: flat full-width bands separated by 1px lines; the hover/selection
   face uses a 6px rounded rectangle.
-- **Cover squares**: 32px squares with a 6px radius; a lighter 6px radius is used
+- **Cover squares**: 52px list squares and a 108×144 detail cover with an 8px radius; a lighter radius is used
   for the empty placeholder so it never reads as artwork.
 - **Buttons**: `CanvasButton` draws a 6px rounded rectangle with a 1px outline.
-- **Pips**: a 3px vertical accent strip hugs the left edge of each platform row and each save row.
+- **Platform marks**: small geometric marks carry platform identity without
+  turning the navigation into a wall of saturated strips.
 
 ## Components
 
 ### Save Row
-The only representation of a save in the middle column (44px tall):
-- **3px platform pip** at the left edge in the canonical platform colour.
-- **32px cover square** — the cover from `vajsave.covers.resolve_cover` (an
+The only representation of a save in the middle column (70px tall):
+- **3px neutral edge** at the left edge; platform identity is carried by the
+  geometric platform mark in the left rail rather than a repeated colour strip.
+- **52px cover square** — the cover from `vajsave.covers.resolve_cover` (an
   embedded console icon found during the scan, then a user cover at
   `<library_root>/covers/<platform>/<name>.<ext>`), or a plain `#e7e7e7` square
   when nothing resolves. Covers are cover-cropped to a square and rounded.
 - **Title** (13pt) and optional **subtitle** (11pt, muted) — the title_id / slot /
   user joined with " · ".
-- **Status text** (12pt, muted) right-aligned: "新", "有变化" or "已备份".
+- **Status** — a semantic dot, the status text ("新", "有变化" or "已备份") and
+  the number of versions.
 
 Rows are separated by a 1px `#d6d6d6` line. Hover paints the row face `#e2e2e2`;
 selection paints it the light accent tint. Rows never grow or ring on selection.
 
 ### Detail Inspector
 Right panel, top to bottom:
-- **Header**: the "详情" caption with the three small actions (备份 accent, 恢复,
-  导出 ZIP) packed to its right. Buttons are small and measured — never a
-  full-width button wall.
-- **Definition list**: 游戏名 as a 15pt heading followed by label/value rows
-  (机种, 状态, 卡上时间, 上次备份, 路径). Long values wrap.
-- **Versions Listbox**: white, blue selection, `expand=True` so it occupies all
-  remaining height.
+- **Cover and identity**: a 108×144 cover preview beside the game name and
+  subtitle.
+- **Metadata grid**: platform, Title ID, version, size, latest backup, status and
+  path use stable label/value columns so a long path cannot cover another field.
+- **Primary action**: a full-width blue 备份 button.
+- **Secondary actions**: 恢复, 导出 ZIP and 打开位置 in one measured row.
+- **Versions Listbox**: white, blue selection, with a compact monospace row and a
+  grid row that occupies the remaining inspector height.
 - **Note entry**: a white input pinned to the bottom.
 
-There is no full-width path strip.
+The path is one row in the metadata grid; there is no separate full-width path strip.
 
 ### Platform Rows
-`hand2` cursor; selected row tinted `#e4f1ff`, idle rows `#f2f2f2`. 3px platform
-pip on the left, label in text colour, count on the right in muted grey. Rows are
-**created once** and only their colours/texts are refreshed by
+`hand2` cursor; selected row tinted `#eaf3ff`, idle rows `#ffffff`. A small
+geometric platform mark uses the canonical platform colour, while the row itself
+stays neutral. Rows are **created once** and only their colours/texts are refreshed by
 `refresh_platform_ui()`, so widget ids stay stable.
 
 ### Listboxes (devices, versions)
@@ -283,8 +295,9 @@ no `ttk.Button`/`ttk.Checkbutton` remains.
   and an `accent` variant for the primary 备份 action.
 - **Toggle state**: `selected` (used by "监听插拔" / "隐藏已备份") tints the button.
 - **API**: `set_text`, `set_selected`, `invoke`.
-- **Sizing**: height `32px` in the bottom system bar, `28px` in the inspector
-  header; width is measured from the label font.
+- **Sizing**: height `30px` in the status bar, `34px` in secondary actions and
+  `40px` in the primary inspector action; width is measured from the label font
+  unless the primary action fills its column.
 
 ### Inputs
 White field background, dark text, `#d6d6d6` border, 6px padding.
@@ -293,23 +306,23 @@ White field background, dark text, `#d6d6d6` border, 6px padding.
 
 ### Do's
 - **DO** pull every colour from `vajsave.ui_theme` (`SWITCH`, `PLATFORM_COLORS`) — no ad-hoc hex literals in widgets.
-- **DO** keep the vertical structure: top status bar → three-column body → bottom system bar → status line.
+- **DO** keep the vertical structure: top brand bar → three-column body → bottom status bar.
 - **DO** render saves as a single-column list of flat rows; one row per visible save.
 - **DO** show the resolved cover as a small square, falling back to a plain light-gray placeholder.
-- **DO** write the status out as text in muted ink.
-- **DO** keep the inspector's action buttons small and measured.
+- **DO** write the status out as text with a small semantic dot.
+- **DO** keep the secondary inspector actions measured; the primary 备份 action may fill the inspector width.
 - **DO** let the versions list fill the remaining height of the inspector.
 - **DO** use `CanvasButton` for every button and toggle so states stay consistent.
 - **DO** keep the device and versions lists as `tk.Listbox`.
-- **DO** use the canonical platform colours for the 3px pips only.
+- **DO** use the canonical platform colours for platform marks and row accents only.
 
 ### Don'ts
 - **DON'T** reintroduce the Console Dark surfaces (`#1c1c1e`, `#2c2c2e`, `#3a3a3c`) as UI background/panel/card colours.
 - **DON'T** render saves as cards/grids or add grow/ring/star/bar/monogram decorations.
-- **DON'T** add coloured status badges; status is plain text.
+- **DON'T** use large coloured status badges; status dots must stay small and sit beside the text.
 - **DON'T** fall back to `ttk.Button` / `ttk.Checkbutton`; bypassing `CanvasButton` breaks the Basic White chrome.
 - **DON'T** use random saturated colours for a platform — always reference `PLATFORM_COLORS`.
-- **DON'T** add a full-width button wall or a full-width path strip to the inspector.
+- **DON'T** add a full-width secondary button wall or a full-width path strip to the inspector.
 - **DON'T** hardcode Windows drive letters (e.g. `D:`) or OS-specific paths — use cross-platform path handling.
 
 ## Implementation Notes

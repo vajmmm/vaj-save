@@ -1,10 +1,10 @@
 # vaj-save
 
-掌机存档实验室：备份、版本槽位、收藏和导出。识别 PSP / Vita / Switch / 3DS / NDS / GBA 的 USB 或 SD 导出目录。
+掌机存档实验室：备份、版本槽位和导出。识别 PSP / Vita / Switch / 3DS / NDS / GBA 的 USB 或 SD 导出目录。
 
 - 卡带柜按机种分类（PSP / Vita / Switch / 3DS / NDS / GBA）
 - 备份到 `~/Documents/vaj-save/`（可在「设置」里改），相同内容去重，变化则新开 SAVE SLOT
-- 收藏、备注、搜索；版本可恢复到文件夹或导出 ZIP
+- 备注、搜索；版本可恢复到文件夹或导出 ZIP
 - 扫描设备只读；写回请把恢复目标选成 Checkpoint / JKSV / SAVEDATA 目录
 
 

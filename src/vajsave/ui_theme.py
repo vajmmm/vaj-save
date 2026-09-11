@@ -1,8 +1,8 @@
-"""Nintendo Switch HOME "Basic White" design tokens and pure layout helpers.
+"""vaj-save Archive Desk design tokens and pure layout helpers.
 
 This module is intentionally free of Tkinter imports so it can be unit tested
-without a display. ``app_ui`` consumes these tokens/helpers to render the quiet
-single-column save list and the right-hand inspector.
+without a display. ``app_ui`` consumes these tokens/helpers to render the
+three-column archive desk and its right-hand inspector.
 """
 
 from __future__ import annotations
@@ -20,17 +20,30 @@ SWITCH: Dict[str, str] = {
     "surface": "#f2f2f2",
     "surface_alt": "#e7e7e7",
     "card": "#ffffff",
+    "window": "#ffffff",
+    "panel": "#ffffff",
+    "panel_alt": "#f7f9fc",
     "text": "#2d2d2d",
+    "text_strong": "#1f2733",
+    "ink": "#14233b",
     "muted": "#8b8b8b",
+    "muted_strong": "#687383",
     "line": "#d6d6d6",
+    "line_soft": "#e3e6ea",
+    "border_soft": "#e1e7f0",
     "line_strong": "#b0b0b0",
     "hover": "#e2e2e2",
+    "selected": "#e4f1ff",
+    "selected_soft": "#eaf3ff",
     "accent": "#0a84ff",
     "accent_hover": "#409cff",
     "on_accent": "#ffffff",
     "success": "#30d158",
     "warning": "#ff9f0a",
     "danger": "#ff453a",
+    "status_blue": "#2563eb",
+    "status_green": "#16a34a",
+    "status_orange": "#f59e0b",
 }
 
 # Module-level aliases keep the token names greppable from the UI code without
@@ -50,10 +63,10 @@ PLATFORM_COLORS: Dict[str, str] = {
     "gba": "#30d158",
 }
 
-# Single-column save-list row metrics. Rows are deliberately compact and flat:
-# a small platform pip, an optional tiny cover square, a title and a text status.
-ROW_HEIGHT = 44
-ROW_COVER = 32
+# Archive-table row metrics. The extra breathing room keeps the title block,
+# metadata columns and status block visually separate at the minimum width.
+ROW_HEIGHT = 70
+ROW_COVER = 52
 ROW_COVER_RADIUS = 6
 ROW_PIP_WIDTH = 3
 

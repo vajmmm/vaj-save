@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Headless preview renderer for the vaj-save Switch "Basic White" UI.
+"""Headless preview renderer for the vaj-save Archive Desk UI.
 
 Builds the real Tk application against a synthetic demo device (no window
 interaction, no filesystem scan, no ``mainloop``) and writes preview images to
@@ -49,14 +49,18 @@ from vajsave.ui_theme import (  # noqa: E402
     save_row,
 )
 
-# Demo catalogue: a save from every platform the scanner understands.
+# Demo catalogue: representative rows for a dense archive workspace preview.
 DEMO_SAVES = [
+    ("switch", "塞尔达传说 王国之泪", "0100F2C0115B6000", "1"),
+    ("switch", "宝可梦 朱 / 紫", "0100A3D008C5C000", None),
+    ("switch", "斯普拉遁 3", "0100C2500FC20000", None),
+    ("switch", "超级马力欧 奥德赛", "0100000000010000", "Auto"),
+    ("switch", "集合啦！动物森友会", "01006F8002326000", None),
     ("psp", "Monster Hunter Portable 3rd", "ULJM05800", "1"),
-    ("vita", "Persona 4 Golden", "PCSE00120", None),
-    ("switch", "The Legend of Zelda", "01007EF00011E000", "Auto"),
+    ("psp", "Persona 3 Portable", "ULUS10512", "1"),
+    ("vita", "Hollow Knight", "PCSE00961", None),
     ("3ds", "Fire Emblem Awakening", "CTR-P-AFRE", None),
-    ("nds", "Pokemon Black", "IRBO", None),
-    ("gba", "Metroid Fusion", None, None),
+    ("3ds", "Mario Kart 7", "CTR-AMKP", None),
 ]
 
 
@@ -64,14 +68,24 @@ DEMO_SAVES = [
 
 
 def _make_demo_cover(root: Path, platform: str, name: str, color: str) -> Optional[Path]:
-    """Write a small demo cover PNG so the preview shows real artwork."""
+    """Write a restrained synthetic cover so previews do not show red blocks."""
     try:
-        from PIL import Image
+        from PIL import Image, ImageDraw
 
         cover_dir = root / platform
         cover_dir.mkdir(parents=True, exist_ok=True)
         path = cover_dir / f"{name}.png"
-        Image.new("RGB", (128, 160), color).save(path)
+        background = mix(color, "#ffffff", 0.72)
+        image = Image.new("RGB", (128, 160), background)
+        draw = ImageDraw.Draw(image)
+        draw.rectangle([0, 0, 128, 34], fill=mix(color, "#ffffff", 0.35))
+        draw.rectangle([14, 56, 114, 62], fill=mix(color, "#ffffff", 0.25))
+        draw.rectangle([14, 70, 96, 76], fill=mix(color, "#ffffff", 0.25))
+        draw.ellipse([82, 92, 112, 122], fill=mix(color, "#ffffff", 0.45))
+        draw.ellipse([92, 102, 104, 114], fill=color)
+        draw.text((14, 18), platform.upper(), fill="#ffffff", anchor="lm", font=_load_font(10, bold=True))
+        draw.text((14, 142), name[:15], fill=mix(color, "#1f2937", 0.6), anchor="lm", font=_load_font(9))
+        image.save(path)
         return path
     except Exception:  # noqa: BLE001 - a missing cover just falls back to the placeholder
         return None
@@ -128,7 +142,7 @@ def build_offscreen_app(state: AppState):
 
     root = tk.Tk()
     root.withdraw()
-    root.geometry("1180x740")
+    root.geometry("1320x780")
     app = build_app(state=state, root=root)
     root.update_idletasks()
     return root, app
@@ -197,133 +211,182 @@ def _rounded(draw, box, radius: int, fill: str, outline: Optional[str] = None, w
         draw.rectangle(box, fill=fill, outline=outline)
 
 
+# --- Archive Desk preview ---------------------------------------------------------
+
+
 def render_home_preview(out_dir: Path, state: AppState) -> Path:
-    """Draw a representative screen from the real theme tokens and row data."""
+    """按实际 Tk 布局绘制一张无重叠的档案工作台示意图。"""
     from PIL import Image, ImageDraw
 
-    width, height = 1180, 740
-    pad = 24
-    top_h = 56
-    image = Image.new("RGB", (width, height), SWITCH["bg"])
+    width, height = 1480, 900
+    top_h, bottom_h = 68, 42
+    body_top, body_bottom = top_h, height - bottom_h
+    image = Image.new("RGB", (width, height), SWITCH["window"])
     draw = ImageDraw.Draw(image)
-    font_title = _load_font(17, bold=True)
-    font_heading = _load_font(15, bold=True)
+    font_title = _load_font(21, bold=True)
+    font_heading = _load_font(20, bold=True)
     font_body = _load_font(13)
     font_small = _load_font(11)
-    font_status = _load_font(12)
+    font_status = _load_font(11, bold=True)
+    ink = SWITCH["ink"]
+    muted = SWITCH["muted_strong"]
+    selected_fill = SWITCH["selected_soft"]
+    border = SWITCH["border_soft"]
+    panel_alt = SWITCH["panel_alt"]
+    green = SWITCH["status_green"]
+    orange = SWITCH["status_orange"]
 
-    # Top status bar: identity + subtitle on the left, stats on the right.
-    draw.rectangle([0, 0, width, top_h], fill=SWITCH["surface"])
-    draw.text((pad, 12), "vaj-save", font=font_title, fill=SWITCH["text"], anchor="la")
-    draw.text((pad, 34), "把掌机存档备份下来，按版本管理", font=font_small, fill=SWITCH["muted"], anchor="la")
-
-    # This drawing is a mock, not a rasterization of the live widgets: say so.
-    note = "示意图 · 非真实截图"
-    note_w = 20 + 11 * len(note)
-    _rounded(draw, [width / 2 - note_w / 2, 16, width / 2 + note_w / 2, 40], 6, SWITCH["surface_alt"], SWITCH["line"])
-    draw.text((width / 2, 28), note, font=font_small, fill=SWITCH["muted"], anchor="mm")
+    # Brand bar.
+    draw.rectangle([0, 0, width, top_h], fill=SWITCH["window"])
+    mark_x, mark_y = 24, 13
+    draw.rectangle([mark_x, mark_y, mark_x + 42, mark_y + 42], fill=ink)
+    for offset in (12, 19, 26):
+        draw.rectangle([mark_x + 10, mark_y + offset, mark_x + 32, mark_y + offset + 4], fill=SWITCH["window"])
+    draw.text((78, 18), "vaj-save", font=font_title, fill=ink, anchor="la")
+    draw.text((78, 47), "守护每一段游戏时光", font=font_small, fill=muted, anchor="la")
     stats = state.collection_stats()
-    draw.text(
-        (width - pad, 28),
-        f"已备份 {stats['games']} 款游戏 · {stats['versions']} 个版本",
-        font=font_small,
-        fill=SWITCH["muted"],
-        anchor="rm",
-    )
+    draw.text((width - 218, 34), f"已备份 {stats['games']} 款游戏 · {stats['versions']} 个版本", font=font_small, fill=muted, anchor="rm")
+    draw.text((width - 126, 34), "⚙  设置", font=font_small, fill=ink, anchor="mm")
+    draw.text((width - 48, 34), "?  帮助", font=font_small, fill=ink, anchor="mm")
 
-    # Search row.
-    search_y = top_h + 14
-    draw.text((pad, search_y + 8), "搜索", font=font_small, fill=SWITCH["muted"], anchor="la")
-    _rounded(draw, [pad + 52, search_y, width - pad, search_y + 30], 6, SWITCH["card"], SWITCH["line"])
+    left_w, right_w = 236, 430
+    center_left, center_right = left_w, width - right_w
+    draw.line([left_w, body_top, left_w, body_bottom], fill=border)
+    draw.line([center_right, body_top, center_right, body_bottom], fill=border)
 
-    body_top = search_y + 46
-    body_bottom = height - 96
-
-    # Left column: platform filters.
-    left = [pad, body_top, pad + 220, body_bottom]
-    _rounded(draw, left, 10, SWITCH["surface"])
-    draw.text((left[0] + 16, body_top + 14), "机种", font=font_small, fill=SWITCH["muted"], anchor="la")
+    # Left rail.
+    draw.text((24, body_top + 26), "平台", font=font_body, fill=ink, anchor="la")
     counts = state.platform_counts()
-    for i, key in enumerate(PLATFORM_ORDER):
-        row_y = body_top + 44 + i * 34
-        selected = key == state.selected_platform
-        if selected:
-            _rounded(draw, [left[0] + 8, row_y, left[2] - 8, row_y + 30], 6, mix(SWITCH["accent"], SWITCH["card"], 0.84))
-        draw.rectangle([left[0] + 14, row_y + 7, left[0] + 17, row_y + 23], fill=PLATFORM_COLORS.get(key, SWITCH["accent"]))
-        draw.text((left[0] + 26, row_y + 15), PLATFORM_LABELS.get(key, key), font=font_body, fill=SWITCH["text"], anchor="lm")
+    for index, key in enumerate(PLATFORM_ORDER):
+        row_y = body_top + 50 + index * 40
+        if key == state.selected_platform:
+            _rounded(draw, [10, row_y, left_w - 10, row_y + 34], 6, selected_fill)
+        color = PLATFORM_COLORS.get(key, SWITCH["accent"])
+        draw.ellipse([25, row_y + 12, 35, row_y + 22], fill=color)
+        draw.text((48, row_y + 17), PLATFORM_LABELS.get(key, key), font=font_body, fill=ink, anchor="lm")
         count = len(state.all_saves()) if key == "all" else counts.get(key, 0)
-        draw.text((left[2] - 16, row_y + 15), str(count), font=font_small, fill=SWITCH["muted"], anchor="rm")
+        draw.text((left_w - 22, row_y + 17), str(count), font=font_small, fill=muted, anchor="rm")
+    device_y = body_top + 50 + len(PLATFORM_ORDER) * 40 + 22
+    draw.text((24, device_y), "已连接设备", font=font_body, fill=ink, anchor="la")
+    draw.text((left_w - 22, device_y), "⟳", font=font_body, fill=muted, anchor="ra")
+    _rounded(draw, [10, device_y + 24, left_w - 10, device_y + 86], 6, selected_fill, border)
+    draw.ellipse([26, device_y + 45, 36, device_y + 55], fill=green)
+    draw.text((50, device_y + 44), "DEMO 掌机", font=font_body, fill=ink, anchor="lm")
+    draw.text((50, device_y + 67), "已连接 · 自动监听", font=font_small, fill=muted, anchor="lm")
+    draw.text((24, device_y + 112), "＋  添加设备", font=font_body, fill=SWITCH["accent"], anchor="la")
+    library_y = body_bottom - 112
+    draw.line([24, library_y - 18, left_w - 24, library_y - 18], fill=border)
+    _rounded(draw, [12, library_y, left_w - 12, body_bottom - 16], 6, panel_alt, border)
+    draw.text((26, library_y + 18), "本地存档库", font=font_body, fill=ink, anchor="la")
+    draw.text((26, library_y + 43), "~/vaj-save/Archive", font=font_small, fill=muted, anchor="la")
+    _rounded(draw, [26, library_y + 67, left_w - 26, library_y + 75], 4, SWITCH["line_soft"])
+    draw.rectangle([26, library_y + 67, left_w - 85, library_y + 75], fill=SWITCH["accent"])
 
-    # Middle column: single-column save list rows.
-    mid = [pad + 234, body_top, width - pad - 360, body_bottom]
-    draw.text((mid[0], body_top + 14), "游戏", font=font_small, fill=SWITCH["muted"], anchor="la")
-    row_top = body_top + 34
-    row_right = mid[2]
+    # Center archive table.
+    center_pad = 22
+    draw.text((center_left + center_pad, body_top + 34), "存档档案", font=font_heading, fill=ink, anchor="la")
+    draw.text((center_left + center_pad, body_top + 62), f"共 {len(state.visible_saves())} 个可见存档 · 按最近备份时间排序", font=font_small, fill=muted, anchor="la")
+    search_x = center_right - 374
+    _rounded(draw, [search_x, body_top + 20, center_right - 150, body_top + 54], 6, SWITCH["card"], border)
+    draw.text((search_x + 14, body_top + 37), "⌕  搜索游戏名、Title ID 或备注…", font=font_small, fill=muted, anchor="lm")
+    _rounded(draw, [center_right - 142, body_top + 20, center_right - 22, body_top + 54], 6, SWITCH["card"], border)
+    draw.text((center_right - 82, body_top + 37), "↕  最近备份时间", font=font_small, fill=ink, anchor="mm")
+    header_y = body_top + 91
+    for label, x in (("游戏", center_left + center_pad), ("平台", center_right - 378), ("Title ID", center_right - 300), ("最近备份", center_right - 192), ("状态", center_right - 45)):
+        draw.text((x, header_y), label, font=font_small, fill=muted, anchor="la")
+
     visible = state.visible_saves()
-    for i, save in enumerate(visible):
+    row_top, row_right = body_top + 108, center_right - 18
+    for index, save in enumerate(visible):
         status = state.save_status(save)
         row = save_row(save, status)
-        y1 = row_top + i * ROW_HEIGHT
-        y2 = y1 + ROW_HEIGHT
-        if i == 0:
-            # Illustrate the selection tint on the top row.
-            _rounded(draw, [mid[0], y1 + 2, row_right, y2 - 2], 6, mix(SWITCH["accent"], SWITCH["card"], 0.86))
-        # 3px platform pip.
-        draw.rectangle([mid[0], y1 + 8, mid[0] + ROW_PIP_WIDTH, y2 - 8], fill=row["accent"])
-        # Cover square or light-grey placeholder.
-        cover_x = mid[0] + 14
-        cover_y = y1 + (ROW_HEIGHT - ROW_COVER) // 2
-        thumb = None
+        y1, y2 = row_top + index * ROW_HEIGHT, row_top + (index + 1) * ROW_HEIGHT
+        if index == 0:
+            _rounded(draw, [center_left + 10, y1 + 2, row_right, y2 - 2], 7, selected_fill)
+        cover_x, cover_y = center_left + 22, y1 + 9
         cover_path = resolve_cover(save, state.library_root)
-        if cover_path is not None:
-            thumb = load_thumbnail(cover_path, ROW_COVER, ROW_COVER, radius=ROW_COVER_RADIUS)
+        thumb = load_thumbnail(cover_path, ROW_COVER, ROW_COVER, radius=ROW_COVER_RADIUS) if cover_path else None
         if thumb is not None:
             image.paste(thumb, (cover_x, cover_y), thumb)
         else:
-            _rounded(draw, [cover_x, cover_y, cover_x + ROW_COVER, cover_y + ROW_COVER], ROW_COVER_RADIUS, SWITCH["surface_alt"])
-        # Title (and optional subtitle) then right-aligned status text.
-        text_x = cover_x + ROW_COVER + 12
+            _rounded(draw, [cover_x, cover_y, cover_x + ROW_COVER, cover_y + ROW_COVER], 7, panel_alt)
+        text_x = cover_x + ROW_COVER + 14
+        draw.text((text_x, y1 + 27), row["title"][:22], font=font_body, fill=ink, anchor="lm")
         if row["subtitle"]:
-            draw.text((text_x, y1 + ROW_HEIGHT * 0.34), row["title"], font=font_body, fill=SWITCH["text"], anchor="lm")
-            draw.text((text_x, y1 + ROW_HEIGHT * 0.70), row["subtitle"], font=font_small, fill=SWITCH["muted"], anchor="lm")
-        else:
-            draw.text((text_x, y1 + ROW_HEIGHT / 2), row["title"], font=font_body, fill=SWITCH["text"], anchor="lm")
-        draw.text((row_right - 12, y1 + ROW_HEIGHT / 2), row["status_label"], font=font_status, fill=SWITCH["muted"], anchor="rm")
-        draw.line([mid[0], y2, row_right, y2], fill=SWITCH["line"])
+            draw.text((text_x, y1 + 49), row["subtitle"][:22], font=font_small, fill=muted, anchor="lm")
+        draw.text((center_right - 378, y1 + 35), PLATFORM_LABELS.get(save.platform, save.platform), font=font_small, fill=ink, anchor="la")
+        draw.text((center_right - 300, y1 + 35), (save.title_id or "—")[:15], font=font_small, fill=muted, anchor="la")
+        draw.text((center_right - 192, y1 + 35), "—", font=font_small, fill=muted, anchor="la")
+        status_color = orange if row["status"] == "changed" else green
+        draw.ellipse([center_right - 90, y1 + 25, center_right - 80, y1 + 35], fill=status_color)
+        draw.text((center_right - 72, y1 + 29), row["status_label"], font=font_status, fill=ink, anchor="lm")
+        draw.text((center_right - 72, y1 + 49), f"{len(state.versions_for_entry(save))} 个版本", font=font_small, fill=muted, anchor="lm")
+        draw.line([center_left + 18, y2, row_right, y2], fill=border)
 
-    # Right column: inspector.
-    right = [width - pad - 360, body_top, width - pad, body_bottom]
-    _rounded(draw, right, 10, SWITCH["surface"])
-    draw.text((right[0] + 16, body_top + 14), "详情", font=font_small, fill=SWITCH["muted"], anchor="la")
-    btn_x = right[2] - 16
-    for label, accent in (("导出 ZIP", False), ("恢复", False), ("备份", True)):
-        text_w = 12 + 8 * len(label)
-        btn_x -= text_w
-        fill = SWITCH["accent"] if accent else SWITCH["surface_alt"]
-        color = SWITCH["on_accent"] if accent else SWITCH["text"]
-        _rounded(draw, [btn_x, body_top + 8, btn_x + text_w, body_top + 34], 6, fill)
-        draw.text((btn_x + text_w / 2, body_top + 21), label, font=font_small, fill=color, anchor="mm")
-        btn_x -= 6
-    selected_name = visible[0].display_name if visible else "未选择游戏"
-    draw.text((right[0] + 16, body_top + 48), selected_name, font=font_heading, fill=SWITCH["text"], anchor="la")
-    for j, (label, value) in enumerate((("机种", "PSP"), ("状态", "新"), ("卡上时间", "—"), ("上次备份", "—"), ("路径", "…"))):
-        fy = body_top + 82 + j * 20
-        draw.text((right[0] + 16, fy), label, font=font_small, fill=SWITCH["muted"], anchor="la")
-        draw.text((right[0] + 90, fy), value, font=font_small, fill=SWITCH["text"], anchor="la")
-    versions_top = body_top + 82 + 5 * 20 + 12
-    draw.text((right[0] + 16, versions_top), "版本", font=font_small, fill=SWITCH["muted"], anchor="la")
-    _rounded(draw, [right[0] + 16, versions_top + 18, right[2] - 16, right[3] - 54], 6, SWITCH["card"], SWITCH["line"])
-    draw.text((right[0] + 16, right[3] - 42), "备注", font=font_small, fill=SWITCH["muted"], anchor="la")
-    _rounded(draw, [right[0] + 16, right[3] - 26, right[2] - 16, right[3] - 4], 6, SWITCH["card"], SWITCH["line"])
+    # Right inspector. Every section owns a vertical band, so no item is placed
+    # over another item's text or action area.
+    right_left = center_right
+    draw.text((right_left + 20, body_top + 26), "存档详情", font=font_body, fill=ink, anchor="la")
+    selected = visible[0] if visible else None
+    selected_name = selected.display_name if selected else "未选择游戏"
+    cover_x, cover_y = right_left + 20, body_top + 52
+    cover_path = resolve_cover(selected, state.library_root) if selected else None
+    thumb = load_thumbnail(cover_path, 108, 144, radius=8) if cover_path else None
+    if thumb is not None:
+        image.paste(thumb, (cover_x, cover_y), thumb)
+    else:
+        _rounded(draw, [cover_x, cover_y, cover_x + 108, cover_y + 144], 8, panel_alt, border)
+    info_x = cover_x + 122
+    draw.text((info_x, cover_y + 15), selected_name[:15], font=_load_font(15, bold=True), fill=ink, anchor="la")
+    draw.text((info_x, cover_y + 43), (selected.title_id if selected else "")[:20], font=font_small, fill=muted, anchor="la")
+    detail_pairs = (("平台", PLATFORM_LABELS.get(selected.platform, selected.platform) if selected else "—"), ("Title ID", selected.title_id if selected else "—"), ("版本", "尚未备份"), ("存档大小", "—"), ("最近备份", "—"), ("状态", "新"))
+    for index, (label, value) in enumerate(detail_pairs):
+        col, row = index % 2, index // 2
+        x, y = right_left + 20 + col * 190, body_top + 218 + row * 22
+        draw.text((x, y), label, font=font_small, fill=muted, anchor="la")
+        draw.text((x + 54, y), str(value)[:16], font=font_small, fill=ink, anchor="la")
+    draw.text((right_left + 20, body_top + 287), "存档位置", font=font_small, fill=muted, anchor="la")
+    draw.text((right_left + 74, body_top + 287), "~/vaj-save/Archive/…", font=font_small, fill=ink, anchor="la")
 
-    # Bottom system bar + status line.
-    bar_y = body_bottom + 6
-    _rounded(draw, [pad, bar_y, width - pad, bar_y + 34], 10, SWITCH["surface"])
-    for i, label in enumerate(("刷新", "打开文件夹", "打开本地库", "设置", "监听插拔", "隐藏已备份")):
-        bx = pad + 12 + i * 120
-        _rounded(draw, [bx, bar_y + 5, bx + 110, bar_y + 29], 6, SWITCH["surface_alt"])
-        draw.text((bx + 55, bar_y + 17), label, font=font_small, fill=SWITCH["text"], anchor="mm")
-    draw.text((pad, bar_y + 44), "准备好了，插上掌机或打开文件夹就可以开始", font=font_small, fill=SWITCH["muted"], anchor="la")
+    primary_y = body_top + 316
+    _rounded(draw, [right_left + 20, primary_y, width - 20, primary_y + 40], 6, SWITCH["accent"])
+    draw.text(((right_left + width - 20) / 2, primary_y + 20), "备份存档", font=font_body, fill=SWITCH["on_accent"], anchor="mm")
+    secondary_y, button_w = primary_y + 51, 119
+    for index, label in enumerate(("恢复", "导出 ZIP", "打开位置")):
+        x1 = right_left + 20 + index * (button_w + 6)
+        _rounded(draw, [x1, secondary_y, x1 + button_w, secondary_y + 34], 6, SWITCH["card"], border)
+        draw.text((x1 + button_w / 2, secondary_y + 17), label, font=font_small, fill=ink, anchor="mm")
+
+    versions_top = secondary_y + 60
+    draw.text((right_left + 20, versions_top), "版本历史", font=font_heading, fill=ink, anchor="la")
+    draw.text((width - 20, versions_top), "5 个版本", font=font_small, fill=muted, anchor="ra")
+    table_top, table_bottom = versions_top + 28, versions_top + 177
+    _rounded(draw, [right_left + 20, table_top, width - 20, table_bottom], 6, SWITCH["card"], border)
+    draw.text((right_left + 34, table_top + 18), "版本", font=font_small, fill=muted, anchor="la")
+    draw.text((right_left + 106, table_top + 18), "备份时间", font=font_small, fill=muted, anchor="la")
+    for index in range(4):
+        vy = table_top + 45 + index * 28
+        if index == 0:
+            draw.rectangle([right_left + 21, vy - 13, width - 21, vy + 13], fill=selected_fill)
+        draw.ellipse([right_left + 34, vy - 5, right_left + 44, vy + 5], outline=SWITCH["accent"] if index == 0 else SWITCH["line_strong"], width=2)
+        draw.text((right_left + 58, vy), f"v{4 - index}", font=font_small, fill=ink, anchor="lm")
+        draw.text((right_left + 106, vy), f"2024-10-{28 - index * 5:02d} 20:14", font=font_small, fill=muted, anchor="lm")
+        draw.text((width - 34, vy), "64 MB", font=font_small, fill=muted, anchor="ra")
+
+    note_y = table_bottom + 22
+    draw.text((right_left + 20, note_y), "备注", font=font_body, fill=ink, anchor="la")
+    draw.text((width - 20, note_y), "自动保存", font=font_small, fill=muted, anchor="ra")
+    _rounded(draw, [right_left + 20, note_y + 22, width - 20, note_y + 66], 6, SWITCH["card"], border)
+    draw.text((right_left + 34, note_y + 44), "通关前先保留多个进度。", font=font_small, fill=muted, anchor="lm")
+
+    # Bottom status bar.
+    draw.line([0, body_bottom, width, body_bottom], fill=border)
+    draw.ellipse([24, body_bottom + 16, 34, body_bottom + 26], fill=green)
+    draw.text((46, body_bottom + 21), "1 个设备已连接", font=font_small, fill=ink, anchor="lm")
+    draw.text((204, body_bottom + 21), f"已加载 {len(visible)} 个游戏存档", font=font_small, fill=muted, anchor="lm")
+    draw.ellipse([width - 192, body_bottom + 16, width - 182, body_bottom + 26], fill=green)
+    draw.text((width - 172, body_bottom + 21), "备份完成", font=font_small, fill=ink, anchor="lm")
+    draw.text((width - 20, body_bottom + 21), "无待处理任务", font=font_small, fill=muted, anchor="ra")
 
     out_path = out_dir / "home-preview.png"
     image.save(out_path)

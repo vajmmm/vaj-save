@@ -158,15 +158,15 @@ def test_status_is_rendered_as_text_not_a_pill(tk_root):
         grid.destroy()
 
 
-def test_platform_color_is_only_a_three_px_pip(tk_root):
+def test_row_edge_is_neutral_and_three_px_wide(tk_root):
     grid = _grid(tk_root, rows=_rows(2))
     try:
-        pips = grid.find_withtag("row-pip")
-        assert pips
-        for item in pips:
+        edges = grid.find_withtag("row-edge")
+        assert edges
+        for item in edges:
             x1, _y1, x2, _y2 = grid.coords(item)
             assert round(x2 - x1) == ui_theme.ROW_PIP_WIDTH == 3
-            assert grid.itemcget(item, "fill") == ui_theme.PLATFORM_COLORS["psp"]
+            assert grid.itemcget(item, "fill") == SWITCH["line_soft"]
     finally:
         grid.destroy()
 
@@ -203,9 +203,9 @@ def test_placeholder_square_and_cover_image(tk_root, tmp_path):
 def test_selected_row_does_not_grow_and_has_no_ring(tk_root):
     grid = _grid(tk_root)
     try:
-        before = grid.coords(grid.find_withtag("pip0")[0])
+        before = grid.coords(grid.find_withtag("edge0")[0])
         grid.select_index(0)
-        after = grid.coords(grid.find_withtag("pip0")[0])
+        after = grid.coords(grid.find_withtag("edge0")[0])
         assert before == after
         assert grid.find_withtag("row-ring") == ()
     finally:
@@ -417,9 +417,9 @@ def test_app_uses_switch_basic_white_surfaces(tk_root, tmp_path):
     state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
     app = build_app(state=state, root=tk_root)
     try:
-        assert app.root.cget("bg") == SWITCH["bg"]
-        assert app.detail_panel.cget("bg") == SWITCH["surface"]
-        assert app.save_list.cget("bg") == SWITCH["bg"]
+        assert app.root.cget("bg") == SWITCH["window"]
+        assert app.detail_panel.cget("bg") == SWITCH["border_soft"]
+        assert app.save_list.cget("bg") == SWITCH["window"]
     finally:
         _dispose(app, tk_root)
 
@@ -431,7 +431,7 @@ def test_only_accent_fill_is_the_backup_button(tk_root, tmp_path):
     app = build_app(state=state, root=tk_root)
     try:
         accents = [b._text for b in app._action_buttons if b.accent]
-        assert accents == ["备份"]
+        assert accents == ["备份存档"]
         for widget in _descendants(app.root):
             if isinstance(widget, tk.Listbox):
                 assert widget.cget("selectbackground") != SWITCH["accent"]
@@ -442,7 +442,7 @@ def test_only_accent_fill_is_the_backup_button(tk_root, tmp_path):
                 continue
             if background != SWITCH["accent"]:
                 continue
-            # The only saturated accent surfaces are the 3px platform pips.
+            # The only saturated accent surface at this level is the primary action.
             assert widget_width <= 3, type(widget)
     finally:
         _dispose(app, tk_root)
@@ -453,11 +453,10 @@ def test_right_panel_has_only_three_small_action_buttons(tk_root, tmp_path):
     app = build_app(state=state, root=tk_root)
     try:
         texts = [b._text for b in app._action_buttons]
-        assert texts == ["备份", "恢复", "导出 ZIP"]
+        assert texts == ["备份存档", "恢复", "导出 ZIP"]
         assert [b.accent for b in app._action_buttons] == [True, False, False]
-        for button in app._action_buttons:
-            # Small right-aligned buttons, not a full-width button wall.
-            assert str(button.pack_info().get("fill", "none")) in ("none", "")
+        assert app._action_buttons[0].grid_info().get("sticky") == "ew"
+        for button in app._action_buttons[1:]:
             assert button.winfo_reqwidth() < 200
     finally:
         _dispose(app, tk_root)
@@ -469,9 +468,9 @@ def test_detail_is_a_definition_list_and_versions_take_remaining_height(tk_root,
     try:
         for key in ("platform", "status", "source_mtime", "last_backup", "path"):
             assert key in app.detail_vars
-        info = app.versions_frame.pack_info()
-        assert str(info.get("expand")).lower() in ("1", "true")
-        assert str(info.get("fill")).lower() == "both"
+        info = app.versions_frame.grid_info()
+        assert set(info.get("sticky") or "") == set("nsew")
+        assert int(app.versions_frame.grid_rowconfigure(1)["weight"]) == 1
         # The old full-width path strip is gone.
         assert not hasattr(app, "path_entry_var")
     finally:
@@ -505,7 +504,7 @@ def test_subtitle_fully_visible_at_default_and_min_window(tk_root, tmp_path):
     app = build_app(state=state, root=tk_root)
     try:
         _map_root(tk_root)
-        for geometry in ("1180x740", "1080x680"):
+        for geometry in ("1320x780", "1280x760"):
             tk_root.geometry(geometry)
             tk_root.update()
             tk_root.update()
