@@ -8,13 +8,13 @@ interaction, no filesystem scan, no ``mainloop``) and writes preview images to
 Two independent renderers are used so the script always leaves something behind:
 
 * ``home-preview.png`` is an **illustrative schematic** drawn with Pillow from the
-  same ``ui_theme`` tokens and ``tile_face`` data the live app uses — it is *not*
+  same ``ui_theme`` tokens and ``save_row`` data the live app uses — it is *not*
   a screenshot of the running widgets. It needs no Ghostscript and is stamped
   with a "示意图 · 非真实截图" badge so it can never be mistaken for one.
-* ``save-grid.eps`` / ``detail.eps`` are the real captures, taken from the live Tk
-  canvases via ``Canvas.postscript`` and converted to PNG through
-  Pillow/Ghostscript when a working ``gs`` is available. When Ghostscript is
-  missing or broken the ``.eps`` files are kept and the script still exits 0.
+* ``save-list.eps`` is a real capture, taken from the live Tk save-list canvas via
+  ``Canvas.postscript`` and converted to PNG through Pillow/Ghostscript when a
+  working ``gs`` is available. When Ghostscript is missing or broken the ``.eps``
+  file is kept and the script still exits 0.
 
 Run with::
 
@@ -26,7 +26,6 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
-import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -41,18 +40,13 @@ from vajsave.covers import load_thumbnail, resolve_cover  # noqa: E402
 from vajsave.models import SaveEntry, ScanResult, VolumeInfo  # noqa: E402
 from vajsave.ui_theme import (  # noqa: E402
     PLATFORM_COLORS,
+    ROW_COVER,
+    ROW_COVER_RADIUS,
+    ROW_HEIGHT,
+    ROW_PIP_WIDTH,
     SWITCH,
-    TILE_BAR_HEIGHT,
-    TILE_COVER_HEIGHT,
-    TILE_COVER_INSET,
-    TILE_COVER_RADIUS,
-    TILE_GAP,
-    TILE_HEIGHT,
-    TILE_RADIUS,
-    TILE_WIDTH,
-    grid_columns,
     mix,
-    tile_face,
+    save_row,
 )
 
 # Demo catalogue: a save from every platform the scanner understands.
@@ -79,7 +73,7 @@ def _make_demo_cover(root: Path, platform: str, name: str, color: str) -> Option
         path = cover_dir / f"{name}.png"
         Image.new("RGB", (128, 160), color).save(path)
         return path
-    except Exception:  # noqa: BLE001 - a missing cover just falls back to pastel
+    except Exception:  # noqa: BLE001 - a missing cover just falls back to the placeholder
         return None
 
 
@@ -156,7 +150,7 @@ def _rasterize(eps_path: Path, png_path: Path) -> bool:
 
 def capture_canvases(app, out_dir: Path) -> List[Path]:
     written: List[Path] = []
-    for name, canvas in (("save-grid", app.save_list), ("detail", app.detail_canvas)):
+    for name, canvas in (("save-list", app.save_list),):
         try:
             postscript = canvas.postscript(colormode="color")
         except Exception as exc:  # noqa: BLE001
@@ -204,147 +198,132 @@ def _rounded(draw, box, radius: int, fill: str, outline: Optional[str] = None, w
 
 
 def render_home_preview(out_dir: Path, state: AppState) -> Path:
-    """Draw a representative HOME screen from the real theme tokens and tile faces."""
+    """Draw a representative screen from the real theme tokens and row data."""
     from PIL import Image, ImageDraw
 
     width, height = 1180, 740
     pad = 24
-    top_h = 64
+    top_h = 56
     image = Image.new("RGB", (width, height), SWITCH["bg"])
     draw = ImageDraw.Draw(image)
-    font_title = _load_font(20, bold=True)
+    font_title = _load_font(17, bold=True)
+    font_heading = _load_font(15, bold=True)
     font_body = _load_font(13)
     font_small = _load_font(11)
-    font_pill = _load_font(10, bold=True)
-    font_badge = _load_font(16, bold=True)
-    font_mono = _load_font(24, bold=True)
+    font_status = _load_font(12)
 
-    # Top status bar.
+    # Top status bar: identity + subtitle on the left, stats on the right.
     draw.rectangle([0, 0, width, top_h], fill=SWITCH["surface"])
-    draw.ellipse([pad, 14, pad + 36, 50], fill=SWITCH["accent"])
-    draw.text((pad + 18, 32), "v", font=font_badge, fill=SWITCH["on_accent"], anchor="mm")
-    draw.text((pad + 48, 20), "vaj-save", font=font_title, fill=SWITCH["text"], anchor="la")
-    draw.text((pad + 48, 44), "把掌机存档备份下来，按版本管理", font=font_small, fill=SWITCH["muted"], anchor="la")
+    draw.text((pad, 12), "vaj-save", font=font_title, fill=SWITCH["text"], anchor="la")
+    draw.text((pad, 34), "把掌机存档备份下来，按版本管理", font=font_small, fill=SWITCH["muted"], anchor="la")
 
     # This drawing is a mock, not a rasterization of the live widgets: say so.
     note = "示意图 · 非真实截图"
     note_w = 20 + 11 * len(note)
-    _rounded(draw, [width / 2 - note_w / 2, 18, width / 2 + note_w / 2, 46], 14, SWITCH["surface_alt"], SWITCH["line"])
-    draw.text((width / 2, 32), note, font=font_small, fill=SWITCH["muted"], anchor="mm")
+    _rounded(draw, [width / 2 - note_w / 2, 16, width / 2 + note_w / 2, 40], 6, SWITCH["surface_alt"], SWITCH["line"])
+    draw.text((width / 2, 28), note, font=font_small, fill=SWITCH["muted"], anchor="mm")
     stats = state.collection_stats()
-    draw.text((width - pad, 22), time.strftime("%H:%M"), font=font_title, fill=SWITCH["text"], anchor="ra")
     draw.text(
-        (width - pad, 46),
+        (width - pad, 28),
         f"已备份 {stats['games']} 款游戏 · {stats['versions']} 个版本",
         font=font_small,
         fill=SWITCH["muted"],
-        anchor="ra",
+        anchor="rm",
     )
 
     # Search row.
     search_y = top_h + 14
     draw.text((pad, search_y + 8), "搜索", font=font_small, fill=SWITCH["muted"], anchor="la")
-    _rounded(draw, [pad + 52, search_y, width - pad, search_y + 30], 15, SWITCH["card"], SWITCH["line"])
+    _rounded(draw, [pad + 52, search_y, width - pad, search_y + 30], 6, SWITCH["card"], SWITCH["line"])
 
     body_top = search_y + 46
-    body_bottom = height - 92
+    body_bottom = height - 96
 
     # Left column: platform filters.
     left = [pad, body_top, pad + 220, body_bottom]
-    _rounded(draw, left, 16, SWITCH["surface"])
+    _rounded(draw, left, 10, SWITCH["surface"])
     draw.text((left[0] + 16, body_top + 14), "机种", font=font_small, fill=SWITCH["muted"], anchor="la")
     counts = state.platform_counts()
     for i, key in enumerate(PLATFORM_ORDER):
         row_y = body_top + 44 + i * 34
         selected = key == state.selected_platform
         if selected:
-            _rounded(draw, [left[0] + 8, row_y, left[2] - 8, row_y + 30], 10, mix(SWITCH["accent"], SWITCH["card"], 0.84))
+            _rounded(draw, [left[0] + 8, row_y, left[2] - 8, row_y + 30], 6, mix(SWITCH["accent"], SWITCH["card"], 0.84))
         draw.rectangle([left[0] + 14, row_y + 7, left[0] + 17, row_y + 23], fill=PLATFORM_COLORS.get(key, SWITCH["accent"]))
         draw.text((left[0] + 26, row_y + 15), PLATFORM_LABELS.get(key, key), font=font_body, fill=SWITCH["text"], anchor="lm")
         count = len(state.all_saves()) if key == "all" else counts.get(key, 0)
         draw.text((left[2] - 16, row_y + 15), str(count), font=font_small, fill=SWITCH["muted"], anchor="rm")
 
-    # Middle column: compact cover tiles, clipped to the column bounds.
-    mid = [pad + 234, body_top, width - pad - 350, body_bottom]
-    visible = state.visible_saves()
-    faces = [tile_face(save, state.save_status(save)) for save in visible]
-    tile_w, tile_h, gap = TILE_WIDTH, TILE_HEIGHT, TILE_GAP
-    mid_w, mid_h = mid[2] - mid[0], mid[3] - mid[1]
-    tiles_layer = Image.new("RGB", (mid_w, mid_h), SWITCH["bg"])
-    layer_draw = ImageDraw.Draw(tiles_layer)
-    cols = grid_columns(mid_w, tile_w, gap)
-    for i, face in enumerate(faces):
-        row, col = divmod(i, cols)
-        x1 = col * (tile_w + gap)
-        y1 = 40 + row * (tile_h + gap)
-        x2, y2 = x1 + tile_w, y1 + tile_h
-        # Pastel platform face, then cover artwork (or a small monogram).
-        _rounded(layer_draw, [x1, y1, x2, y2], TILE_RADIUS, face.get("face", SWITCH["card"]))
-        cover_w = tile_w - 2 * TILE_COVER_INSET
-        cover_h = TILE_COVER_HEIGHT
-        thumb = None
-        cover_path = resolve_cover(visible[i], state.library_root)
-        if cover_path is not None:
-            thumb = load_thumbnail(cover_path, cover_w, cover_h, radius=TILE_COVER_RADIUS)
-        if thumb is not None:
-            tiles_layer.paste(thumb, (x1 + TILE_COVER_INSET, y1 + TILE_COVER_INSET), thumb)
-        else:
-            layer_draw.text(
-                (x1 + tile_w / 2, y1 + TILE_COVER_INSET + cover_h / 2),
-                face["monogram"],
-                font=font_mono,
-                fill=face["accent"],
-                anchor="mm",
-            )
-        # Full-width platform bar hugging the bottom edge.
-        layer_draw.rectangle([x1, y2 - TILE_BAR_HEIGHT, x2, y2], fill=face["accent"])
-        layer_draw.text(
-            (x1 + tile_w / 2, y1 + TILE_COVER_INSET + cover_h + 4),
-            face["title"],
-            font=font_small,
-            fill=SWITCH["text"],
-            anchor="ma",
-        )
-        # Status pill as a top-left corner badge over the artwork.
-        pill = face["pill"]
-        pill_w = min(tile_w - 16, 14 + 11 * len(pill["label"]))
-        _rounded(layer_draw, [x1 + 8, y1 + 8, x1 + 8 + pill_w, y1 + 25], 8, pill["bg"])
-        layer_draw.text((x1 + 8 + pill_w / 2, y1 + 16), pill["label"], font=font_pill, fill=pill["fg"], anchor="mm")
-    image.paste(tiles_layer, (mid[0], mid[1]))
+    # Middle column: single-column save list rows.
+    mid = [pad + 234, body_top, width - pad - 360, body_bottom]
     draw.text((mid[0], body_top + 14), "游戏", font=font_small, fill=SWITCH["muted"], anchor="la")
+    row_top = body_top + 34
+    row_right = mid[2]
+    visible = state.visible_saves()
+    for i, save in enumerate(visible):
+        status = state.save_status(save)
+        row = save_row(save, status)
+        y1 = row_top + i * ROW_HEIGHT
+        y2 = y1 + ROW_HEIGHT
+        if i == 0:
+            # Illustrate the selection tint on the top row.
+            _rounded(draw, [mid[0], y1 + 2, row_right, y2 - 2], 6, mix(SWITCH["accent"], SWITCH["card"], 0.86))
+        # 3px platform pip.
+        draw.rectangle([mid[0], y1 + 8, mid[0] + ROW_PIP_WIDTH, y2 - 8], fill=row["accent"])
+        # Cover square or light-grey placeholder.
+        cover_x = mid[0] + 14
+        cover_y = y1 + (ROW_HEIGHT - ROW_COVER) // 2
+        thumb = None
+        cover_path = resolve_cover(save, state.library_root)
+        if cover_path is not None:
+            thumb = load_thumbnail(cover_path, ROW_COVER, ROW_COVER, radius=ROW_COVER_RADIUS)
+        if thumb is not None:
+            image.paste(thumb, (cover_x, cover_y), thumb)
+        else:
+            _rounded(draw, [cover_x, cover_y, cover_x + ROW_COVER, cover_y + ROW_COVER], ROW_COVER_RADIUS, SWITCH["surface_alt"])
+        # Title (and optional subtitle) then right-aligned status text.
+        text_x = cover_x + ROW_COVER + 12
+        if row["subtitle"]:
+            draw.text((text_x, y1 + ROW_HEIGHT * 0.34), row["title"], font=font_body, fill=SWITCH["text"], anchor="lm")
+            draw.text((text_x, y1 + ROW_HEIGHT * 0.70), row["subtitle"], font=font_small, fill=SWITCH["muted"], anchor="lm")
+        else:
+            draw.text((text_x, y1 + ROW_HEIGHT / 2), row["title"], font=font_body, fill=SWITCH["text"], anchor="lm")
+        draw.text((row_right - 12, y1 + ROW_HEIGHT / 2), row["status_label"], font=font_status, fill=SWITCH["muted"], anchor="rm")
+        draw.line([mid[0], y2, row_right, y2], fill=SWITCH["line"])
 
-    # Right column: detail + pinned actions.
-    right = [width - pad - 340, body_top, width - pad, body_bottom]
-    _rounded(draw, right, 16, SWITCH["surface"])
+    # Right column: inspector.
+    right = [width - pad - 360, body_top, width - pad, body_bottom]
+    _rounded(draw, right, 10, SWITCH["surface"])
     draw.text((right[0] + 16, body_top + 14), "详情", font=font_small, fill=SWITCH["muted"], anchor="la")
-    selected_name = faces[0]["title"] if faces else "未选择游戏"
-    draw.text((right[0] + 16, body_top + 44), selected_name, font=font_title, fill=SWITCH["text"], anchor="la")
-    draw.text((right[0] + 16, body_top + 72), "状态: 新", font=font_small, fill=SWITCH["muted"], anchor="la")
-    button_y = right[3] - 16 - 8 * 30
-    for label, accent in (
-        ("备份", True),
-        ("备份所选", False),
-        ("备份当前列表", False),
-        ("恢复这个版本…", False),
-        ("导出 ZIP", False),
-        ("收藏", False),
-        ("在访达中显示", False),
-        ("只看收藏", False),
-    ):
+    btn_x = right[2] - 16
+    for label, accent in (("导出 ZIP", False), ("恢复", False), ("备份", True)):
+        text_w = 12 + 8 * len(label)
+        btn_x -= text_w
         fill = SWITCH["accent"] if accent else SWITCH["surface_alt"]
         color = SWITCH["on_accent"] if accent else SWITCH["text"]
-        _rounded(draw, [right[0] + 12, button_y, right[2] - 12, button_y + 24], 12, fill)
-        draw.text(((right[0] + right[2]) / 2, button_y + 12), label, font=font_small, fill=color, anchor="mm")
-        button_y += 30
+        _rounded(draw, [btn_x, body_top + 8, btn_x + text_w, body_top + 34], 6, fill)
+        draw.text((btn_x + text_w / 2, body_top + 21), label, font=font_small, fill=color, anchor="mm")
+        btn_x -= 6
+    selected_name = visible[0].display_name if visible else "未选择游戏"
+    draw.text((right[0] + 16, body_top + 48), selected_name, font=font_heading, fill=SWITCH["text"], anchor="la")
+    for j, (label, value) in enumerate((("机种", "PSP"), ("状态", "新"), ("卡上时间", "—"), ("上次备份", "—"), ("路径", "…"))):
+        fy = body_top + 82 + j * 20
+        draw.text((right[0] + 16, fy), label, font=font_small, fill=SWITCH["muted"], anchor="la")
+        draw.text((right[0] + 90, fy), value, font=font_small, fill=SWITCH["text"], anchor="la")
+    versions_top = body_top + 82 + 5 * 20 + 12
+    draw.text((right[0] + 16, versions_top), "版本", font=font_small, fill=SWITCH["muted"], anchor="la")
+    _rounded(draw, [right[0] + 16, versions_top + 18, right[2] - 16, right[3] - 54], 6, SWITCH["card"], SWITCH["line"])
+    draw.text((right[0] + 16, right[3] - 42), "备注", font=font_small, fill=SWITCH["muted"], anchor="la")
+    _rounded(draw, [right[0] + 16, right[3] - 26, right[2] - 16, right[3] - 4], 6, SWITCH["card"], SWITCH["line"])
 
     # Bottom system bar + status line.
-    bar_y = body_bottom + 10
-    _rounded(draw, [pad, bar_y, width - pad, bar_y + 38], 14, SWITCH["surface"])
+    bar_y = body_bottom + 6
+    _rounded(draw, [pad, bar_y, width - pad, bar_y + 34], 10, SWITCH["surface"])
     for i, label in enumerate(("刷新", "打开文件夹", "打开本地库", "设置", "监听插拔", "隐藏已备份")):
         bx = pad + 12 + i * 120
-        _rounded(draw, [bx, bar_y + 7, bx + 110, bar_y + 31], 12, SWITCH["surface_alt"])
-        draw.text((bx + 55, bar_y + 19), label, font=font_small, fill=SWITCH["text"], anchor="mm")
-    draw.text((pad, bar_y + 52), "准备好了，插上掌机或打开文件夹就可以开始", font=font_small, fill=SWITCH["muted"], anchor="la")
+        _rounded(draw, [bx, bar_y + 5, bx + 110, bar_y + 29], 6, SWITCH["surface_alt"])
+        draw.text((bx + 55, bar_y + 17), label, font=font_small, fill=SWITCH["text"], anchor="mm")
+    draw.text((pad, bar_y + 44), "准备好了，插上掌机或打开文件夹就可以开始", font=font_small, fill=SWITCH["muted"], anchor="la")
 
     out_path = out_dir / "home-preview.png"
     image.save(out_path)

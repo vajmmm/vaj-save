@@ -1,13 +1,15 @@
-"""Behavioral tests for the Switch-style Canvas save tile grid.
+"""Behavioral tests for the quiet single-column save list and inspector UI.
 
-The pure geometry helpers live in ``tests/test_ui_theme.py``; here we exercise
-selection semantics (click / ctrl-click / shift-click / arrow keys / double
-click), scrolling into view, and the wiring into ``VajSaveApp``.
+The pure row-data helper lives in ``tests/test_ui_theme.py``; here we exercise
+the list selection semantics (click / ctrl-click / shift-click / arrows /
+Ctrl-A / double click), the row rendering, and the wiring into ``VajSaveApp``
+(single-column list + right-hand inspector).
 """
 
 from __future__ import annotations
 
 import inspect
+import re
 import time
 from pathlib import Path
 
@@ -15,11 +17,24 @@ import pytest
 
 from vajsave import app_ui
 from vajsave import ui_theme
-from vajsave.app_ui import CanvasButton, SaveTileGrid, build_app
+from vajsave.app_ui import CanvasButton, build_app
 from vajsave.app_state import AppState
 from vajsave.models import SaveEntry, VolumeInfo
-from vajsave.ui_theme import SWITCH, tile_face
+from vajsave.ui_theme import SWITCH
 from vajsave.volume import FakeVolumeProvider
+
+PROJECT_ROOT = Path(inspect.getsourcefile(app_ui)).resolve().parents[2]
+
+FORBIDDEN_LABELS = (
+    "备份所选",
+    "备份当前列表",
+    "收藏",
+    "只看收藏",
+    "在访达中显示",
+    "在文件管理器中显示",
+)
+
+_CLOCK_RE = re.compile(r"^\d{1,2}:\d{2}$")
 
 
 @pytest.fixture(scope="module")
@@ -61,8 +76,27 @@ def _dispose(app, root) -> None:
             pass
 
 
-def _faces(n: int = 5):
-    faces = []
+def _descendants(widget):
+    yield widget
+    for child in widget.winfo_children():
+        yield from _descendants(child)
+
+
+def _all_widget_texts(widget):
+    texts = []
+    for w in _descendants(widget):
+        if isinstance(w, CanvasButton):
+            texts.append(w._text)
+            continue
+        try:
+            texts.append(str(w.cget("text")))
+        except Exception:
+            continue
+    return texts
+
+
+def _rows(n: int = 5):
+    rows = []
     for i in range(n):
         entry = SaveEntry(
             platform="psp",
@@ -72,29 +106,113 @@ def _faces(n: int = 5):
             title_id=f"ULJM{i:05d}",
         )
         status = "new" if i % 2 == 0 else "changed"
-        faces.append(tile_face(entry, status))
-    return faces
+        rows.append(ui_theme.save_row(entry, status))
+    return rows
 
 
-def _grid(root, faces=None, on_select=None, on_activate=None) -> SaveTileGrid:
-    grid = SaveTileGrid(root, on_select=on_select, on_activate=on_activate, width=520, height=400)
+def _grid(root, rows=None, on_select=None, on_activate=None):
+    grid = app_ui.SaveList(root, on_select=on_select, on_activate=on_activate, width=520, height=400)
     grid.pack()
     root.update_idletasks()
-    grid.set_tiles(faces if faces is not None else _faces())
+    grid.set_rows(rows if rows is not None else _rows())
     root.update_idletasks()
     return grid
 
 
-# --- grid model -------------------------------------------------------------
+# --- list model -------------------------------------------------------------
 
 
-def test_set_tiles_size_matches_faces(tk_root):
+def test_list_is_single_column(tk_root):
     grid = _grid(tk_root)
     try:
         assert grid.size() == 5
         assert grid.curselection() == ()
+        bounds = {(round(x1), round(x2)) for x1, _y1, x2, _y2 in grid._boxes}
+        assert len(bounds) == 1, "every row must share the same horizontal span"
     finally:
         grid.destroy()
+
+
+def test_no_tile_pill_star_bar_or_monogram_items(tk_root):
+    grid = _grid(tk_root)
+    try:
+        for tag in ("tile", "tile-pill", "tile-star", "tile-bar", "tile-mono", "tile-ring"):
+            assert grid.find_withtag(tag) == (), tag
+        for tag in ("row-pill", "row-ring", "row-star", "row-bar", "row-mono"):
+            assert grid.find_withtag(tag) == (), tag
+        assert grid.find_withtag("row-title") != ()
+    finally:
+        grid.destroy()
+
+
+def test_status_is_rendered_as_text_not_a_pill(tk_root):
+    grid = _grid(tk_root, rows=_rows(2))
+    try:
+        statuses = grid.find_withtag("row-status")
+        assert statuses
+        labels = {grid.itemcget(item, "text") for item in statuses}
+        assert "新" in labels and "有变化" in labels
+        # A pill would be a filled polygon; verify there are no filled status shapes.
+        assert grid.find_withtag("row-pill") == ()
+    finally:
+        grid.destroy()
+
+
+def test_platform_color_is_only_a_three_px_pip(tk_root):
+    grid = _grid(tk_root, rows=_rows(2))
+    try:
+        pips = grid.find_withtag("row-pip")
+        assert pips
+        for item in pips:
+            x1, _y1, x2, _y2 = grid.coords(item)
+            assert round(x2 - x1) == ui_theme.ROW_PIP_WIDTH == 3
+            assert grid.itemcget(item, "fill") == ui_theme.PLATFORM_COLORS["psp"]
+    finally:
+        grid.destroy()
+
+
+def test_placeholder_square_and_cover_image(tk_root, tmp_path):
+    from PIL import Image
+
+    cover_path = tmp_path / "cover.png"
+    Image.new("RGBA", (80, 80), (10, 120, 255, 255)).save(cover_path)
+
+    covered = ui_theme.save_row(
+        SaveEntry(platform="psp", source_id="psp", display_name="With Cover", path="/tmp/a"),
+        "new",
+    )
+    covered["cover"] = cover_path
+    fallback = ui_theme.save_row(
+        SaveEntry(platform="psp", source_id="psp", display_name="No Cover", path="/tmp/b"),
+        "new",
+    )
+
+    grid = _grid(tk_root, rows=[covered, fallback])
+    try:
+        grid.update_idletasks()
+        assert grid.find_withtag("row-cover")
+        placeholders = grid.find_withtag("row-placeholder")
+        assert placeholders
+        # The empty cover slot is a plain light-grey square, never a monogram.
+        assert grid.itemcget(placeholders[0], "fill") == SWITCH["surface_alt"]
+        assert grid.find_withtag("row-mono") == ()
+    finally:
+        grid.destroy()
+
+
+def test_selected_row_does_not_grow_and_has_no_ring(tk_root):
+    grid = _grid(tk_root)
+    try:
+        before = grid.coords(grid.find_withtag("pip0")[0])
+        grid.select_index(0)
+        after = grid.coords(grid.find_withtag("pip0")[0])
+        assert before == after
+        assert grid.find_withtag("row-ring") == ()
+    finally:
+        grid.destroy()
+
+
+# --- selection semantics ----------------------------------------------------
 
 
 def test_single_click_selects_only_one(tk_root):
@@ -128,39 +246,66 @@ def test_shift_click_selects_range(tk_root):
         grid.select_index(1)
         grid.select_index(4, extend=True)
         assert grid.curselection() == (1, 2, 3, 4)
-        # Extending backwards from the same anchor collapses to the new range.
         grid.select_index(0, extend=True)
         assert grid.curselection() == (0, 1)
     finally:
         grid.destroy()
 
 
-def test_arrow_keys_move_active_selection(tk_root):
+def test_arrows_move_selection_by_one_row(tk_root):
     grid = _grid(tk_root)
     try:
-        cols = grid.columns()
-        assert cols >= 1
         grid.select_index(0)
-        grid.move_active(1, 0)
+        grid.move_active(1)
         assert grid.curselection() == (1,)
-        grid.move_active(0, 1)
-        assert grid.curselection() == (min(1 + cols, grid.size() - 1),)
+        grid.move_active(1)
+        assert grid.curselection() == (2,)
+        grid.move_active(-1)
+        assert grid.curselection() == (1,)
         # Clamp at both edges instead of wrapping.
         grid.select_index(0)
-        grid.move_active(-1, 0)
+        grid.move_active(-1)
         assert grid.curselection() == (0,)
         grid.select_index(grid.size() - 1)
-        grid.move_active(1, 0)
+        grid.move_active(1)
         assert grid.curselection() == (grid.size() - 1,)
     finally:
         grid.destroy()
 
 
 def test_arrow_without_selection_picks_first(tk_root):
-    grid = _grid(tk_root, faces=_faces(3))
+    grid = _grid(tk_root, rows=_rows(3))
     try:
-        grid.move_active(1, 0)
+        grid.move_active(1)
         assert grid.curselection() == (0,)
+    finally:
+        grid.destroy()
+
+
+def test_ctrl_a_selects_all(tk_root):
+    grid = _grid(tk_root, rows=_rows(3))
+    try:
+        assert grid.bind("<Control-a>")
+        assert grid.bind("<Command-a>")
+        grid.select_all()
+        assert grid.curselection() == (0, 1, 2)
+    finally:
+        grid.destroy()
+
+
+def test_ctrl_a_event_selects_all(tk_root):
+    grid = _grid(tk_root, rows=_rows(3))
+    try:
+        _map_root(tk_root)
+        grid.focus_set()
+        tk_root.update()
+        import sys
+
+        sequence = "<Command-a>" if sys.platform == "darwin" else "<Control-a>"
+        grid.event_generate(sequence)
+        tk_root.update()
+        assert grid.curselection() == (0, 1, 2)
+        _unmap_root(tk_root)
     finally:
         grid.destroy()
 
@@ -176,25 +321,11 @@ def test_double_click_activates_and_selects(tk_root):
         grid.destroy()
 
 
-def test_selection_scrolls_into_view(tk_root, monkeypatch):
-    grid = _grid(tk_root, faces=_faces(40))
-    moves = []
-    monkeypatch.setattr(grid, "yview_moveto", lambda frac: moves.append(frac))
-    try:
-        grid.select_index(0)
-        assert moves == []  # first tile is already visible
-        grid.select_index(39)
-        assert moves and moves[-1] > 0
-    finally:
-        grid.destroy()
-
-
-def test_empty_grid_renders_hint_without_error(tk_root):
-    grid = _grid(tk_root, faces=[])
+def test_empty_list_renders_hint_without_error(tk_root):
+    grid = _grid(tk_root, rows=[])
     try:
         assert grid.size() == 0
         assert grid.curselection() == ()
-        # The hover/selection paths must stay safe on an empty grid.
         grid.set_hover(3)
         assert grid.hover_index is None
         grid.select_index(0)
@@ -203,12 +334,30 @@ def test_empty_grid_renders_hint_without_error(tk_root):
         grid.destroy()
 
 
-def test_selection_clear_empties_curselection(tk_root):
+def test_hover_uses_hover_token(tk_root):
     grid = _grid(tk_root)
     try:
-        grid.select_index(2)
-        grid.selection_clear()
-        assert grid.curselection() == ()
+        _map_root(tk_root)
+        cx, cy = grid._boxes[0][0] + 5, int((grid._boxes[0][1] + grid._boxes[0][3]) / 2)
+        grid.event_generate("<Motion>", x=cx, y=cy)
+        assert grid.hover_index == 0
+        fills = [grid.itemcget(i, "fill") for i in grid.find_all()]
+        assert SWITCH["hover"] in fills
+        grid.event_generate("<Leave>")
+        fills = [grid.itemcget(i, "fill") for i in grid.find_all()]
+        assert SWITCH["hover"] not in fills
+        _unmap_root(tk_root)
+    finally:
+        grid.destroy()
+
+
+def test_two_hundred_row_layout_stays_bounded(tk_root):
+    grid = _grid(tk_root, rows=_rows(200))
+    try:
+        assert len(grid._boxes) == 200
+        start = time.perf_counter()
+        grid._layout()
+        assert (time.perf_counter() - start) * 1000 < 1000.0
     finally:
         grid.destroy()
 
@@ -226,34 +375,40 @@ def _psp_volume(tmp_path: Path, psp_sfo_bytes: bytes, title_ids) -> Path:
     return vol
 
 
-def test_app_grid_matches_visible_saves_and_wires_selection(tk_root, tmp_path, psp_sfo_bytes):
-    import tkinter as tk
-
-    vol = _psp_volume(tmp_path, psp_sfo_bytes, ["ULJM05800", "ULJM05801", "ULJM05802"])
+def _app_with_volume(tk_root, tmp_path, psp_sfo_bytes, title_ids=("ULJM05800", "ULJM05801")):
+    vol = _psp_volume(tmp_path, psp_sfo_bytes, list(title_ids))
     state = AppState(
         provider=FakeVolumeProvider([VolumeInfo(name="PSP", mount_point=vol)]),
         library_root=tmp_path / "lib",
     )
     state.refresh_volumes()
     app = build_app(state=state, root=tk_root)
+    state.select_mount(vol)
+    app.refresh_saves_ui()
+    return app, state
+
+
+def test_tile_grid_widget_is_gone():
+    assert not hasattr(app_ui, "SaveTileGrid")
+    assert hasattr(app_ui, "SaveList")
+
+
+def test_app_list_matches_visible_saves_and_wires_selection(tk_root, tmp_path, psp_sfo_bytes):
+    import tkinter as tk
+
+    app, state = _app_with_volume(tk_root, tmp_path, psp_sfo_bytes, ["ULJM05800", "ULJM05801", "ULJM05802"])
     try:
-        state.select_mount(vol)
-        app.refresh_saves_ui()
+        assert isinstance(app.save_list, app_ui.SaveList)
         assert app.save_list.size() == len(state.visible_saves()) == 3
         assert len(app._saves_index) == 3
 
-        # The old Listbox contracts stay intact next to the new tile grid.
+        # Device + versions lists stay native Listboxes.
         assert isinstance(app.vol_list, tk.Listbox)
-        assert len(app._volumes_index) == 1
         assert isinstance(app.version_list, tk.Listbox)
-        assert app.version_list.bind("<MouseWheel>") == ""
-        assert app.version_list.bind("<Button-4>") == ""
-        assert "_on_detail_mousewheel" in app.detail_inner.bind("<MouseWheel>")
-        assert str(app.actions_frame.pack_info().get("side")) == "bottom"
 
         app.save_list.select_index(1)
         assert app._selected_save is app._saves_index[1]
-        assert app.path_entry_var.get() == app._saves_index[1].path
+        assert app.detail_vars["path"].get() == app._saves_index[1].path
     finally:
         _dispose(app, tk_root)
 
@@ -263,9 +418,197 @@ def test_app_uses_switch_basic_white_surfaces(tk_root, tmp_path):
     app = build_app(state=state, root=tk_root)
     try:
         assert app.root.cget("bg") == SWITCH["bg"]
-        assert app.actions_frame.cget("bg") == SWITCH["surface"]
-        assert app.detail_canvas.cget("bg") == SWITCH["surface"]
+        assert app.detail_panel.cget("bg") == SWITCH["surface"]
         assert app.save_list.cget("bg") == SWITCH["bg"]
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_only_accent_fill_is_the_backup_button(tk_root, tmp_path):
+    import tkinter as tk
+
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    app = build_app(state=state, root=tk_root)
+    try:
+        accents = [b._text for b in app._action_buttons if b.accent]
+        assert accents == ["备份"]
+        for widget in _descendants(app.root):
+            if isinstance(widget, tk.Listbox):
+                assert widget.cget("selectbackground") != SWITCH["accent"]
+            try:
+                background = str(widget.cget("bg"))
+                widget_width = int(widget.cget("width"))
+            except Exception:
+                continue
+            if background != SWITCH["accent"]:
+                continue
+            # The only saturated accent surfaces are the 3px platform pips.
+            assert widget_width <= 3, type(widget)
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_right_panel_has_only_three_small_action_buttons(tk_root, tmp_path):
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    app = build_app(state=state, root=tk_root)
+    try:
+        texts = [b._text for b in app._action_buttons]
+        assert texts == ["备份", "恢复", "导出 ZIP"]
+        assert [b.accent for b in app._action_buttons] == [True, False, False]
+        for button in app._action_buttons:
+            # Small right-aligned buttons, not a full-width button wall.
+            assert str(button.pack_info().get("fill", "none")) in ("none", "")
+            assert button.winfo_reqwidth() < 200
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_detail_is_a_definition_list_and_versions_take_remaining_height(tk_root, tmp_path):
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    app = build_app(state=state, root=tk_root)
+    try:
+        for key in ("platform", "status", "source_mtime", "last_backup", "path"):
+            assert key in app.detail_vars
+        info = app.versions_frame.pack_info()
+        assert str(info.get("expand")).lower() in ("1", "true")
+        assert str(info.get("fill")).lower() == "both"
+        # The old full-width path strip is gone.
+        assert not hasattr(app, "path_entry_var")
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_topbar_has_no_round_badge_or_clock(tk_root, tmp_path):
+    import tkinter as tk
+
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    app = build_app(state=state, root=tk_root)
+    try:
+        assert not hasattr(app, "clock_var")
+        assert not hasattr(app, "_tick_clock")
+        for widget in _descendants(app.topbar):
+            if isinstance(widget, tk.Canvas):
+                items = widget.find_all()
+                kinds = {widget.type(item) for item in items}
+                assert "oval" not in kinds, "round badge must be gone"
+            try:
+                text = str(widget.cget("text"))
+            except Exception:
+                continue
+            assert not _CLOCK_RE.match(text.strip()), text
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_subtitle_fully_visible_at_default_and_min_window(tk_root, tmp_path):
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    app = build_app(state=state, root=tk_root)
+    try:
+        _map_root(tk_root)
+        for geometry in ("1180x740", "1080x680"):
+            tk_root.geometry(geometry)
+            tk_root.update()
+            tk_root.update()
+            label = app.subtitle_label
+            assert label.winfo_width() >= label.winfo_reqwidth()
+            assert label.winfo_width() > 1
+        _unmap_root(tk_root)
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_forbidden_labels_absent_from_ui_and_source(tk_root, tmp_path):
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    app = build_app(state=state, root=tk_root)
+    try:
+        texts = _all_widget_texts(app.root)
+        joined = " ".join(texts)
+        for label in FORBIDDEN_LABELS:
+            assert label not in joined, label
+    finally:
+        _dispose(app, tk_root)
+
+    source = Path(inspect.getsourcefile(app_ui)).read_text(encoding="utf-8")
+    for label in FORBIDDEN_LABELS:
+        assert label not in source, label
+
+
+def test_backup_uses_only_current_multi_selection(tk_root, tmp_path, psp_sfo_bytes):
+    app, state = _app_with_volume(tk_root, tmp_path, psp_sfo_bytes)
+    try:
+        captured = []
+        state.import_selected_saves = lambda entries: captured.append(list(entries)) or []
+        app.save_list.selection_set(0, 1)
+        app.on_backup_clicked()
+        assert len(captured) == 1
+        assert len(captured[0]) == 2
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_backup_without_selection_warns_and_imports_nothing(tk_root, tmp_path, psp_sfo_bytes):
+    app, state = _app_with_volume(tk_root, tmp_path, psp_sfo_bytes)
+    try:
+        captured = []
+        state.import_selected_saves = lambda entries: captured.append(list(entries)) or []
+        app.save_list.selection_clear()
+        app.on_backup_clicked()
+        assert captured == []
+        assert "先" in app.warning_label_var.get()
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_double_click_backs_up_clicked_save(tk_root, tmp_path, psp_sfo_bytes):
+    app, state = _app_with_volume(tk_root, tmp_path, psp_sfo_bytes, ["ULJM05800"])
+    try:
+        assert app.save_list.size() == 1
+        app.save_list.activate_index(0)
+        assert state.last_backup is not None
+        assert state.last_backup.snapshot is not None
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_bottom_bar_fits_at_min_width(tk_root, tmp_path):
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    app = build_app(state=state, root=tk_root)
+    try:
+        tk_root.update_idletasks()
+        buttons = getattr(app, "_bottom_buttons", None)
+        assert buttons
+        gaps = 12 + 6 + 6 + 6 + 6 + 6 + 12 + 12
+        assert sum(b.winfo_reqwidth() for b in buttons) + gaps <= 1080 - 48
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_toggle_buttons_invoke_and_sync_selected(tk_root, tmp_path):
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    app = build_app(state=state, root=tk_root)
+    try:
+        hide_before = state.hide_unchanged
+        app._hide_unchanged_button.invoke()
+        assert state.hide_unchanged != hide_before
+        assert app._hide_unchanged_button.selected == state.hide_unchanged
+
+        watch_before = app._watch_var.get()
+        app._watch_button.invoke()
+        assert app._watch_var.get() != watch_before
+        assert app._watch_button.selected == app._watch_var.get()
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_refresh_platform_ui_reuses_rows(tk_root, tmp_path):
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    app = build_app(state=state, root=tk_root)
+    try:
+        app.refresh_platform_ui()
+        first = {key: row["row"].winfo_id() for key, row in app._platform_rows.items()}
+        app.refresh_platform_ui()
+        second = {key: row["row"].winfo_id() for key, row in app._platform_rows.items()}
+        assert first == second
     finally:
         _dispose(app, tk_root)
 
@@ -291,8 +634,8 @@ def test_canvas_button_states_and_api(tk_root):
         button.invoke()
         assert calls == [1]
 
-        button.set_text("备份当前列表")
-        assert button._text == "备份当前列表"
+        button.set_text("恢复")
+        assert button._text == "恢复"
 
         button.set_selected(True)
         assert button.selected is True
@@ -302,21 +645,6 @@ def test_canvas_button_states_and_api(tk_root):
         assert accent.accent is True
         assert accent.state == "accent"
         accent.destroy()
-
-        _map_root(tk_root)
-        # ``event_generate`` is dispatched synchronously on a mapped widget, so
-        # asserting right away keeps real pointer motion from interfering.
-        button.event_generate("<Enter>")
-        assert button.state == "hover"
-        button.event_generate("<ButtonPress-1>")
-        assert button.state == "pressed"
-        button.event_generate("<ButtonRelease-1>", x=2, y=2)
-        assert button.state == "hover"
-        button.event_generate("<Leave>")
-        assert button.state == "selected"
-        button.set_selected(False)
-        assert button.state == "idle"
-        _unmap_root(tk_root)
     finally:
         button.destroy()
 
@@ -324,13 +652,10 @@ def test_canvas_button_states_and_api(tk_root):
 def test_canvas_button_heights_and_measured_width(tk_root):
     bottom = CanvasButton(tk_root, text="刷新", height=CanvasButton.BOTTOM_HEIGHT)
     action = CanvasButton(tk_root, text="备份", height=CanvasButton.ACTION_HEIGHT)
-    wide = CanvasButton(tk_root, text="备份当前列表", height=CanvasButton.ACTION_HEIGHT)
+    wide = CanvasButton(tk_root, text="导出 ZIP", height=CanvasButton.ACTION_HEIGHT)
     try:
-        assert bottom.winfo_reqheight() == 34
-        assert action.winfo_reqheight() == 36
-        assert CanvasButton.BOTTOM_HEIGHT == 34
-        assert CanvasButton.ACTION_HEIGHT == 36
-        # Width follows the measured label, not a fixed constant.
+        assert bottom.winfo_reqheight() == CanvasButton.BOTTOM_HEIGHT
+        assert action.winfo_reqheight() == CanvasButton.ACTION_HEIGHT
         assert wide.winfo_reqwidth() > action.winfo_reqwidth()
     finally:
         bottom.destroy()
@@ -338,386 +663,21 @@ def test_canvas_button_heights_and_measured_width(tk_root):
         wide.destroy()
 
 
-def test_canvas_button_optional_dot(tk_root):
-    plain = CanvasButton(tk_root, text="设置")
-    dotted = CanvasButton(tk_root, text="监听插拔", dot=SWITCH["accent"])
-    try:
-        assert plain.find_withtag("button-dot") == ()
-        assert dotted.find_withtag("button-dot") != ()
-    finally:
-        plain.destroy()
-        dotted.destroy()
-
-
-# --- tile hover / selection --------------------------------------------------
-
-
-def _tile_center(grid: SaveTileGrid, index: int):
-    x1, y1, x2, y2 = grid._boxes[index]
-    return int((x1 + x2) / 2), int((y1 + y2) / 2)
-
-
-def test_tile_hover_redraws_with_hover_token(tk_root):
-    grid = _grid(tk_root)
-    try:
-        _map_root(tk_root)
-        cx, cy = _tile_center(grid, 0)
-        grid.event_generate("<Enter>", x=cx, y=cy)
-        assert grid.hover_index == 0
-        fills = [grid.itemcget(i, "fill") for i in grid.find_all()]
-        assert SWITCH["hover"] in fills
-
-        grid.event_generate("<Leave>")
-        assert grid.hover_index is None
-        fills = [grid.itemcget(i, "fill") for i in grid.find_all()]
-        assert SWITCH["hover"] not in fills
-        _unmap_root(tk_root)
-    finally:
-        grid.destroy()
-
-
-def test_tile_click_selects_and_draws_ring(tk_root):
-    grid = _grid(tk_root)
-    try:
-        _map_root(tk_root)
-        cx, cy = _tile_center(grid, 1)
-        grid.event_generate("<Button-1>", x=cx, y=cy)
-        assert grid.curselection() == (1,)
-        rings = grid.find_withtag("tile-ring")
-        assert rings
-        assert grid.itemcget(rings[0], "outline") == SWITCH["ring"]
-        assert float(grid.itemcget(rings[0], "width")) == 3
-        title = grid.find_withtag("title1")[0]
-        assert "bold" in grid.itemcget(title, "font")
-        _unmap_root(tk_root)
-    finally:
-        grid.destroy()
-
-
-def test_set_hover_ignores_out_of_range(tk_root):
-    grid = _grid(tk_root)
-    try:
-        grid.set_hover(99)
-        assert grid.hover_index is None
-        grid.set_hover(-1)
-        assert grid.hover_index is None
-        grid.set_hover(2)
-        assert grid.hover_index == 2
-    finally:
-        grid.destroy()
-
-
-def test_selected_tile_is_drawn_larger(tk_root):
-    grid = _grid(tk_root)
-    try:
-        before = grid.coords(grid.find_withtag("tile0")[0])
-        grid.select_index(0)
-        tk_root.update()
-        after = grid.coords(grid.find_withtag("tile0")[0])
-        before_w = max(before[0::2]) - min(before[0::2])
-        after_w = max(after[0::2]) - min(after[0::2])
-        assert after_w > before_w
-    finally:
-        grid.destroy()
-
-
-# --- app structure -----------------------------------------------------------
-
-
-def test_refresh_platform_ui_reuses_rows(tk_root, tmp_path):
-    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
-    app = build_app(state=state, root=tk_root)
-    try:
-        app.refresh_platform_ui()
-        first = {key: row["row"].winfo_id() for key, row in app._platform_rows.items()}
-        app.refresh_platform_ui()
-        second = {key: row["row"].winfo_id() for key, row in app._platform_rows.items()}
-        assert first == second
-        assert set(app._platform_rows["all"].keys()) >= {"row", "name", "badge", "pip"}
-    finally:
-        _dispose(app, tk_root)
-
-
-def test_toggle_buttons_invoke_and_sync_selected(tk_root, tmp_path):
-    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
-    app = build_app(state=state, root=tk_root)
-    try:
-        hide_before = state.hide_unchanged
-        app._hide_unchanged_button.invoke()
-        assert state.hide_unchanged != hide_before
-        assert app._hide_unchanged_button.selected == state.hide_unchanged
-
-        watch_before = app._watch_var.get()
-        app._watch_button.invoke()
-        assert app._watch_var.get() != watch_before
-        assert app._watch_button.selected == app._watch_var.get()
-    finally:
-        _dispose(app, tk_root)
-
-
-def test_bottom_bar_fits_at_min_width(tk_root, tmp_path):
-    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
-    app = build_app(state=state, root=tk_root)
-    try:
-        tk_root.update_idletasks()
-        buttons = getattr(app, "_bottom_buttons", None)
-        assert buttons
-        # padx pairs used when packing the bar: (12,6), (6,6), (6,6), (6,6), (12,0), (12,0)
-        gaps = 12 + 6 + 6 + 6 + 6 + 6 + 12 + 12
-        assert sum(b.winfo_reqwidth() for b in buttons) + gaps <= 1080 - 48
-    finally:
-        _dispose(app, tk_root)
-
-
-def test_app_tile_double_click_backs_up_selected_save(tk_root, tmp_path, psp_sfo_bytes):
-    vol = _psp_volume(tmp_path, psp_sfo_bytes, ["ULJM05800"])
-    lib = tmp_path / "lib"
-    state = AppState(
-        provider=FakeVolumeProvider([VolumeInfo(name="PSP", mount_point=vol)]),
-        library_root=lib,
-    )
-    state.refresh_volumes()
-    app = build_app(state=state, root=tk_root)
-    try:
-        state.select_mount(vol)
-        app.refresh_saves_ui()
-        assert app.save_list.size() == 1
-        app.save_list.activate_index(0)
-        # Double-click runs the primary "备份" action for the clicked save.
-        assert state.last_backup is not None
-        assert state.last_backup.snapshot is not None
-    finally:
-        _dispose(app, tk_root)
-
-
-# --- compact cover tiles -----------------------------------------------------
-
-
-def _fully_visible_rows(grid: SaveTileGrid) -> int:
-    """Number of tile rows rendered completely inside the viewport."""
-    viewport = grid._viewport_height()
-    rows: dict = {}
-    for (_x1, y1, _x2, y2) in grid._boxes:
-        key = round(y1)
-        rows.setdefault(key, True)
-        if y2 > viewport:
-            rows[key] = False
-    return sum(1 for ok in rows.values() if ok)
-
-
-def test_grid_uses_compact_tile_metrics():
-    assert SaveTileGrid.TILE_W == ui_theme.TILE_WIDTH
-    assert SaveTileGrid.TILE_H == ui_theme.TILE_HEIGHT
-    assert SaveTileGrid.GAP == ui_theme.TILE_GAP
-    assert SaveTileGrid.TILE_W < 246 and SaveTileGrid.TILE_H < 246
-
-
-def _many_saves_volume(tmp_path, psp_sfo_bytes, count: int = 16) -> Path:
-    return _psp_volume(tmp_path, psp_sfo_bytes, [f"ULJM{i:05d}" for i in range(count)])
-
-
-def _app_with_volume(tk_root, tmp_path, psp_sfo_bytes, count=16):
-    vol = _many_saves_volume(tmp_path, psp_sfo_bytes, count)
-    state = AppState(
-        provider=FakeVolumeProvider([VolumeInfo(name="PSP", mount_point=vol)]),
-        library_root=tmp_path / "lib",
-    )
-    state.refresh_volumes()
-    app = build_app(state=state, root=tk_root)
-    state.select_mount(vol)
-    app.refresh_saves_ui()
-    return app
-
-
-def test_default_window_shows_four_columns_and_three_rows(tk_root, tmp_path, psp_sfo_bytes):
-    app = _app_with_volume(tk_root, tmp_path, psp_sfo_bytes)
-    try:
-        _map_root(tk_root)
-        tk_root.geometry("1180x740")
-        tk_root.update()
-        tk_root.update()
-        grid = app.save_list
-        assert grid.size() == 16
-        assert grid.columns() == 4
-        rows = _fully_visible_rows(grid)
-        assert rows >= 3
-        assert grid.columns() * rows >= 12
-    finally:
-        _dispose(app, tk_root)
-        _unmap_root(tk_root)
-
-
-def test_min_window_keeps_at_least_three_columns(tk_root, tmp_path, psp_sfo_bytes):
-    app = _app_with_volume(tk_root, tmp_path, psp_sfo_bytes)
-    try:
-        _map_root(tk_root)
-        tk_root.geometry("1080x680")
-        tk_root.update()
-        tk_root.update()
-        assert app.save_list.columns() >= 3
-    finally:
-        _dispose(app, tk_root)
-        _unmap_root(tk_root)
-
-
-def test_cover_tile_draws_image_and_fallback_draws_monogram(tk_root, tmp_path):
-    from PIL import Image
-
-    cover_path = tmp_path / "cover.png"
-    Image.new("RGBA", (80, 80), (10, 120, 255, 255)).save(cover_path)
-
-    entry = SaveEntry(
-        platform="psp",
-        source_id="psp",
-        display_name="With Cover",
-        path="/tmp/vol/PSP/SAVEDATA/ULJM00001",
-        title_id="ULJM00001",
-    )
-    covered = tile_face(entry, "new")
-    covered["cover"] = cover_path
-    fallback = tile_face(entry, "new")  # no "cover" key -> pastel + monogram
-
-    grid = _grid(tk_root, faces=[covered, fallback])
-    try:
-        grid.update_idletasks()
-        assert grid.find_withtag("tile-cover")
-        assert grid.find_withtag("tile-mono")  # the fallback tile still shows a letter
-    finally:
-        grid.destroy()
-
-
-def test_cover_cache_is_negative_and_bounded(tk_root, tmp_path):
-    grid = _grid(tk_root, faces=[])
-    try:
-        corrupt = tmp_path / "bad.png"
-        corrupt.write_bytes(b"not an image")
-        assert grid._cover_photo(corrupt, 40, 40) is None
-        # A decode failure is cached as a negative entry instead of re-decoding.
-        assert list(grid._cover_cache.values()) == [None]
-        assert len(grid._cover_cache) == 1
-
-        grid.COVER_CACHE_MAX = 3
-        for i in range(5):
-            path = tmp_path / f"c{i}.png"
-            path.write_bytes(b"garbage")
-            grid._cover_photo(path, 10, 10)
-        assert len(grid._cover_cache) <= 3
-    finally:
-        grid.destroy()
-
-
-def test_resolve_cover_priority_flows_into_faces(tk_root, tmp_path, psp_sfo_bytes):
-    from PIL import Image
-
-    vol = _psp_volume(tmp_path, psp_sfo_bytes, ["ULJM05800"])
-    lib = tmp_path / "lib"
-    state = AppState(
-        provider=FakeVolumeProvider([VolumeInfo(name="PSP", mount_point=vol)]),
-        library_root=lib,
-    )
-    state.refresh_volumes()
-    state.select_mount(vol)
-    # Drop a user cover for the scanned save.
-    cover_dir = lib / "covers" / "psp"
-    cover_dir.mkdir(parents=True)
-    Image.new("RGB", (32, 32), (0, 200, 0)).save(cover_dir / "ULJM05800.png")
-
-    app = build_app(state=state, root=tk_root)
-    try:
-        app.refresh_saves_ui()
-        assert app.save_list._tiles[0].get("cover") == cover_dir / "ULJM05800.png"
-    finally:
-        _dispose(app, tk_root)
-
-
-# --- 200-tile performance ----------------------------------------------------
-
-
-def _cover_faces(tmp_path: Path, count: int = 200):
-    """``count`` tile faces backed by real (small) cover files."""
-    from PIL import Image
-
-    faces = []
-    for i in range(count):
-        entry = SaveEntry(
-            platform="psp",
-            source_id="psp",
-            display_name=f"Game {i}",
-            path=f"/tmp/vol/PSP/SAVEDATA/ULJM{i:05d}",
-            title_id=f"ULJM{i:05d}",
-        )
-        face = tile_face(entry, "new" if i % 2 == 0 else "changed")
-        cover = tmp_path / f"cover{i}.png"
-        if not cover.exists():
-            Image.new("RGB", (240, 160), (i % 255, 40, 90)).save(cover)
-        face["cover"] = cover
-        faces.append(face)
-    return faces
-
-
-def _median_ms(call, repeats: int = 7) -> float:
-    samples = []
-    for _ in range(repeats):
-        start = time.perf_counter()
-        call()
-        samples.append((time.perf_counter() - start) * 1000.0)
-    samples.sort()
-    return samples[len(samples) // 2]
-
-
-def test_two_hundred_tile_layout_stays_bounded(tk_root, tmp_path):
-    grid = _grid(tk_root, faces=_cover_faces(tmp_path, 200))
-    try:
-        assert len(grid._boxes) == 200
-        assert len(grid.find_withtag("tile")) == 200
-        # A full relayout of a 200-tile grid is a rare (refresh/resize) event, so
-        # it only needs to stay bounded; the interactive requirement is on hover.
-        median = _median_ms(grid._layout, repeats=9)
-        assert median < 1000.0, f"200-tile _layout() median was {median:.1f} ms"
-    finally:
-        grid.destroy()
-
-
-def test_two_hundred_tile_hover_is_tag_scoped_and_fast(tk_root, tmp_path, monkeypatch):
-    grid = _grid(tk_root, faces=_cover_faces(tmp_path, 200))
-    try:
-        # Time a full relayout first; the spy is installed afterwards so this
-        # baseline does not pollute the "hover never relayouts" assertion.
-        full_layout = _median_ms(grid._layout, repeats=5)
-
-        # A full relayout must never be triggered from the hover path.
-        full_layouts = []
-        original_layout = grid._layout
-
-        def spy_layout():
-            full_layouts.append(1)
-            return original_layout()
-
-        monkeypatch.setattr(grid, "_layout", spy_layout)
-        grid._layout()  # warm the cover cache before timing
-        full_layouts.clear()
-        items_before = len(grid.find_all())
-
-        def sweep():
-            for index in range(4):
-                grid.set_hover(index)
-
-        median = _median_ms(sweep, repeats=5)
-        assert full_layouts == [], "hover must use tag-scoped partial redraw"
-        assert median < 150.0, f"hover redraw sweep median was {median:.1f} ms"
-        # Partial redraw is dramatically cheaper than a full 200-tile relayout.
-        assert median < full_layout / 2, (median, full_layout)
-        assert grid.hover_index == 3
-        # Only the tiles' items are replaced in place; the item count is stable.
-        assert len(grid.find_all()) == items_before
-        fills = [grid.itemcget(item, "fill") for item in grid.find_withtag("tile")]
-        assert SWITCH["hover"] in fills
-
-        # Clearing the hover restores the un-hovered fill and still stays scoped.
-        grid.set_hover(None)
-        assert full_layouts == []
-        assert grid.hover_index is None
-        fills = [grid.itemcget(item, "fill") for item in grid.find_withtag("tile")]
-        assert SWITCH["hover"] not in fills
-    finally:
-        grid.destroy()
+# --- docs / preview consistency ---------------------------------------------
+
+
+def test_design_and_agents_match_quiet_list_language():
+    design = (PROJECT_ROOT / "DESIGN.md").read_text(encoding="utf-8")
+    agents = (PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    assert "瓦片" not in design
+    assert "药丸" not in design
+    assert "status pill" not in design.lower()
+    assert "单列" in design
+    assert "单列" in agents or "列表" in agents
+
+
+def test_ui_preview_has_no_tile_vocabulary():
+    preview = (PROJECT_ROOT / "scripts" / "ui_preview.py").read_text(encoding="utf-8")
+    assert "TILE_" not in preview
+    assert "tile_face" not in preview
+    assert "grid_columns" not in preview

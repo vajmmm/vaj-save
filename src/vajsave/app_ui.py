@@ -1,53 +1,41 @@
 import subprocess
 import sys
-import time
 import tkinter as tk
 import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import filedialog, ttk
 from typing import Dict, List, Optional, Tuple, Union
 
-from .app_state import BACKUP_STATUS_LABELS, PLATFORM_LABELS, PLATFORM_ORDER, AppState
+from .app_state import PLATFORM_LABELS, PLATFORM_ORDER, AppState
 from .covers import load_thumbnail, resolve_cover
 from .library import Snapshot
 from .models import SaveEntry, VolumeInfo
 from .ui_theme import (
     PLATFORM_COLORS,
+    ROW_COVER,
+    ROW_COVER_RADIUS,
+    ROW_HEIGHT,
+    ROW_PIP_WIDTH,
     SWITCH,
-    TILE_BAR_HEIGHT,
-    TILE_COVER_HEIGHT,
-    TILE_COVER_INSET,
-    TILE_COVER_RADIUS,
-    TILE_GAP,
-    TILE_HEIGHT,
-    TILE_RADIUS,
-    TILE_RING_GAP,
-    TILE_RING_WIDTH,
-    TILE_SELECT_SCALE,
-    TILE_WIDTH,
     darken,
-    grid_columns,
     mix,
-    tile_face,
+    save_row,
+    status_label,
 )
 
 # --- Switch "Basic White" palette (single source of truth: vajsave.ui_theme) -------
 
 BG = SWITCH["bg"]
 SIDE = SWITCH["surface"]
-SURFACE_ALT = SWITCH["surface_alt"]
 CARD = SWITCH["card"]
 TEXT = SWITCH["text"]
 MUTED = SWITCH["muted"]
 LINE = SWITCH["line"]
 BLUE = SWITCH["accent"]
-RING = SWITCH["ring"]
-GREEN = SWITCH["success"]
 ORANGE = SWITCH["warning"]
 RED = SWITCH["danger"]
-ON_ACCENT = SWITCH["on_accent"]
 
-# Selected surfaces are a light-blue tint of the accent so white cards still read.
+# Selected surfaces are a light-blue tint of the accent so white rows still read.
 SELECTED_ROW = mix(BLUE, CARD, 0.84)
 SELECTED_LIST = mix(BLUE, CARD, 0.86)
 
@@ -94,18 +82,18 @@ class CanvasButton(tk.Canvas):
 
     Replaces every ``ttk`` button/checkbutton in the app so the Basic White
     surfaces never fall back to the platform's native chrome. Exposes the
-    ``idle``/``hover``/``pressed`` interaction states, an ``accent`` variant, a
-    ``selected`` toggle state, and an optional left status dot. The requested
-    width is measured from the label font, and the height defaults to the
-    bottom system bar's 34px with a 36px variant for the right action stack.
+    ``idle``/``hover``/``pressed`` interaction states, an ``accent`` variant and a
+    ``selected`` toggle state. The requested width is measured from the label
+    font; the height defaults to the bottom system bar's size with a smaller
+    variant for the inspector header.
     """
 
-    BOTTOM_HEIGHT = 34
-    ACTION_HEIGHT = 36
-    RADIUS = 9
-    PADDING = 14
+    BOTTOM_HEIGHT = 32
+    ACTION_HEIGHT = 28
+    RADIUS = 6
+    PADDING = 12
     DOT_SPAN = 18
-    MIN_WIDTH = 48
+    MIN_WIDTH = 44
 
     def __init__(
         self,
@@ -255,7 +243,7 @@ class CanvasButton(tk.Canvas):
         if interaction == "hover":
             return colors["hover"], colors["text"], ""
         if self.selected:
-            return mix(colors["accent"], colors["card"], 0.84), colors["accent"], colors["ring"]
+            return mix(colors["accent"], colors["card"], 0.84), colors["accent"], ""
         return colors["surface_alt"], colors["text"], ""
 
     def _render(self) -> None:
@@ -297,19 +285,22 @@ class CanvasButton(tk.Canvas):
         )
 
 
-class SaveTileGrid(tk.Canvas):
-    """A Switch HOME style grid of save tiles drawn on a Canvas.
+class SaveList(tk.Canvas):
+    """A quiet single-column list of saves drawn on a Canvas.
 
-    Behaves like ``tk.Listbox`` for the bits the app relies on
-    (``curselection``/``selection_set``/``selection_clear``) but renders each
-    save as a rounded white card. Click, Ctrl-click, Shift-click, the arrow
-    keys, and double-click all drive the same selection model.
+    One full-width row per visible save: a 3px platform pip, a small cover square
+    (or a plain light-grey placeholder), the title (and optional subtitle) and a
+    plain text status on the right. It behaves like ``tk.Listbox`` for the bits
+    the app relies on (``curselection``/``selection_set``/``selection_clear``):
+    click, Ctrl/Cmd-click, Shift-click, Ctrl/Cmd-A, the arrow keys and
+    double-click all drive the same selection model.
     """
 
-    TILE_W = TILE_WIDTH  # compact cover tiles, not square HOME tiles
-    TILE_H = TILE_HEIGHT
-    GAP = TILE_GAP
-    PAD = 16
+    ROW_H = ROW_HEIGHT
+    PAD = 12
+    COVER = ROW_COVER
+    COVER_RADIUS = ROW_COVER_RADIUS
+    PIP = ROW_PIP_WIDTH
     COVER_CACHE_MAX = 256
 
     def __init__(
@@ -329,19 +320,18 @@ class SaveTileGrid(tk.Canvas):
         super().__init__(master, **kwargs)
         self._on_select = on_select
         self._on_activate = on_activate
-        self._tiles: List[dict] = []
+        self._rows: List[dict] = []
         self._boxes: List[Tuple[float, float, float, float]] = []
         self._selected: set = set()
         self._anchor: Optional[int] = None
         self._active: Optional[int] = None
         self._hover: Optional[int] = None
-        self._cols = 1
         self._laying_out = False
         # Reference-keeping thumbnail cache: keyed by (path, mtime, w, h) and
         # holding either a live ``PhotoImage`` or ``None`` (negative cache).
         # Bounded so a long browsing session cannot grow without limit.
         self._cover_cache: "dict[Tuple[str, int, int, int], object]" = {}
-        # One strong reference per displayed tile (indexed by tile), so an LRU
+        # One strong reference per displayed row, indexed by row, so an LRU
         # eviction of ``_cover_cache`` can never garbage-collect a PhotoImage
         # that is still drawn on the canvas.
         self._cover_refs: "dict[int, object]" = {}
@@ -354,11 +344,11 @@ class SaveTileGrid(tk.Canvas):
         self.bind("<Command-Button-1>", lambda e: self._on_button(e, ctrl=True))
         self.bind("<Shift-Button-1>", lambda e: self._on_button(e, shift=True))
         self.bind("<Double-Button-1>", self._on_double)
-        self.bind("<Left>", lambda e: self.move_active(-1, 0))
-        self.bind("<Right>", lambda e: self.move_active(1, 0))
-        self.bind("<Up>", lambda e: self.move_active(0, -1))
-        self.bind("<Down>", lambda e: self.move_active(0, 1))
+        self.bind("<Up>", lambda e: self.move_active(-1))
+        self.bind("<Down>", lambda e: self.move_active(1))
         self.bind("<Return>", lambda e: self._activate_active())
+        self.bind("<Control-a>", self._on_select_all)
+        self.bind("<Command-a>", self._on_select_all)
         self.bind("<Configure>", lambda e: self._layout())
         self.bind("<MouseWheel>", self._on_wheel)
         self.bind("<Button-4>", self._on_wheel)
@@ -366,8 +356,8 @@ class SaveTileGrid(tk.Canvas):
 
     # -- model ---------------------------------------------------------------
 
-    def set_tiles(self, tiles) -> None:
-        self._tiles = list(tiles)
+    def set_rows(self, rows) -> None:
+        self._rows = list(rows)
         self._selected = set()
         self._anchor = None
         self._active = None
@@ -375,22 +365,19 @@ class SaveTileGrid(tk.Canvas):
         self._layout()
 
     def size(self) -> int:
-        return len(self._tiles)
-
-    def columns(self) -> int:
-        return self._cols
+        return len(self._rows)
 
     @property
     def hover_index(self) -> Optional[int]:
         return self._hover
 
     def set_hover(self, index: Optional[int]) -> None:
-        """Highlight the tile under the pointer (``None`` clears it).
+        """Highlight the row under the pointer (``None`` clears it).
 
-        Only the tiles whose hover state actually changed are redrawn (tag scoped),
-        so a pointer sweep across a 200-tile grid never triggers a full relayout.
+        Only the rows whose hover state actually changed are redrawn (tag scoped),
+        so a pointer sweep across a long list never triggers a full relayout.
         """
-        if index is not None and not (0 <= index < len(self._tiles)):
+        if index is not None and not (0 <= index < len(self._rows)):
             index = None
         if index == self._hover:
             return
@@ -416,6 +403,16 @@ class SaveTileGrid(tk.Canvas):
         self._selected = set()
         self._layout()
 
+    def select_all(self, *, notify: bool = True) -> None:
+        if not self._rows:
+            return
+        self._selected = set(range(len(self._rows)))
+        self._anchor = 0
+        self._active = len(self._rows) - 1
+        self._layout()
+        if notify and self._on_select is not None:
+            self._on_select(self._active)
+
     def select_index(
         self,
         index: int,
@@ -424,7 +421,7 @@ class SaveTileGrid(tk.Canvas):
         toggle: bool = False,
         notify: bool = True,
     ) -> None:
-        if not (0 <= index < len(self._tiles)):
+        if not (0 <= index < len(self._rows)):
             return
         if extend and self._anchor is not None:
             low, high = sorted((self._anchor, index))
@@ -444,22 +441,19 @@ class SaveTileGrid(tk.Canvas):
         if notify and self._on_select is not None:
             self._on_select(index)
 
-    def move_active(self, dx: int, dy: int) -> str:
-        total = len(self._tiles)
+    def move_active(self, delta: int) -> str:
+        total = len(self._rows)
         if total == 0:
             return "break"
         if self._active is None:
             target = 0
-        elif dy:
-            target = self._active + dy * self._cols
         else:
-            target = self._active + dx
-        target = max(0, min(total - 1, target))
+            target = max(0, min(total - 1, self._active + delta))
         self.select_index(target)
         return "break"
 
     def activate_index(self, index: int) -> None:
-        if not (0 <= index < len(self._tiles)):
+        if not (0 <= index < len(self._rows)):
             return
         self.select_index(index)
         if self._on_activate is not None:
@@ -510,6 +504,11 @@ class SaveTileGrid(tk.Canvas):
             self.activate_index(index)
         return "break"
 
+    def _on_select_all(self, _event=None) -> str:
+        self.focus_set()
+        self.select_all()
+        return "break"
+
     def _activate_active(self) -> str:
         if self._active is not None:
             self.activate_index(self._active)
@@ -541,7 +540,7 @@ class SaveTileGrid(tk.Canvas):
             try:
                 width = int(self.cget("width"))
             except (TypeError, ValueError):
-                width = self.TILE_W
+                width = self.PAD * 2 + self.COVER
         return max(1, width)
 
     def _viewport_height(self) -> int:
@@ -550,7 +549,7 @@ class SaveTileGrid(tk.Canvas):
             try:
                 height = int(self.cget("height"))
             except (TypeError, ValueError):
-                height = self.TILE_H
+                height = self.ROW_H
         return max(1, height)
 
     def _layout(self) -> None:
@@ -561,44 +560,41 @@ class SaveTileGrid(tk.Canvas):
             self.delete("all")
             self._boxes = []
             self._cover_refs = {}
-            total = len(self._tiles)
+            total = len(self._rows)
             width = self._canvas_width()
             if total == 0:
                 self.create_text(
                     width / 2,
-                    self.TILE_H,
+                    self.ROW_H,
                     text="没有可显示的存档",
                     fill=self.colors["muted"],
                     font=ui_font(13),
                 )
-                self.configure(scrollregion=(0, 0, width, self.TILE_H))
+                self.configure(scrollregion=(0, 0, width, self.ROW_H))
                 return
-            self._cols = grid_columns(width, self.TILE_W, self.GAP)
-            rows = (total + self._cols - 1) // self._cols
-            for i, face in enumerate(self._tiles):
-                row, col = divmod(i, self._cols)
-                x1 = self.PAD + col * (self.TILE_W + self.GAP)
-                y1 = self.PAD + row * (self.TILE_H + self.GAP)
-                x2 = x1 + self.TILE_W
-                y2 = y1 + self.TILE_H
-                self._draw_tile(i, face, x1, y1, x2, y2)
+            x1 = self.PAD
+            x2 = max(x1 + 1, width - self.PAD)
+            for i, row in enumerate(self._rows):
+                y1 = self.PAD + i * self.ROW_H
+                y2 = y1 + self.ROW_H
+                self._draw_row(i, row, x1, y1, x2, y2)
                 self._boxes.append((x1, y1, x2, y2))
-            content_h = self.PAD * 2 + rows * self.TILE_H + (rows - 1) * self.GAP
+            content_h = self.PAD * 2 + total * self.ROW_H
             self.configure(scrollregion=(0, 0, width, content_h))
         finally:
             self._laying_out = False
 
     def _redraw_index(self, index: int) -> None:
-        """Redraw a single tile in place, leaving the other tiles untouched.
+        """Redraw a single row in place, leaving the other rows untouched.
 
-        Used by hover changes so a 200-tile grid stays responsive; the tile's
-        canvas items all carry the per-index ``idx<N>`` tag.
+        Used by hover changes so a long list stays responsive; the row's canvas
+        items all carry the per-index ``row<N>`` tag.
         """
-        if not (0 <= index < len(self._boxes)) or not (0 <= index < len(self._tiles)):
+        if not (0 <= index < len(self._boxes)) or not (0 <= index < len(self._rows)):
             return
-        self.delete(f"idx{index}")
+        self.delete(f"row{index}")
         x1, y1, x2, y2 = self._boxes[index]
-        self._draw_tile(index, self._tiles[index], x1, y1, x2, y2)
+        self._draw_row(index, self._rows[index], x1, y1, x2, y2)
 
     def _cover_photo(self, path, width: int, height: int):
         """Return a reference-kept ``PhotoImage`` for ``path`` (or ``None``).
@@ -606,7 +602,7 @@ class SaveTileGrid(tk.Canvas):
         Results (including failures) are cached keyed by path + mtime + size so a
         repaint never re-decodes, and the cache is bounded at
         ``COVER_CACHE_MAX`` entries. Decode errors / vanished files degrade to
-        ``None`` and the caller paints the pastel fallback instead.
+        ``None`` and the caller paints the light-grey placeholder instead.
         """
         try:
             stat = Path(path).stat()
@@ -618,7 +614,7 @@ class SaveTileGrid(tk.Canvas):
             self._cover_cache[key] = cached  # LRU refresh
             return cached
         photo = None
-        image = load_thumbnail(path, width, height, radius=TILE_COVER_RADIUS)
+        image = load_thumbnail(path, width, height, radius=self.COVER_RADIUS)
         if image is not None:
             try:
                 from PIL import ImageTk
@@ -631,148 +627,129 @@ class SaveTileGrid(tk.Canvas):
             self._cover_cache.pop(next(iter(self._cover_cache)))
         return photo
 
-    def _draw_tile(self, index: int, face: dict, x1: float, y1: float, x2: float, y2: float) -> None:
+    def _draw_row(self, index: int, row: dict, x1: float, y1: float, x2: float, y2: float) -> None:
         colors = self.colors
         selected = index in self._selected
         hovered = index == self._hover
 
-        # The selected tile grows outward; the base box stays for hit testing.
         if selected:
-            grow = TILE_SELECT_SCALE / 2
-            x1, y1, x2, y2 = x1 - grow, y1 - grow, x2 + grow, y2 + grow
-            gap = TILE_RING_GAP
+            fill = SELECTED_LIST
+        elif hovered:
+            fill = colors["hover"]
+        else:
+            fill = ""
+        if fill:
             self.create_polygon(
-                _rounded_points(x1 - gap, y1 - gap, x2 + gap, y2 + gap, TILE_RADIUS + gap),
+                _rounded_points(x1, y1 + 2, x2, y2 - 2, 6),
                 smooth=True,
                 splinesteps=24,
-                fill="",
-                outline=colors["ring"],
-                width=TILE_RING_WIDTH,
-                tags=("tile-ring", f"ring{index}", f"idx{index}"),
+                fill=fill,
+                outline="",
+                tags=("row-bg", f"bg{index}", f"row{index}"),
             )
 
-        if hovered and not selected:
-            fill = colors["hover"]
-            outline = colors["line"]
-        else:
-            fill = face.get("face", colors["card"])
-            outline = ""
-        self.create_polygon(
-            _rounded_points(x1, y1, x2, y2, TILE_RADIUS),
-            smooth=True,
-            splinesteps=24,
-            fill=fill,
-            outline=outline,
-            width=1,
-            tags=("tile", f"tile{index}", f"idx{index}"),
+        if index < len(self._rows) - 1:
+            self.create_line(
+                x1,
+                y2,
+                x2,
+                y2,
+                fill=colors["line"],
+                tags=("row-sep", f"sep{index}", f"row{index}"),
+            )
+
+        # The only place a platform colour appears on the page: a 3px pip.
+        accent = row.get("accent", colors["accent"])
+        self.create_rectangle(
+            x1,
+            y1 + 8,
+            x1 + self.PIP,
+            y2 - 8,
+            fill=accent,
+            outline="",
+            tags=("row-pip", f"pip{index}", f"row{index}"),
         )
 
-        accent = face.get("accent", colors["accent"])
-        center = (x1 + x2) / 2
-
-        # Cover artwork region: a rounded thumbnail when one resolves, otherwise
-        # the pastel face carries a smaller monogram (no big empty square).
-        inset = TILE_COVER_INSET
-        cover_x = x1 + inset
-        cover_y = y1 + inset
-        cover_w = max(1, int((x2 - x1) - 2 * inset))
-        cover_h = min(TILE_COVER_HEIGHT, max(1, int((y2 - y1) - 2 * inset)))
+        cover_size = self.COVER
+        cover_x = x1 + 14
+        cover_y = y1 + (self.ROW_H - cover_size) // 2
         photo = None
-        cover_path = face.get("cover")
+        cover_path = row.get("cover")
         if cover_path:
-            photo = self._cover_photo(cover_path, cover_w, cover_h)
+            photo = self._cover_photo(cover_path, cover_size, cover_size)
         if photo is not None:
-            # Keep a hard reference for as long as this layout is displayed.
             self._cover_refs[index] = photo
             self.create_image(
                 cover_x,
                 cover_y,
                 image=photo,
                 anchor="nw",
-                tags=("tile-cover", f"cover{index}", f"idx{index}"),
+                tags=("row-cover", f"cover{index}", f"row{index}"),
             )
         else:
             self._cover_refs.pop(index, None)
-            self.create_text(
-                center,
-                cover_y + cover_h / 2,
-                text=face.get("monogram", "?"),
-                fill=accent,
-                font=ui_font(24, "bold"),
-                tags=("tile-mono", f"mono{index}", f"idx{index}"),
-            )
-
-        # Full-width platform colour bar hugging the bottom edge.
-        self.create_rectangle(
-            x1,
-            y2 - TILE_BAR_HEIGHT,
-            x2,
-            y2,
-            fill=accent,
-            outline="",
-            tags=("tile-bar", f"bar{index}", f"idx{index}"),
-        )
-
-        # Wrapped title directly under the artwork.
-        self.create_text(
-            center,
-            cover_y + cover_h + 2,
-            text=face.get("title", ""),
-            fill=colors["text"],
-            font=ui_font(11, "bold" if selected else "normal"),
-            width=max(1, int(x2 - x1) - 12),
-            anchor="n",
-            justify="center",
-            tags=("tile-title", f"title{index}", f"idx{index}"),
-        )
-        if face.get("subtitle"):
-            self.create_text(
-                center,
-                y2 - TILE_BAR_HEIGHT - 3,
-                text=face["subtitle"],
-                fill=colors["muted"],
-                font=ui_font(9),
-                width=max(1, int(x2 - x1) - 12),
-                anchor="s",
-                justify="center",
-                tags=("tile-sub", f"sub{index}", f"idx{index}"),
-            )
-
-        # Status pill overlay (top-left corner badge, drawn over the artwork).
-        pill = face.get("pill") or {}
-        label = pill.get("label", "")
-        if label:
-            pill_w = min(max(1, int(x2 - x1) - 16), 14 + 11 * len(label))
-            px1 = x1 + 8
-            px2 = px1 + pill_w
-            py1 = y1 + 8
-            py2 = py1 + 17
             self.create_polygon(
-                _rounded_points(px1, py1, px2, py2, (py2 - py1) / 2),
+                _rounded_points(
+                    cover_x,
+                    cover_y,
+                    cover_x + cover_size,
+                    cover_y + cover_size,
+                    self.COVER_RADIUS,
+                ),
                 smooth=True,
                 splinesteps=24,
-                fill=pill.get("bg", colors["surface_alt"]),
+                fill=colors["surface_alt"],
                 outline="",
-                tags=("tile-pill", f"pill{index}", f"idx{index}"),
-            )
-            self.create_text(
-                (px1 + px2) / 2,
-                (py1 + py2) / 2,
-                text=label,
-                fill=pill.get("fg", colors["muted"]),
-                font=ui_font(10, "bold"),
-                tags=("tile-pill-label", f"pilltext{index}", f"idx{index}"),
+                tags=("row-placeholder", f"ph{index}", f"row{index}"),
             )
 
-        # Starred overlay on the opposite corner.
-        if face.get("starred"):
+        text_x = cover_x + cover_size + 12
+        status_text = row.get("status_label", "")
+        status_x = x2 - 12
+        text_right = status_x - (76 if status_text else 0)
+        wrap = max(1, int(text_right - text_x))
+        subtitle = row.get("subtitle")
+        if subtitle:
             self.create_text(
-                x2 - 14,
-                y1 + 15,
-                text="★",
-                fill=colors["star"],
-                font=ui_font(13, "bold"),
-                tags=("tile-star", f"star{index}", f"idx{index}"),
+                text_x,
+                y1 + self.ROW_H * 0.34,
+                text=row.get("title", ""),
+                fill=colors["text"],
+                font=ui_font(13),
+                width=wrap,
+                anchor="w",
+                tags=("row-title", f"title{index}", f"row{index}"),
+            )
+            self.create_text(
+                text_x,
+                y1 + self.ROW_H * 0.72,
+                text=subtitle,
+                fill=colors["muted"],
+                font=ui_font(11),
+                width=wrap,
+                anchor="w",
+                tags=("row-sub", f"sub{index}", f"row{index}"),
+            )
+        else:
+            self.create_text(
+                text_x,
+                y1 + self.ROW_H / 2,
+                text=row.get("title", ""),
+                fill=colors["text"],
+                font=ui_font(13),
+                width=wrap,
+                anchor="w",
+                tags=("row-title", f"title{index}", f"row{index}"),
+            )
+        if status_text:
+            self.create_text(
+                status_x,
+                y1 + self.ROW_H / 2,
+                text=status_text,
+                fill=colors["muted"],
+                font=ui_font(12),
+                anchor="e",
+                tags=("row-status", f"status{index}", f"row{index}"),
             )
 
 
@@ -789,7 +766,6 @@ class VajSaveApp:
         self._watch_var = tk.BooleanVar(value=True)
         self._hide_unchanged_var = tk.BooleanVar(value=True)
         self._poll_interval_ms = 200
-        self._clock_interval_ms = 30000
         # Enough for the first paint to land before the opening scan starts.
         self._initial_select_delay_ms = 60
 
@@ -806,7 +782,6 @@ class VajSaveApp:
         self.refresh_saves_ui()
         self.refresh_stats()
         self._initial_select_job = self.root.after(self._initial_select_delay_ms, self._initial_auto_select)
-        self._clock_job = self.root.after(self._clock_interval_ms, self._tick_clock)
         if self._watch_var.get():
             self.state.start_watch()
         self._poll_job = self.root.after(self._poll_interval_ms, self._poll_events)
@@ -839,43 +814,34 @@ class VajSaveApp:
             pass
         style.configure("TFrame", background=BG)
         style.configure("TLabel", background=BG, foreground=TEXT, font=ui_font(13))
-        # Buttons/checkbuttons are drawn by ``CanvasButton``; only the inputs and
-        # scrollbars still rely on ttk chrome.
+        # Buttons/checkbuttons are drawn by ``CanvasButton``; only the inputs still
+        # rely on ttk chrome.
         style.configure("TEntry", fieldbackground=CARD, foreground=TEXT, insertcolor=TEXT, bordercolor=LINE, padding=6)
-        style.configure(
-            "Treeview",
-            background=CARD,
-            fieldbackground=CARD,
-            foreground=TEXT,
-            borderwidth=0,
-            rowheight=32,
-            font=ui_font(13),
-        )
-        style.configure("Treeview.Heading", background=SURFACE_ALT, foreground=MUTED, relief="flat", font=ui_font(12))
-        style.map("Treeview", background=[("selected", BLUE)], foreground=[("selected", ON_ACCENT)])
-        style.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
 
     def _create_widgets(self) -> None:
-        # Top status bar: app identity on the left, live clock + stats on the right.
-        topbar = tk.Frame(self.root, bg=SIDE, height=64)
+        # Top status bar: app identity on the left, backup stats on the right.
+        # No round monogram badge and no clock — just the product name.
+        topbar = tk.Frame(self.root, bg=SIDE)
         topbar.pack(fill=tk.X)
-        topbar.pack_propagate(False)
+        self.topbar = topbar
 
         brand = tk.Frame(topbar, bg=SIDE)
         brand.pack(side=tk.LEFT, padx=20, pady=12)
-        badge = tk.Canvas(brand, width=36, height=36, bg=SIDE, highlightthickness=0, bd=0)
-        badge.pack(side=tk.LEFT)
-        badge.create_oval(1, 1, 35, 35, fill=BLUE, outline="")
-        badge.create_text(18, 18, text="v", fill=ON_ACCENT, font=ui_font(16, "bold"))
+        self.brand_frame = brand
         titles = tk.Frame(brand, bg=SIDE)
-        titles.pack(side=tk.LEFT, padx=10)
+        titles.pack(side=tk.LEFT)
         tk.Label(titles, text="vaj-save", bg=SIDE, fg=TEXT, font=ui_font(17, "bold")).pack(anchor="w")
-        tk.Label(titles, text="把掌机存档备份下来，按版本管理", bg=SIDE, fg=MUTED, font=ui_font(11)).pack(anchor="w")
+        self.subtitle_label = tk.Label(
+            titles,
+            text="把掌机存档备份下来，按版本管理",
+            bg=SIDE,
+            fg=MUTED,
+            font=ui_font(11),
+        )
+        self.subtitle_label.pack(anchor="w")
 
         status_right = tk.Frame(topbar, bg=SIDE)
-        status_right.pack(side=tk.RIGHT, padx=20, pady=12)
-        self.clock_var = tk.StringVar(value=time.strftime("%H:%M"))
-        tk.Label(status_right, textvariable=self.clock_var, bg=SIDE, fg=TEXT, font=ui_font(16, "bold")).pack(anchor="e")
+        status_right.pack(side=tk.RIGHT, padx=20)
         self.stats_var = tk.StringVar(value="")
         tk.Label(status_right, textvariable=self.stats_var, bg=SIDE, fg=MUTED, font=ui_font(11)).pack(anchor="e")
 
@@ -901,8 +867,8 @@ class VajSaveApp:
             left,
             bg=CARD,
             fg=TEXT,
-            selectbackground=BLUE,
-            selectforeground=ON_ACCENT,
+            selectbackground=SELECTED_LIST,
+            selectforeground=TEXT,
             font=ui_font(12),
             relief="flat",
             highlightthickness=0,
@@ -914,28 +880,31 @@ class VajSaveApp:
         mid = tk.Frame(body, bg=BG)
         mid.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=14)
         tk.Label(mid, text="游戏", bg=BG, fg=MUTED, font=ui_font(12)).pack(anchor="w", pady=(0, 8))
-        grid_shell = tk.Frame(mid, bg=BG)
-        grid_shell.pack(fill=tk.BOTH, expand=True)
-        self.save_list = SaveTileGrid(
-            grid_shell,
+        list_shell = tk.Frame(mid, bg=BG)
+        list_shell.pack(fill=tk.BOTH, expand=True)
+        self.save_list = SaveList(
+            list_shell,
             on_select=self.on_save_selected,
-            on_activate=self.on_tile_activated,
+            on_activate=self.on_row_activated,
         )
-        save_scroll = ttk.Scrollbar(grid_shell, orient=tk.VERTICAL, command=self.save_list.yview)
+        save_scroll = ttk.Scrollbar(list_shell, orient=tk.VERTICAL, command=self.save_list.yview)
         self.save_list.configure(yscrollcommand=save_scroll.set)
         save_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.save_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        right = tk.Frame(body, bg=SIDE, width=340)
+        # Right inspector: a compact header (title + three small actions), a
+        # definition list, a versions list that fills the remaining height, and a
+        # pinned note entry at the bottom.
+        right = tk.Frame(body, bg=SIDE, width=360)
         right.pack(side=tk.LEFT, fill=tk.Y)
         right.pack_propagate(False)
-        tk.Label(right, text="详情", bg=SIDE, fg=MUTED, font=ui_font(12)).pack(anchor="w", padx=16, pady=(16, 8))
+        self.detail_panel = right
 
-        # Action buttons are packed to the BOTTOM first so a long detail text or
-        # a tiny window can never push them off-screen; the scrollable detail
-        # region below then fills whatever space is left.
-        actions = tk.Frame(right, bg=SIDE)
-        actions.pack(side=tk.BOTTOM, fill=tk.X, padx=12, pady=16)
+        header = tk.Frame(right, bg=SIDE)
+        header.pack(fill=tk.X, padx=16, pady=(16, 8))
+        tk.Label(header, text="详情", bg=SIDE, fg=MUTED, font=ui_font(12)).pack(side=tk.LEFT)
+        actions = tk.Frame(header, bg=SIDE)
+        actions.pack(side=tk.RIGHT)
         self.actions_frame = actions
         self._action_buttons: List[CanvasButton] = []
 
@@ -947,76 +916,97 @@ class VajSaveApp:
                 variant="accent" if accent else "neutral",
                 height=CanvasButton.ACTION_HEIGHT,
             )
-            button.pack(fill=tk.X, pady=3)
+            button.pack(side=tk.LEFT, padx=(6, 0))
             self._action_buttons.append(button)
             return button
 
-        _action_button("备份", self.on_save_local_clicked, accent=True)
-        _action_button("备份所选", self.on_save_selected_clicked)
-        _action_button("备份当前列表", self.on_save_visible_clicked)
-        _action_button("恢复这个版本…", self.on_restore_clicked)
+        _action_button("备份", self.on_backup_clicked, accent=True)
+        _action_button("恢复", self.on_restore_clicked)
         _action_button("导出 ZIP", self.on_export_zip_clicked)
-        _action_button("收藏", self.on_star_clicked)
-        finder = "在访达中显示" if sys.platform == "darwin" else "在文件管理器中显示"
-        _action_button(finder, self.on_show_in_finder_clicked)
-        _action_button("只看收藏", self.on_starred_filter)
 
-        # Vertically scrollable detail region (detail text + versions + note).
-        scroll_shell = tk.Frame(right, bg=SIDE)
-        scroll_shell.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        self.detail_canvas = tk.Canvas(scroll_shell, bg=SIDE, highlightthickness=0, bd=0)
-        detail_scroll = ttk.Scrollbar(scroll_shell, orient=tk.VERTICAL, command=self.detail_canvas.yview)
-        self.detail_canvas.configure(yscrollcommand=detail_scroll.set)
-        detail_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self.detail_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        detail_inner = tk.Frame(self.detail_canvas, bg=SIDE)
-        self.detail_inner = detail_inner
-        self._detail_window = self.detail_canvas.create_window((0, 0), window=detail_inner, anchor="nw")
-
-        def _on_inner_configure(_event=None):
-            self.detail_canvas.configure(scrollregion=self.detail_canvas.bbox("all"))
-
-        def _on_canvas_configure(event):
-            self.detail_canvas.itemconfigure(self._detail_window, width=event.width)
-
-        detail_inner.bind("<Configure>", _on_inner_configure)
-        self.detail_canvas.bind("<Configure>", _on_canvas_configure)
-
+        detail = tk.Frame(right, bg=SIDE)
+        detail.pack(fill=tk.X, padx=16)
         self.detail_name = tk.StringVar(value="未选择游戏")
-        self.detail_meta = tk.StringVar(value="从中间列表点选一条存档")
-        tk.Label(detail_inner, textvariable=self.detail_name, bg=SIDE, fg=TEXT, font=ui_font(16, "bold"), wraplength=280, justify="left").pack(anchor="w", padx=16)
-        tk.Label(detail_inner, textvariable=self.detail_meta, bg=SIDE, fg=MUTED, font=ui_font(12), wraplength=280, justify="left").pack(anchor="w", padx=16, pady=(4, 12))
+        tk.Label(
+            detail,
+            textvariable=self.detail_name,
+            bg=SIDE,
+            fg=TEXT,
+            font=ui_font(15, "bold"),
+            wraplength=320,
+            justify="left",
+            anchor="w",
+        ).pack(fill=tk.X, pady=(0, 8))
 
-        tk.Label(detail_inner, text="版本", bg=SIDE, fg=MUTED, font=ui_font(12)).pack(anchor="w", padx=16, pady=(4, 6))
+        self.detail_vars: Dict[str, tk.StringVar] = {}
+        fields = tk.Frame(detail, bg=SIDE)
+        fields.pack(fill=tk.X)
+        fields.columnconfigure(0, minsize=64)
+        fields.columnconfigure(1, weight=1)
+        for row_index, (label, key) in enumerate(
+            (
+                ("机种", "platform"),
+                ("状态", "status"),
+                ("卡上时间", "source_mtime"),
+                ("上次备份", "last_backup"),
+                ("路径", "path"),
+            )
+        ):
+            tk.Label(fields, text=label, bg=SIDE, fg=MUTED, font=ui_font(11), anchor="nw").grid(
+                row=row_index, column=0, sticky="nw", pady=1
+            )
+            var = tk.StringVar(value="—")
+            self.detail_vars[key] = var
+            tk.Label(
+                fields,
+                textvariable=var,
+                bg=SIDE,
+                fg=TEXT,
+                font=ui_font(12),
+                wraplength=270,
+                justify="left",
+                anchor="w",
+            ).grid(row=row_index, column=1, sticky="w", pady=1)
+        self.detail_hint_var = tk.StringVar(value="")
+        tk.Label(
+            detail,
+            textvariable=self.detail_hint_var,
+            bg=SIDE,
+            fg=ORANGE,
+            font=ui_font(11),
+            wraplength=320,
+            justify="left",
+            anchor="w",
+        ).pack(fill=tk.X, pady=(6, 0))
+
+        note_frame = tk.Frame(right, bg=SIDE)
+        note_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=16, pady=(0, 16))
+        tk.Label(note_frame, text="备注", bg=SIDE, fg=MUTED, font=ui_font(12)).pack(anchor="w", pady=(0, 6))
+        self.note_var = tk.StringVar()
+        note = ttk.Entry(note_frame, textvariable=self.note_var)
+        note.pack(fill=tk.X)
+        note.bind("<FocusOut>", self.on_note_commit)
+        note.bind("<Return>", self.on_note_commit)
+
+        # Versions fill the remaining height between the definition list and the note.
+        versions = tk.Frame(right, bg=SIDE)
+        versions.pack(fill=tk.BOTH, expand=True, padx=16, pady=(12, 6))
+        self.versions_frame = versions
+        tk.Label(versions, text="版本", bg=SIDE, fg=MUTED, font=ui_font(12)).pack(anchor="w", pady=(0, 6))
         self.version_list = tk.Listbox(
-            detail_inner,
+            versions,
             bg=CARD,
             fg=TEXT,
-            selectbackground=BLUE,
-            selectforeground=ON_ACCENT,
+            selectbackground=SELECTED_LIST,
+            selectforeground=TEXT,
             font=ui_font(12),
             relief="flat",
             highlightthickness=0,
             bd=0,
             activestyle="none",
-            height=8,
+            height=4,
         )
-        self.version_list.pack(fill=tk.X, padx=12)
-
-        tk.Label(detail_inner, text="备注", bg=SIDE, fg=MUTED, font=ui_font(12)).pack(anchor="w", padx=16, pady=(12, 6))
-        self.note_var = tk.StringVar()
-        note = ttk.Entry(detail_inner, textvariable=self.note_var)
-        note.pack(fill=tk.X, padx=12, pady=(0, 12))
-        note.bind("<FocusOut>", self.on_note_commit)
-        note.bind("<Return>", self.on_note_commit)
-
-        self._bind_detail_scroll(self.detail_canvas)
-        self._bind_detail_scroll(detail_inner)
-
-        self.path_entry_var = tk.StringVar(value="")
-        path = ttk.Entry(self.root, textvariable=self.path_entry_var)
-        path.pack(fill=tk.X, padx=24, pady=(0, 8))
+        self.version_list.pack(fill=tk.BOTH, expand=True)
 
         # Bottom system bar: quick actions + monitoring toggles.
         bottombar = tk.Frame(self.root, bg=SIDE)
@@ -1024,13 +1014,12 @@ class VajSaveApp:
         self._bottombar = bottombar
         self._bottom_buttons: List[CanvasButton] = []
 
-        def _bar_button(text: str, command, padx, *, dot: Optional[str] = None) -> CanvasButton:
+        def _bar_button(text: str, command, padx) -> CanvasButton:
             button = CanvasButton(
                 bottombar,
                 text=text,
                 command=command,
                 height=CanvasButton.BOTTOM_HEIGHT,
-                dot=dot,
             )
             button.pack(side=tk.LEFT, padx=padx, pady=8)
             self._bottom_buttons.append(button)
@@ -1040,12 +1029,10 @@ class VajSaveApp:
         _bar_button("打开文件夹", self.on_open_folder_clicked, (6, 6))
         _bar_button("打开本地库", self.on_open_library_clicked, (6, 6))
         _bar_button("设置", self.on_settings_clicked, (6, 6))
-        self._watch_button = _bar_button("监听插拔", self.on_watch_button_clicked, (12, 0), dot=BLUE)
+        self._watch_button = _bar_button("监听插拔", self.on_watch_button_clicked, (12, 0))
         self._watch_button.set_selected(bool(self._watch_var.get()))
         self._hide_unchanged_var.set(bool(self.state.hide_unchanged))
-        self._hide_unchanged_button = _bar_button(
-            "隐藏已备份", self.on_hide_unchanged_button_clicked, (12, 0), dot=GREEN
-        )
+        self._hide_unchanged_button = _bar_button("隐藏已备份", self.on_hide_unchanged_button_clicked, (12, 0))
         self._hide_unchanged_button.set_selected(bool(self._hide_unchanged_var.get()))
 
         statusrow = tk.Frame(self.root, bg=BG)
@@ -1107,10 +1094,6 @@ class VajSaveApp:
         self.version_list.bind("<<ListboxSelect>>", self.on_version_selected)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
-    def _tick_clock(self) -> None:
-        self.clock_var.set(time.strftime("%H:%M"))
-        self._clock_job = self.root.after(self._clock_interval_ms, self._tick_clock)
-
     def on_platform_clicked(self, platform: str) -> None:
         self.state.set_platform_filter(platform)
         self.refresh_platform_ui()
@@ -1119,11 +1102,6 @@ class VajSaveApp:
     def on_search(self, _event=None) -> None:
         self.state.set_search_query(self.search_var.get())
         self.refresh_saves_ui()
-
-    def on_starred_filter(self) -> None:
-        self.state.toggle_starred_only()
-        self.refresh_saves_ui()
-        self.update_status("正在只看收藏" if self.state.starred_only else "已显示全部游戏")
 
     def on_hide_unchanged_button_clicked(self) -> None:
         """CanvasButton for "隐藏已备份": flip the flag, then run the shared handler."""
@@ -1191,43 +1169,42 @@ class VajSaveApp:
         self.refresh_platform_ui()
         self.refresh_saves_ui()
 
+    def _clear_detail(self) -> None:
+        self.detail_name.set("未选择游戏")
+        for var in self.detail_vars.values():
+            var.set("—")
+        self.detail_hint_var.set("")
+        self.note_var.set("")
+
     def on_save_selected(self, event=None) -> None:
         selection = self.save_list.curselection()
         if not selection or selection[-1] >= len(self._saves_index):
             self._selected_save = None
-            self.path_entry_var.set("")
-            self.detail_name.set("未选择游戏")
-            self.detail_meta.set("从中间列表点选一条存档")
+            self._clear_detail()
             self.refresh_versions_ui()
             return
         # Primary detail follows the active (last) selection in multi-select.
         index = selection[-1]
         save = self._saves_index[index]
         self._selected_save = save
-        self.path_entry_var.set(save.path)
-        star = "已收藏 · " if self.state.is_starred(save) else ""
         status = self.state.save_status(save)
-        status_label = BACKUP_STATUS_LABELS.get(status.status, status.status)
-        lines = [
-            f"{star}{PLATFORM_LABELS.get(save.platform, save.platform)}  {save.title_id or ''}  {save.slot or ''}".rstrip(),
-            f"状态: {status_label}",
-        ]
-        if status.source_mtime:
-            lines.append(f"卡上时间: {status.source_mtime}")
-        if status.last_backup_at:
-            lines.append(f"上次备份: {status.last_backup_at}")
-        if status.mtime_stale:
-            lines.append("卡上时间早于上次备份（可能是回档或拷贝）")
-        self.detail_name.set(save.display_name)
-        self.detail_meta.set("\n".join(lines))
+        self.detail_name.set(save.display_name or save.path)
+        self.detail_vars["platform"].set(PLATFORM_LABELS.get(save.platform, save.platform))
+        self.detail_vars["status"].set(status_label(status))
+        self.detail_vars["source_mtime"].set(status.source_mtime or "—")
+        self.detail_vars["last_backup"].set(status.last_backup_at or "—")
+        self.detail_vars["path"].set(save.path)
+        self.detail_hint_var.set(
+            "卡上时间早于上次备份（可能是回档或拷贝）" if status.mtime_stale else ""
+        )
         self.note_var.set(self.state.game_note(save))
         self.refresh_versions_ui()
 
-    def on_tile_activated(self, index: int) -> None:
-        """Double-clicking a tile runs the primary backup action for that save."""
+    def on_row_activated(self, index: int) -> None:
+        """Double-clicking a row runs the primary backup action."""
         if 0 <= index < len(self._saves_index):
             self._selected_save = self._saves_index[index]
-        self.on_save_local_clicked()
+        self.on_backup_clicked()
 
     def on_version_selected(self, event=None) -> None:
         selection = self.version_list.curselection()
@@ -1236,33 +1213,6 @@ class VajSaveApp:
             return
         self._selected_snapshot = self._versions_index[selection[0]]
 
-    def on_show_in_finder_clicked(self) -> None:
-        if not self._selected_save:
-            self.update_warning("先选一条存档")
-            return
-        ok, msg = open_in_file_manager(self._selected_save.path)
-        self.update_status(msg if ok else self.state.status_text)
-        self.update_warning("" if ok else msg)
-
-    def on_copy_path_clicked(self) -> None:
-        if not self._selected_save:
-            self.update_warning("先选一条存档")
-            return
-        self.root.clipboard_clear()
-        self.root.clipboard_append(self._selected_save.path)
-        self.update_status("路径已复制")
-
-    def on_save_local_clicked(self) -> None:
-        if not self._selected_save:
-            self.update_warning("先选一条存档")
-            return
-        dest = self.state.import_save(self._selected_save)
-        self.update_status(self.state.status_text)
-        self.refresh_saves_ui()
-        self.refresh_versions_ui()
-        self.refresh_stats()
-        self.update_warning("" if dest else "备份失败")
-
     def _selected_saves(self) -> List[SaveEntry]:
         selected: List[SaveEntry] = []
         for index in self.save_list.curselection():
@@ -1270,12 +1220,11 @@ class VajSaveApp:
                 selected.append(self._saves_index[index])
         return selected
 
-    def on_save_selected_clicked(self) -> None:
+    def on_backup_clicked(self) -> None:
+        """Back up exactly the rows that are currently selected."""
         chosen = self._selected_saves()
-        if not chosen and self._selected_save is not None:
-            chosen = [self._selected_save]
         if not chosen:
-            self.update_warning("先选一条或多条存档")
+            self.update_warning("先选择要备份的存档")
             return
         copied = self.state.import_selected_saves(chosen)
         self.update_status(self.state.status_text)
@@ -1283,14 +1232,6 @@ class VajSaveApp:
         self.refresh_versions_ui()
         self.refresh_stats()
         self.update_warning("" if copied else "备份失败")
-
-    def on_save_visible_clicked(self) -> None:
-        copied = self.state.import_visible_saves()
-        self.update_status(self.state.status_text)
-        self.refresh_saves_ui()
-        self.refresh_versions_ui()
-        self.refresh_stats()
-        self.update_warning("" if copied else "当前列表没有可备份的存档")
 
     def on_restore_clicked(self) -> None:
         if not self._selected_snapshot:
@@ -1313,15 +1254,6 @@ class VajSaveApp:
         exported = self.state.export_version_zip(self._selected_snapshot, dest)
         self.update_status(self.state.status_text)
         self.update_warning("" if exported else "导出失败")
-
-    def on_star_clicked(self) -> None:
-        if not self._selected_save:
-            self.update_warning("先选一条存档")
-            return
-        self.state.toggle_star(self._selected_save)
-        self.update_status(self.state.status_text)
-        self.refresh_saves_ui()
-        self.refresh_stats()
 
     def on_note_commit(self, _event=None) -> None:
         if not self._selected_save:
@@ -1383,42 +1315,6 @@ class VajSaveApp:
         dialog.grab_set()
         entry.focus_set()
 
-    def _bind_detail_scroll(self, widget) -> None:
-        """Route wheel events in the detail region to the surrounding canvas.
-
-        Widgets that already scroll themselves (the versions Listbox, the note
-        Entry) keep their native wheel handling: an instance binding returning
-        "break" would shadow Tk's class binding and make the outer canvas move
-        instead of the widget under the pointer.
-        """
-        if not self._widget_handles_wheel(widget):
-            widget.bind("<MouseWheel>", self._on_detail_mousewheel)
-            widget.bind("<Button-4>", self._on_detail_mousewheel_linux)
-            widget.bind("<Button-5>", self._on_detail_mousewheel_linux)
-        for child in widget.winfo_children():
-            self._bind_detail_scroll(child)
-
-    @staticmethod
-    def _widget_handles_wheel(widget) -> bool:
-        """True for widgets whose class binding already implements wheel scrolling."""
-        wheel_aware = (tk.Listbox, tk.Text, tk.Entry, tk.Spinbox, ttk.Entry, ttk.Combobox)
-        spinbox = getattr(ttk, "Spinbox", None)
-        if spinbox is not None:
-            wheel_aware = wheel_aware + (spinbox,)
-        return isinstance(widget, wheel_aware)
-
-    def _on_detail_mousewheel(self, event) -> str:
-        if sys.platform == "darwin":
-            delta = -1 * event.delta
-        else:
-            delta = -1 * int(event.delta / 120)
-        self.detail_canvas.yview_scroll(delta, "units")
-        return "break"
-
-    def _on_detail_mousewheel_linux(self, event) -> str:
-        self.detail_canvas.yview_scroll(-1 if event.num == 4 else 1, "units")
-        return "break"
-
     def _poll_events(self) -> None:
         drained = self.state.drain_events()
         if drained > 0:
@@ -1451,26 +1347,24 @@ class VajSaveApp:
         previous = self._selected_save
         self._selected_save = None
         self._saves_index = []
-        faces: List[dict] = []
+        rows: List[dict] = []
         restore_index: Optional[int] = None
         for _group_name, saves in self.state.grouped_saves():
             for save in saves:
                 status = self.state.save_status(save)
-                face = tile_face(save, status, starred=self.state.is_starred(save))
-                face["cover"] = resolve_cover(save, self.state.library_root)
-                faces.append(face)
+                row = save_row(save, status, starred=self.state.is_starred(save))
+                row["cover"] = resolve_cover(save, self.state.library_root)
+                rows.append(row)
                 self._saves_index.append(save)
                 if previous and previous.path == save.path:
                     restore_index = len(self._saves_index) - 1
-        self.save_list.set_tiles(faces)
+        self.save_list.set_rows(rows)
         if restore_index is not None:
             self._selected_save = self._saves_index[restore_index]
             self.save_list.select_index(restore_index, notify=False)
             self.on_save_selected()
         else:
-            self.path_entry_var.set("")
-            self.detail_name.set("未选择游戏")
-            self.detail_meta.set("从中间列表点选一条存档")
+            self._clear_detail()
             self.refresh_versions_ui()
         self.update_status(self.state.status_text)
 
@@ -1505,7 +1399,7 @@ class VajSaveApp:
         single shared Tk root (destroying and recreating Tk in one process is not
         reliable on macOS and hangs the event loop).
         """
-        for job_name in ("_poll_job", "_initial_select_job", "_clock_job"):
+        for job_name in ("_poll_job", "_initial_select_job"):
             job = getattr(self, job_name, None)
             if job:
                 try:

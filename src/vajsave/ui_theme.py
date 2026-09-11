@@ -1,21 +1,20 @@
 """Nintendo Switch HOME "Basic White" design tokens and pure layout helpers.
 
 This module is intentionally free of Tkinter imports so it can be unit tested
-without a display. ``app_ui`` consumes these tokens/helpers to render the white
-card-tile HOME menu.
+without a display. ``app_ui`` consumes these tokens/helpers to render the quiet
+single-column save list and the right-hand inspector.
 """
 
 from __future__ import annotations
 
-import re
 from typing import Any, Dict, Optional
 
 # --- tokens -----------------------------------------------------------------------
 
 # Switch Basic White surface ramp: light gray page > soft panel > subtle alt,
-# white cards on top, near-black ink, system blue accent with a brighter ring.
-# The functional colours stay on the Apple system palette (`success`/`warning`/
-# `danger`) so status pills read the same as the rest of the OS chrome.
+# white rows, near-black ink, system blue accent. The functional colours stay on
+# the Apple system palette (`success`/`warning`/`danger`) so text status reads
+# the same as the rest of the OS chrome.
 SWITCH: Dict[str, str] = {
     "bg": "#ebebeb",
     "surface": "#f2f2f2",
@@ -28,9 +27,6 @@ SWITCH: Dict[str, str] = {
     "hover": "#e2e2e2",
     "accent": "#0a84ff",
     "accent_hover": "#409cff",
-    "ring": "#00a2ff",
-    "ring_tint": "#d6ecff",
-    "star": "#ffcc00",
     "on_accent": "#ffffff",
     "success": "#30d158",
     "warning": "#ff9f0a",
@@ -41,9 +37,7 @@ SWITCH: Dict[str, str] = {
 # reaching through the dict every time.
 HOVER = SWITCH["hover"]
 LINE_STRONG = SWITCH["line_strong"]
-STAR = SWITCH["star"]
 ACCENT_HOVER = SWITCH["accent_hover"]
-RING_TINT = SWITCH["ring_tint"]
 
 # Canonical handheld platform identity colors (shared with DESIGN.md).
 PLATFORM_COLORS: Dict[str, str] = {
@@ -56,38 +50,18 @@ PLATFORM_COLORS: Dict[str, str] = {
     "gba": "#30d158",
 }
 
-DEFAULT_TILE_WIDTH = 156
-DEFAULT_TILE_GAP = 14
+# Single-column save-list row metrics. Rows are deliberately compact and flat:
+# a small platform pip, an optional tiny cover square, a title and a text status.
+ROW_HEIGHT = 44
+ROW_COVER = 32
+ROW_COVER_RADIUS = 6
+ROW_PIP_WIDTH = 3
 
-# Compact cover-tile metrics used by ``SaveTileGrid`` and the design docs. These
-# are deliberately smaller than ``DEFAULT_TILE_WIDTH`` (kept for back-compat
-# with ``grid_columns`` callers) so the middle column fits 4 columns x 3 rows at
-# the default 1180x740 window instead of the old 2x2 square tiles.
-TILE_WIDTH = 116
-TILE_HEIGHT = 124
-TILE_GAP = DEFAULT_TILE_GAP
-TILE_RADIUS = 14
-TILE_BAR_HEIGHT = 4
-
-# Cover artwork geometry inside a tile (rounded RGBA thumbnail via covers.py).
-TILE_COVER_INSET = 6
-TILE_COVER_HEIGHT = 66
-TILE_COVER_RADIUS = 12
-
-# Selected save tiles grow by ``TILE_SELECT_SCALE`` px and wear a ``TILE_RING_WIDTH``
-# px selection ring sitting ``TILE_RING_GAP`` px outside the tile.
-TILE_SELECT_SCALE = 8
-TILE_RING_GAP = 6
-TILE_RING_WIDTH = 3
-
-_STATUS_PILL_SPECS: Dict[str, Dict[str, str]] = {
-    "new": {"label": "新", "fg": SWITCH["accent"]},
-    "changed": {"label": "有变化", "fg": SWITCH["warning"]},
-    "unchanged": {"label": "已备份", "fg": SWITCH["success"]},
+STATUS_LABELS: Dict[str, str] = {
+    "new": "新",
+    "changed": "有变化",
+    "unchanged": "已备份",
 }
-
-_CJK_MIN_CODEPOINT = 0x2E80
-_HEX_TOKEN = re.compile(r"[0-9A-Za-z]+")
 
 
 # --- color helpers ----------------------------------------------------------------
@@ -133,19 +107,6 @@ def darken(color: str, amount: float = 0.1) -> str:
     return mix(color, "#000000", amount)
 
 
-def ring_size(width: float, height: Optional[float] = None, *, grow: float = TILE_SELECT_SCALE) -> tuple[float, float]:
-    """Size of a selected tile after it grows by ``grow`` px overall.
-
-    ``width``/``height`` may also be passed as a single ``(width, height)`` box.
-    """
-    if height is None:
-        if isinstance(width, (tuple, list)):
-            width, height = width
-        else:
-            height = width
-    return float(width) + grow, float(height) + grow
-
-
 def mix(color_a: str, color_b: str, t: float) -> str:
     """Linear blend between two hex colors. ``t=0`` -> ``color_a``, ``t=1`` -> ``color_b``.
 
@@ -164,80 +125,22 @@ def mix(color_a: str, color_b: str, t: float) -> str:
     return "#{:02x}{:02x}{:02x}".format(_blend(ar, br), _blend(ag, bg), _blend(ab, bb))
 
 
-# --- layout helpers ---------------------------------------------------------------
+# --- row helpers ------------------------------------------------------------------
 
 
-def grid_columns(
-    width: float,
-    tile_width: int = DEFAULT_TILE_WIDTH,
-    gap: int = DEFAULT_TILE_GAP,
-) -> int:
-    """How many ``tile_width`` tiles (plus ``gap``) fit across ``width`` px.
-
-    Always returns at least 1 so an unlaid-out canvas still renders something.
-    """
-    try:
-        available = int(width)
-    except (TypeError, ValueError):
-        return 1
-    step = max(1, int(tile_width) + int(gap))
-    return max(1, (available + int(gap)) // step)
+def status_label(status: Any) -> str:
+    """Human-readable status text for a backup status string or status object."""
+    key = getattr(status, "status", status) or "new"
+    return STATUS_LABELS.get(key, key)
 
 
-# --- text helpers -----------------------------------------------------------------
-
-
-def monogram(text: Optional[str]) -> str:
-    """A short glyph used as the tile face badge.
-
-    CJK titles keep their leading ideograph; latin titles use the initials of up
-    to two words (``Persona 4`` -> ``P4``). Empty/unusable input becomes ``?``.
-    """
-    cleaned = (text or "").strip()
-    if not cleaned:
-        return "?"
-    if ord(cleaned[0]) >= _CJK_MIN_CODEPOINT:
-        return cleaned[0]
-    tokens = _HEX_TOKEN.findall(cleaned)
-    if not tokens:
-        return "?"
-    letters = tokens[0][0]
-    if len(tokens) > 1:
-        letters += tokens[1][0]
-    return letters.upper()
-
-
-# --- tile face helpers ------------------------------------------------------------
-
-
-def status_pill(status: Optional[str]) -> Dict[str, str]:
-    """Foreground/background/label for a backup status pill.
-
-    Unknown statuses fall back to a muted grey pill labelled with the raw status.
-    """
-    spec = _STATUS_PILL_SPECS.get(status)
-    if spec is None:
-        label = status if status else "未知"
-        return {
-            "key": status or "unknown",
-            "label": label,
-            "fg": SWITCH["muted"],
-            "bg": SWITCH["surface_alt"],
-        }
-    return {
-        "key": status,
-        "label": spec["label"],
-        "fg": spec["fg"],
-        "bg": mix(spec["fg"], SWITCH["card"], 0.86),
-    }
-
-
-def tile_face(entry: Any, status: Any, *, starred: bool = False) -> Dict[str, Any]:
-    """Describe one save tile.
+def save_row(entry: Any, status: Any, *, starred: bool = False) -> Dict[str, Any]:
+    """Describe one row of the single-column save list.
 
     ``status`` may be a status string or any object exposing a ``.status``
     attribute (e.g. ``library.SaveBackupStatus``), keeping this helper pure and
-    independent of the state layer.
+    independent of the state layer. The row intentionally carries only plain
+    text data — no pastel face, monogram, pill or geometry.
     """
     status_key = getattr(status, "status", status) or "new"
     title = entry.display_name or entry.path
@@ -246,12 +149,9 @@ def tile_face(entry: Any, status: Any, *, starred: bool = False) -> Dict[str, An
     return {
         "title": title,
         "subtitle": " · ".join(subtitle_bits),
-        "monogram": monogram(entry.display_name),
-        "accent": accent,
-        # Pastel platform tint used as the tile face (never the plain white card).
-        "face": mix(accent, SWITCH["card"], 0.86),
         "platform": entry.platform,
+        "accent": accent,
         "status": status_key,
-        "pill": status_pill(status_key),
+        "status_label": STATUS_LABELS.get(status_key, status_key),
         "starred": bool(starred),
     }

@@ -485,8 +485,6 @@ def test_build_app_structure(tk_root):
         assert app.state == state
         app.on_refresh_clicked()
         app.on_watch_toggle()
-        app.on_show_in_finder_clicked()
-        app.on_copy_path_clicked()
     finally:
         # Share the module Tk root instead of destroying it: recreating Tk in the
         # same process is what hung the event loop on macOS.
@@ -920,9 +918,10 @@ def test_app_ui_detail_scroll_and_volume_index(tk_root, tmp_path: Path, psp_sfo_
     app = build_app(state=state, root=tk_root)
     try:
         assert hasattr(app, "on_settings_clicked")
-        # detail region is a scrollable canvas; actions frame is pinned to bottom
-        assert app.detail_canvas is not None
-        assert str(app.actions_frame.pack_info().get("side")) == "bottom"
+        # The right panel is the inspector: action buttons sit in its header and
+        # the versions Listbox fills the remaining height.
+        assert app.actions_frame is not None
+        assert str(app.versions_frame.pack_info().get("expand")).lower() in ("1", "true")
 
         assert len(app._volumes_index) == 1
         tk_root.update_idletasks()
@@ -931,12 +930,9 @@ def test_app_ui_detail_scroll_and_volume_index(tk_root, tmp_path: Path, psp_sfo_
         app.on_volume_selected()
         assert state.current_mount == vol_dir
 
-        # The versions Listbox scrolls itself: wheel events must not be hijacked by
-        # the surrounding detail canvas (an instance binding would return "break").
+        # The versions Listbox keeps its native wheel scrolling.
         assert app.version_list.bind("<MouseWheel>") == ""
         assert app.version_list.bind("<Button-4>") == ""
-        # Non-scrolling surfaces in the detail region do forward the wheel to it.
-        assert "_on_detail_mousewheel" in app.detail_inner.bind("<MouseWheel>")
     finally:
         _dispose_app(app, tk_root)
 

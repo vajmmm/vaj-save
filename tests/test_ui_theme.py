@@ -1,8 +1,8 @@
 """Unit tests for the pure helpers in ``vajsave.ui_theme``.
 
-These cover the Switch "Basic White" token set plus the geometry/monogram/status
-helpers that the Canvas tile grid relies on. Everything here is display-free so
-it runs anywhere, even without a Tk display.
+These cover the Switch "Basic White" token set plus the row-data helper the
+single-column save list relies on. Everything here is display-free so it runs
+anywhere, even without a Tk display.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ def test_switch_tokens_are_basic_white():
     assert tokens["card"] == "#ffffff"
     assert tokens["text"] == "#2d2d2d"
     assert tokens["accent"] == "#0a84ff"
-    assert tokens["ring"] == "#00a2ff"
     # No leftover Console Dark surfaces may remain in the main palette.
     assert {"#1c1c1e", "#2c2c2e", "#3a3a3c"}.isdisjoint(set(tokens.values()))
 
@@ -41,21 +40,27 @@ def test_switch_functional_tokens_match_spec():
     assert tokens["success"] == "#30d158"
     assert tokens["warning"] == "#ff9f0a"
     assert tokens["danger"] == "#ff453a"
-    assert tokens["ring"] == "#00a2ff"
-    # The completed Basic White spec adds these interaction tokens.
-    for key in ("hover", "line_strong", "star", "accent_hover", "ring_tint"):
+    for key in ("hover", "line_strong", "accent_hover"):
         value = tokens[key]
         assert value.startswith("#") and len(value) == 7
 
 
 def test_switch_module_level_tokens_exist():
-    for name in ("HOVER", "LINE_STRONG", "STAR", "ACCENT_HOVER", "RING_TINT"):
+    for name in ("HOVER", "LINE_STRONG", "ACCENT_HOVER"):
         value = getattr(ui_theme, name)
         assert value.startswith("#") and len(value) == 7
 
 
 def test_switch_platform_color_is_joycon_red():
     assert ui_theme.PLATFORM_COLORS["switch"] == "#ff3c28"
+
+
+def test_tile_and_pill_tokens_are_gone():
+    # The quiet list intentionally drops the tile/star/ring vocabulary.
+    for name in ("TILE_WIDTH", "TILE_HEIGHT", "TILE_RADIUS", "TILE_GAP", "TILE_BAR_HEIGHT"):
+        assert not hasattr(ui_theme, name)
+    assert "star" not in ui_theme.SWITCH
+    assert "ring" not in ui_theme.SWITCH
 
 
 # --- color conversion helpers -----------------------------------------------
@@ -77,14 +82,6 @@ def test_lighten_darken_move_toward_white_and_black():
     assert ui_theme.lighten("#000000", 0.0) == "#000000"
     assert ui_theme.darken("#ffffff", 0.0) == "#ffffff"
     assert ui_theme.lighten("#0a84ff", 0.5) != "#0a84ff"
-
-
-def test_ring_size_grows_the_tile():
-    width, height = ui_theme.ring_size(246, 246)
-    assert width > 246 and height > 246
-    # The helper also accepts a box tuple or a single square dimension.
-    assert ui_theme.ring_size((246, 246)) == (width, height)
-    assert ui_theme.ring_size(246) == (width, width)
 
 
 # --- mix --------------------------------------------------------------------
@@ -110,66 +107,38 @@ def test_mix_rejects_invalid_color():
         ui_theme.mix("#zzzzzz", "#000000", 0.5)
 
 
-# --- grid_columns -----------------------------------------------------------
+# --- status labels ----------------------------------------------------------
 
 
-def test_grid_columns_fits_and_never_zeroes():
-    assert ui_theme.grid_columns(640) == 3
-    assert ui_theme.grid_columns(2000) == 11
-    assert ui_theme.grid_columns(156) == 1
-    assert ui_theme.grid_columns(326) == 2
-    assert ui_theme.grid_columns(0) == 1
-    assert ui_theme.grid_columns(-50) == 1
-    assert ui_theme.grid_columns(None) == 1
+def test_status_labels_cover_known_states_and_degrade():
+    assert ui_theme.status_label("new") == "新"
+    assert ui_theme.status_label("changed") == "有变化"
+    assert ui_theme.status_label("unchanged") == "已备份"
+    assert ui_theme.status_label("mystery") == "mystery"
+    assert ui_theme.status_label(None) == "新"
 
 
-# --- monogram ---------------------------------------------------------------
+def test_status_label_accepts_status_object():
+    class _Status:
+        status = "changed"
+
+    assert ui_theme.status_label(_Status()) == "有变化"
 
 
-def test_monogram_ascii_and_cjk():
-    assert ui_theme.monogram("Monster Hunter Portable 3rd") == "MH"
-    assert ui_theme.monogram("Persona 4 Golden") == "P4"
-    assert ui_theme.monogram("zelda") == "Z"
-    assert ui_theme.monogram("塞尔达传说") == "塞"
+# --- list row metrics -------------------------------------------------------
 
 
-def test_monogram_empty_falls_back_to_placeholder():
-    assert ui_theme.monogram("") == "?"
-    assert ui_theme.monogram("   ") == "?"
-    assert ui_theme.monogram("!!!") == "?"
-    assert ui_theme.monogram(None) == "?"
+def test_row_metrics_are_defined():
+    assert ui_theme.ROW_HEIGHT >= 36
+    assert 0 < ui_theme.ROW_COVER < ui_theme.ROW_HEIGHT
+    assert 0 < ui_theme.ROW_COVER_RADIUS <= ui_theme.ROW_COVER // 2
+    assert ui_theme.ROW_PIP_WIDTH == 3
 
 
-# --- status_pill ------------------------------------------------------------
+# --- save_row ---------------------------------------------------------------
 
 
-def test_status_pill_known_statuses():
-    new = ui_theme.status_pill("new")
-    assert new["label"] == "新"
-    assert new["fg"] == ui_theme.SWITCH["accent"]
-    assert new["bg"] == ui_theme.mix(ui_theme.SWITCH["accent"], ui_theme.SWITCH["card"], 0.86)
-
-    assert ui_theme.status_pill("changed")["label"] == "有变化"
-    assert ui_theme.status_pill("changed")["fg"] == ui_theme.SWITCH["warning"]
-
-    unchanged = ui_theme.status_pill("unchanged")
-    assert unchanged["label"] == "已备份"
-    assert unchanged["fg"] == ui_theme.SWITCH["success"]
-
-
-def test_status_pill_unknown_degrades_gracefully():
-    weird = ui_theme.status_pill("mystery")
-    assert weird["label"] == "mystery"
-    assert weird["fg"] == ui_theme.SWITCH["muted"]
-    assert weird["bg"] == ui_theme.SWITCH["surface_alt"]
-
-    assert ui_theme.status_pill(None)["label"] == "未知"
-
-
-# --- tile_face --------------------------------------------------------------
-
-
-def test_tile_face_from_entry_and_status_string():
+def test_save_row_from_entry_and_status_string():
     entry = SaveEntry(
         platform="psp",
         source_id="psp",
@@ -178,66 +147,34 @@ def test_tile_face_from_entry_and_status_string():
         title_id="ULJM05800",
         slot="1",
     )
-    face = ui_theme.tile_face(entry, "new", starred=True)
-    assert face["title"] == "Monster Hunter Portable 3rd"
-    assert face["monogram"] == "MH"
-    assert face["accent"] == ui_theme.PLATFORM_COLORS["psp"]
-    assert face["platform"] == "psp"
-    assert face["status"] == "new"
-    assert face["starred"] is True
-    assert face["pill"]["label"] == "新"
-    assert face["subtitle"] == "ULJM05800 · 1"
+    row = ui_theme.save_row(entry, "new", starred=True)
+    assert row["title"] == "Monster Hunter Portable 3rd"
+    assert row["accent"] == ui_theme.PLATFORM_COLORS["psp"]
+    assert row["platform"] == "psp"
+    assert row["status"] == "new"
+    assert row["status_label"] == "新"
+    assert row["starred"] is True
+    assert row["subtitle"] == "ULJM05800 · 1"
 
 
-def test_tile_face_accepts_status_object():
+def test_save_row_accepts_status_object():
     class _Status:
         status = "changed"
 
     entry = SaveEntry(platform="vita", source_id="vita", display_name="Persona 4 Golden", path="/tmp/x")
-    face = ui_theme.tile_face(entry, _Status())
-    assert face["status"] == "changed"
-    assert face["pill"]["label"] == "有变化"
-    assert face["accent"] == ui_theme.PLATFORM_COLORS["vita"]
-    assert face["subtitle"] == ""
-    assert face["starred"] is False
+    row = ui_theme.save_row(entry, _Status())
+    assert row["status"] == "changed"
+    assert row["status_label"] == "有变化"
+    assert row["accent"] == ui_theme.PLATFORM_COLORS["vita"]
+    assert row["subtitle"] == ""
+    assert row["starred"] is False
 
 
-def test_tile_face_unknown_platform_and_missing_name():
+def test_save_row_unknown_platform_and_missing_name():
     entry = SaveEntry(platform="mystery", source_id="x", display_name="", path="/tmp/y")
-    face = ui_theme.tile_face(entry, "new")
-    assert face["accent"] == ui_theme.SWITCH["accent"]
-    assert face["title"] == "/tmp/y"
-    assert face["monogram"] == "?"
-
-
-def test_tile_face_exposes_pastel_face_color():
-    entry = SaveEntry(platform="switch", source_id="switch", display_name="Zelda", path="/tmp/z")
-    face = ui_theme.tile_face(entry, "new")
-    pastel = face["face"]
-    assert pastel.startswith("#") and len(pastel) == 7
-    # A pastel tint of the platform colour, never a plain white card.
-    assert pastel != ui_theme.SWITCH["card"]
-    assert pastel == ui_theme.mix(ui_theme.PLATFORM_COLORS["switch"], ui_theme.SWITCH["card"], 0.86)
-
-
-# --- compact cover-tile metrics ---------------------------------------------
-
-
-def test_compact_tile_metrics_are_defined():
-    assert ui_theme.TILE_WIDTH == 116
-    assert ui_theme.TILE_HEIGHT == 124
-    assert ui_theme.TILE_GAP == ui_theme.DEFAULT_TILE_GAP
-    # DESIGN.md rounded.tile is 14px with a 4px platform bar.
-    assert ui_theme.TILE_RADIUS == 14
-    assert ui_theme.TILE_BAR_HEIGHT == 4
-    assert ui_theme.TILE_COVER_INSET > 0
-    assert 0 < ui_theme.TILE_COVER_HEIGHT < ui_theme.TILE_HEIGHT
-    assert 0 < ui_theme.TILE_COVER_RADIUS <= ui_theme.TILE_RADIUS
-
-
-def test_compact_metrics_give_four_columns_at_default_and_three_at_min():
-    # Middle-column canvas widths measured at the default and minimum window.
-    default = ui_theme.grid_columns(530, ui_theme.TILE_WIDTH, ui_theme.TILE_GAP)
-    minimum = ui_theme.grid_columns(430, ui_theme.TILE_WIDTH, ui_theme.TILE_GAP)
-    assert default == 4
-    assert minimum == 3
+    row = ui_theme.save_row(entry, "new")
+    assert row["accent"] == ui_theme.SWITCH["accent"]
+    assert row["title"] == "/tmp/y"
+    # No pastel face, monogram or pill survives on the quiet row.
+    for stale in ("face", "monogram", "pill"):
+        assert stale not in row
