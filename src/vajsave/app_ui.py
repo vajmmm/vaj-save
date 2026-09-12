@@ -18,6 +18,7 @@ from .identity import (
 )
 from .library import Snapshot, load_keep_last, parse_keep_last
 from .models import SaveEntry, VolumeInfo
+from .remote_ftp import DEFAULT_FTP_PORT
 from .rom_formats import supported_extensions
 from .ui_theme import PLATFORM_COLORS, SWITCH, save_row, status_label
 from .ui_widgets import (
@@ -64,6 +65,8 @@ HELP_TEXT = (
     "版本会保存到本地备份库。\n"
     "· 恢复：在右侧「版本」里选一个版本，点「恢复」，"
     "版本只会拷贝到你选择的文件夹，不会写入掌机。\n"
+    "· FTP：机上开启 FTP 服务器后，点设备区「FTP 拉取」把存档拉到本地缓存再扫描。"
+    "默认预设为 Checkpoint，连不上可切换回退预设 ftpd；全程只读，不会写入掌机。\n"
     "· 设置：可修改本地备份库路径、可选 ROM 目录与保留版本数"
     "（0 表示不限制）。"
 )
@@ -427,11 +430,18 @@ class VajSaveApp:
             height=4,
         )
         self.vol_list.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        device_actions = tk.Frame(left, bg=PANEL_BG)
+        device_actions.grid(row=4, column=0, sticky="ew", padx=12, pady=(8, 12))
         self._add_device_button = CanvasButton(
-            left, text="＋ 添加设备", command=self.on_open_folder_clicked, height=28, padding=8
+            device_actions, text="＋ 添加设备", command=self.on_open_folder_clicked, height=28, padding=8
         )
-        self._add_device_button.grid(row=4, column=0, sticky="w", padx=12, pady=(8, 12))
-
+        self._add_device_button.pack(side=tk.LEFT)
+        # Pull saves straight from a console FTP server (Checkpoint default,
+        # ftpd fallback) instead of a mounted card.
+        self.ftp_button = CanvasButton(
+            device_actions, text="FTP 拉取", command=self.on_ftp_clicked, height=28, padding=8
+        )
+        self.ftp_button.pack(side=tk.RIGHT)
         library_frame = tk.Frame(left, bg=PANEL_ALT, highlightbackground=BORDER_SOFT, highlightthickness=1)
         library_frame.grid(row=6, column=0, sticky="ew", padx=12, pady=16)
         library_head = tk.Frame(library_frame, bg=PANEL_ALT)
@@ -833,6 +843,111 @@ class VajSaveApp:
             self.refresh_platform_ui()
             self.refresh_saves_ui()
             self.refresh_stats()
+
+    def on_ftp_clicked(self) -> None:
+        """Open the FTP pull dialog; Checkpoint is the default preset."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("FTP 拉取存档")
+        dialog.configure(bg=BG)
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+
+        tk.Label(
+            dialog, text="从掌机 FTP 拉取存档（只读）", bg=BG, fg=INK, font=ui_font(14, "bold")
+        ).pack(anchor="w", padx=16, pady=(16, 4))
+        tk.Label(
+            dialog,
+            text="默认使用 Checkpoint 预设；连不上可切换回退预设 ftpd。"
+            "存档只拉取到本地缓存，不会写入掌机。",
+            bg=BG,
+            fg=TEXT,
+            font=ui_font(11),
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=360,
+        ).pack(anchor="w", padx=16, pady=(0, 8))
+
+        preset_var = tk.StringVar(value=self.state.ftp_preset_key)
+        dialog.ftp_preset_var = preset_var
+        preset_row = tk.Frame(dialog, bg=BG)
+        preset_row.pack(fill=tk.X, padx=16, pady=(4, 0))
+        tk.Label(preset_row, text="预设", bg=BG, fg=TEXT, font=ui_font(12, "bold")).pack(
+            side=tk.LEFT, padx=(0, 8)
+        )
+        preset_buttons: Dict[str, CanvasButton] = {}
+
+        def choose_preset(key: str) -> None:
+            preset_var.set(key)
+            for preset_key, button in preset_buttons.items():
+                button.set_selected(preset_key == key)
+
+        for preset in self.state.ftp_presets():
+            button = CanvasButton(
+                preset_row,
+                text=preset.label,
+                command=lambda preset_key=preset.key: choose_preset(preset_key),
+                height=28,
+                padding=10,
+            )
+            button.pack(side=tk.LEFT, padx=(0, 6))
+            preset_buttons[preset.key] = button
+        choose_preset(self.state.ftp_preset_key)
+        # Exposed so tests can assert the offered presets and the default.
+        dialog.ftp_preset_buttons = preset_buttons
+
+        host_var = tk.StringVar(value=self.state.ftp_host)
+        port_var = tk.StringVar(value=str(self.state.ftp_port or DEFAULT_FTP_PORT))
+        user_var = tk.StringVar(value=self.state.ftp_user)
+        password_var = tk.StringVar()
+        dialog.ftp_host_var = host_var
+        dialog.ftp_port_var = port_var
+        dialog.ftp_user_var = user_var
+        dialog.ftp_password_var = password_var
+
+        def add_field(label: str, var: tk.StringVar, *, show: Optional[str] = None) -> None:
+            row = tk.Frame(dialog, bg=BG)
+            row.pack(fill=tk.X, padx=16, pady=(6, 0))
+            tk.Label(row, text=label, bg=BG, fg=TEXT, font=ui_font(11)).pack(
+                side=tk.LEFT, padx=(0, 8)
+            )
+            entry = ttk.Entry(row, textvariable=var, width=18)
+            if show:
+                entry.configure(show=show)
+            entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        add_field("主机", host_var)
+        add_field("端口", port_var)
+        add_field("用户", user_var)
+        add_field("密码", password_var, show="\u2022")
+
+        def pull() -> None:
+            self.state.configure_ftp(
+                host=host_var.get().strip(),
+                port=port_var.get().strip(),
+                user=user_var.get().strip(),
+                password=password_var.get(),
+                preset_key=preset_var.get(),
+            )
+            dialog.destroy()
+            self.state.pull_ftp_saves()
+            self._collapse_device_list()
+            self._sync_library_browse_button()
+            self.refresh_volumes_ui(select_path=self.state.current_mount)
+            self.refresh_platform_ui()
+            self.refresh_saves_ui()
+            self.refresh_stats()
+
+        # Exposed so tests can drive the dialog without a real click.
+        dialog.ftp_pull = pull
+
+        btn_row = tk.Frame(dialog, bg=BG)
+        btn_row.pack(fill=tk.X, padx=16, pady=16)
+        CanvasButton(btn_row, text="取消", command=dialog.destroy).pack(side=tk.RIGHT)
+        CanvasButton(btn_row, text="拉取", variant="accent", command=pull).pack(
+            side=tk.RIGHT, padx=(0, 8)
+        )
+
+        dialog.grab_set()
 
     def on_watch_button_clicked(self) -> None:
         """CanvasButton for "监听插拔": flip the flag, then run the shared handler."""

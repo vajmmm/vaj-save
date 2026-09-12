@@ -11,7 +11,7 @@ from vajsave.library import backup_save
 from vajsave.models import SaveEntry, ScanResult, VolumeInfo
 from vajsave.volume import FakeVolumeProvider
 from vajsave.backend import FakeStorageBackend
-from conftest import build_sfo
+from conftest import build_sfo, checkpoint_ftp_tree, fake_client_factory
 
 
 @pytest.fixture(scope="module")
@@ -1372,3 +1372,127 @@ def test_delete_library_game_partial_failure_updates_status(tmp_path, monkeypatc
 
     assert result.ok is False
     assert "删除" in state.status_text
+
+
+# -- FTP pull ----------------------------------------------------------------
+
+
+def _psp_volume(tmp_path, psp_sfo_bytes):
+    psp_root = tmp_path / "PSP_VOL"
+    save_dir = psp_root / "PSP" / "SAVEDATA" / "ULJM05800"
+    save_dir.mkdir(parents=True)
+    (save_dir / "PARAM.SFO").write_bytes(psp_sfo_bytes)
+    (save_dir / "DATA.BIN").write_bytes(b"DATA")
+    return VolumeInfo(name="PSP_VOL", mount_point=psp_root)
+
+
+def test_ftp_default_preset_is_checkpoint_with_ftpd_fallback(tmp_path):
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    keys = [preset.key for preset in state.ftp_presets()]
+    assert state.ftp_preset_key == "checkpoint"
+    assert keys[0] == "checkpoint"
+    assert "ftpd" in keys
+    assert state.current_ftp_preset().key == "checkpoint"
+
+
+def test_set_ftp_preset_switches_and_persists(tmp_path):
+    lib = tmp_path / "lib"
+    state = AppState(provider=FakeVolumeProvider([]), library_root=lib)
+    assert state.set_ftp_preset("ftpd") == "ftpd"
+    assert state.current_ftp_preset().key == "ftpd"
+    assert state.set_ftp_preset("nope") is None
+    assert state.ftp_preset_key == "ftpd"
+    # A fresh state reads the persisted choice back.
+    assert AppState(provider=FakeVolumeProvider([]), library_root=lib).ftp_preset_key == "ftpd"
+
+
+def test_pull_ftp_selects_cache_as_device(tmp_path):
+    factory = fake_client_factory(checkpoint_ftp_tree())
+    lib = tmp_path / "lib"
+    state = AppState(
+        provider=FakeVolumeProvider([]), library_root=lib, ftp_client_factory=factory
+    )
+
+    result = state.pull_ftp_saves()
+
+    assert result.ok is True
+    assert state.current_mount == lib / "ftp-cache" / "checkpoint"
+    assert state.library_mode is False
+    assert state.current_result is not None
+    assert state.current_result.saves
+    platforms = {save.platform for save in state.current_result.saves}
+    assert "3ds" in platforms
+    assert "switch" in platforms
+    assert "[只读]" in state.status_text
+
+
+def test_pull_ftp_failure_does_not_replace_current_device(tmp_path, psp_sfo_bytes):
+    vol = _psp_volume(tmp_path, psp_sfo_bytes)
+    factory = fake_client_factory(
+        checkpoint_ftp_tree(),
+        fail_paths={"/3ds/Checkpoint/saves"},
+        error_message="permission denied",
+    )
+    lib = tmp_path / "lib"
+    state = AppState(
+        provider=FakeVolumeProvider([vol]),
+        library_root=lib,
+        ftp_client_factory=factory,
+    )
+    state.refresh_volumes()
+    state.select_mount(vol.mount_point)
+
+    result = state.pull_ftp_saves()
+
+    assert result.ok is False
+    # The selected device is unchanged and the half-pull is never selected.
+    assert state.current_mount == vol.mount_point
+    assert not (lib / "ftp-cache" / "checkpoint").exists()
+    assert any("FTP" in warning for warning in state.warnings)
+
+
+def test_pull_ftp_failure_never_leaks_password(tmp_path):
+    secret = "topsecret-xyz"
+    factory = fake_client_factory(
+        {}, fail_paths={"/"}, error_message=f"login failed for {secret}"
+    )
+    state = AppState(
+        provider=FakeVolumeProvider([]),
+        library_root=tmp_path / "lib",
+        ftp_client_factory=factory,
+    )
+    state.configure_ftp(host="10.0.0.9", password=secret)
+
+    result = state.pull_ftp_saves()
+
+    assert result.ok is False
+    assert secret not in result.error
+    assert all(secret not in warning for warning in state.warnings)
+    assert secret not in state.status_text
+
+
+def test_pull_ftp_success_keeps_card_and_folder_behavior(tmp_path, psp_sfo_bytes):
+    vol = _psp_volume(tmp_path, psp_sfo_bytes)
+    lib = tmp_path / "lib"
+    state = AppState(
+        provider=FakeVolumeProvider([vol]),
+        library_root=lib,
+        ftp_client_factory=fake_client_factory(checkpoint_ftp_tree()),
+    )
+    state.refresh_volumes()
+
+    # Card selection still works before an FTP pull.
+    assert state.select_mount(vol.mount_point).platform == "psp"
+
+    result = state.pull_ftp_saves()
+    assert result.ok is True
+
+    # ...and still works after (no device scan state leaked into the card path).
+    assert state.select_mount(vol.mount_point).platform == "psp"
+    assert state.current_mount == vol.mount_point
+
+    # A manually added folder is still selectable too.
+    folder = tmp_path / "legacy_backup"
+    folder.mkdir()
+    state.select_custom_path(folder)
+    assert state.current_mount == folder

@@ -102,3 +102,16 @@ def test_help_guide_mentions_backup_and_restore_to_folder(tk_root, tmp_path):
         assert "文件夹" in text
     finally:
         _dispose(app, tk_root)
+
+
+def test_help_guide_mentions_ftp_pull_and_presets(tk_root, tmp_path):
+    app = _app(tk_root, tmp_path)
+    try:
+        dialog = _open_help(app, tk_root)
+        text = _collect_text(dialog)
+        assert "FTP" in text
+        # The default preset and its fallback are both named.
+        assert "Checkpoint" in text
+        assert "ftpd" in text
+    finally:
+        _dispose(app, tk_root)

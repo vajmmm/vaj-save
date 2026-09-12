@@ -3,6 +3,7 @@ import queue
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
@@ -59,6 +60,15 @@ from .identity import (
     resolved,
 )
 from .models import SaveEntry, ScanResult, VolumeInfo
+from .ftp_fetch import FtpPullResult, cache_dir_for, ftp_cache_root, pull_preset
+from .remote_ftp import (
+    DEFAULT_PRESET_KEY,
+    FtpProfile,
+    RemoteFtpClient,
+    get_preset,
+    preset_keys,
+    presets,
+)
 from .scanner import scan
 from .volume import MountedVolumeProvider, VolumeProvider, watch_volumes
 
@@ -67,6 +77,20 @@ PLATFORM_ORDER = ["all", "psp", "vita", "switch", "3ds", "nds", "gba"]
 # Sentinel distinguishing "leave this setting untouched" from an explicit None
 # (which clears a persisted ROM directory) in ``set_rom_dirs``.
 _UNSET = object()
+
+
+def _parse_port(value: object) -> Optional[int]:
+    """Coerce a config/dialog value to a valid TCP port; invalid values -> None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if 1 <= value <= 65535 else None
+    text = str(value or "").strip()
+    if not text.isdigit():
+        return None
+    port = int(text)
+    return port if 1 <= port <= 65535 else None
+
 
 # Folders that mean "this mount is a handheld card", so we may search it for ROMs
 # even when the volume is not marked removable (e.g. a folder added via 添加设备).
@@ -151,6 +175,7 @@ class AppState:
         scan_fn: Optional[Callable[[Union[Path, str]], ScanResult]] = None,
         backend: Optional[StorageBackend] = None,
         library_root: Optional[Union[Path, str]] = None,
+        ftp_client_factory: Optional[Callable[[FtpProfile], RemoteFtpClient]] = None,
     ) -> None:
         self.provider: VolumeProvider = provider or MountedVolumeProvider()
         self.scan_fn: Callable[[Union[Path, str]], ScanResult] = scan_fn or scan
@@ -163,6 +188,16 @@ class AppState:
         self._artwork_service: Optional[ArtworkService] = None
         self.last_import_path: Optional[Path] = None
         self.last_backup: Optional[BackupResult] = None
+
+        # FTP pull settings. The host/port/user are persisted so a pull can be
+        # repeated; the password deliberately stays in memory only.
+        self._ftp_client_factory = ftp_client_factory
+        ftp_config = load_app_config()
+        self.ftp_preset_key: str = self._resolve_ftp_preset_key(ftp_config)
+        self.ftp_host: str = self._coerce_text(ftp_config.get("ftp_host"))
+        self.ftp_port: Optional[int] = _parse_port(ftp_config.get("ftp_port"))
+        self.ftp_user: str = self._coerce_text(ftp_config.get("ftp_user"))
+        self._ftp_password: str = ""
 
         self.volumes: List[VolumeInfo] = []
         self.current_mount: Optional[Path] = None
@@ -185,6 +220,15 @@ class AppState:
         self.is_watching: bool = False
         self._watch_thread: Optional[threading.Thread] = None
         self._stop_event: Optional[threading.Event] = None
+
+    @staticmethod
+    def _coerce_text(value: object) -> str:
+        return "" if value is None else str(value).strip()
+
+    @staticmethod
+    def _resolve_ftp_preset_key(config: Dict) -> str:
+        configured = AppState._coerce_text(config.get("ftp_preset")).lower()
+        return configured if configured in preset_keys() else DEFAULT_PRESET_KEY
 
     @staticmethod
     def _resolve_library_root(library_root: Optional[Union[Path, str]]) -> Path:
@@ -397,6 +441,116 @@ class AppState:
         self.libretro_dir = resolved
         self._metadata_service = None
         return resolved
+
+    # -- FTP pull ------------------------------------------------------------
+
+    def ftp_presets(self) -> List[FtpProfile]:
+        """Built-in presets with the persisted host/port/user overrides applied."""
+        return [self._ftp_profile(preset) for preset in presets()]
+
+    def _ftp_profile(self, preset: FtpProfile) -> FtpProfile:
+        overrides = {}
+        if self.ftp_host:
+            overrides["host"] = self.ftp_host
+        if self.ftp_port:
+            overrides["port"] = self.ftp_port
+        if self.ftp_user:
+            overrides["user"] = self.ftp_user
+        if self._ftp_password:
+            overrides["password"] = self._ftp_password
+        return replace(preset, **overrides) if overrides else preset
+
+    def current_ftp_preset(self) -> FtpProfile:
+        """The active preset (Checkpoint by default)."""
+        return self._ftp_profile(get_preset(self.ftp_preset_key))
+
+    def ftp_cache_dir(self, preset_key: Optional[str] = None) -> Path:
+        """Local cache directory that a preset is pulled into."""
+        return cache_dir_for(self.library_root, preset_key or self.ftp_preset_key)
+
+    def set_ftp_preset(self, key: object) -> Optional[str]:
+        """Persist the active FTP preset; unknown keys are rejected with ``None``."""
+        text = str(key or "").strip().lower()
+        if text not in preset_keys():
+            return None
+        self.ftp_preset_key = text
+        config = load_app_config()
+        config["ftp_preset"] = text
+        save_app_config(config)
+        self.status_text = f"FTP 预设已切换: {get_preset(text).label}"
+        return text
+
+    def configure_ftp(
+        self,
+        host: Optional[object] = None,
+        port: Optional[object] = None,
+        user: Optional[object] = None,
+        password: Optional[str] = None,
+        preset_key: Optional[str] = None,
+    ) -> FtpProfile:
+        """Update FTP connection settings.
+
+        ``host``/``port``/``user`` are persisted; the password is intentionally
+        kept in memory only so it is never written to ``config.json``.
+        """
+        if preset_key is not None:
+            self.set_ftp_preset(preset_key)
+        if host is not None:
+            self.ftp_host = str(host).strip()
+        if port is not None:
+            parsed = _parse_port(port)
+            if parsed is not None:
+                self.ftp_port = parsed
+        if user is not None:
+            self.ftp_user = str(user).strip()
+        if password is not None:
+            self._ftp_password = str(password)
+        config = load_app_config()
+        config["ftp_host"] = self.ftp_host
+        config["ftp_port"] = self.ftp_port
+        config["ftp_user"] = self.ftp_user
+        save_app_config(config)
+        return self.current_ftp_preset()
+
+    def _register_ftp_volume(self, profile: FtpProfile, path: Union[Path, str]) -> VolumeInfo:
+        """Expose a pulled cache directory as a non-removable device row."""
+        mount = Path(path)
+        volume = VolumeInfo(
+            name=f"FTP · {profile.label}",
+            mount_point=mount,
+            is_removable=False,
+            extra={"ftp": True, "ftp_preset": profile.key},
+        )
+        for index, existing in enumerate(self.volumes):
+            if Path(existing.mount_point) == mount:
+                self.volumes[index] = volume
+                return volume
+        self.volumes.append(volume)
+        return volume
+
+    def pull_ftp_saves(self) -> FtpPullResult:
+        """Pull the active preset into its cache and scan it as a device.
+
+        A failed pull is reported as a warning and leaves the current device
+        selection alone, so a half-populated cache is never shown as a device.
+        """
+        profile = self.current_ftp_preset()
+        result = pull_preset(
+            profile,
+            ftp_cache_root(self.library_root),
+            client_factory=self._ftp_client_factory,
+        )
+        if not result.ok or result.path is None:
+            message = result.error or "未知错误"
+            self.warnings.append(f"FTP 拉取失败: {message}")
+            self.status_text = f"FTP 拉取失败 · {message}"
+            return result
+        self._register_ftp_volume(profile, result.path)
+        self.select_mount(result.path)
+        self.status_text = (
+            f"FTP 已拉取 · {profile.label} · {result.files} 个文件 | [只读]"
+        )
+        return result
 
     def resolve_save_metadata(
         self, entry: SaveEntry, identity: Optional[GameIdentity] = None
@@ -886,12 +1040,28 @@ class AppState:
         return restored
 
     def refresh_volumes(self) -> List[VolumeInfo]:
-        """Fetch latest volume list from provider."""
+        """Fetch latest volume list from provider.
+
+        Pulled FTP caches are not provider volumes, so they are preserved across
+        a refresh (when they still exist) instead of vanishing from the device
+        list.
+        """
+        preserved = [
+            volume
+            for volume in self.volumes
+            if (volume.extra or {}).get("ftp") and Path(volume.mount_point).is_dir()
+        ]
         try:
             self.volumes = self.provider.list_volumes()
         except Exception as e:
             self.warnings.append(f"刷新卷列表失败: {e}")
             self.volumes = []
+        for volume in preserved:
+            if not any(
+                Path(existing.mount_point) == Path(volume.mount_point)
+                for existing in self.volumes
+            ):
+                self.volumes.append(volume)
         return self.volumes
 
     def select_mount(self, mount_point: Union[Path, str], auto: bool = False) -> ScanResult:

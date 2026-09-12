@@ -299,6 +299,26 @@ saturated accent fill.
 - **帮助** opens a short, non-resizable guide. Its copy makes the archive
   direction explicit ("把掌机存档备份到电脑，不会写入掌机") and separates 备份 from
   the copy-to-folder 恢复. It replaces the old "帮助中心暂未配置" placeholder status.
+  The guide also names the FTP pull and its Checkpoint / ftpd presets.
+
+### FTP Pull (left device rail)
+A quiet neutral 「FTP 拉取」 button sits beside 「＋ 添加设备」 under the device
+Listbox. It opens a non-resizable dialog that pulls handheld saves straight from
+a console FTP server into the local library's `ftp-cache/` tree, then scans that
+cache like any other device.
+- **Presets**: `Checkpoint` is the default; `ftpd` is a switchable fallback. The
+  active preset, host, port and user are persisted; the password is kept in
+  memory only and never written to `config.json` or any log/status line.
+- **Read-only**: the client only ever lists and downloads. No upload/delete
+  command is issued, and downloads are confined to
+  `<library>/ftp-cache/<preset>/` (unsafe remote names are skipped).
+- **Atomic**: files are staged in a hidden directory and the cache is swapped in
+  only after the whole tree downloads. A failed or partial pull removes the
+  staging directory, keeps the previous cache, and never becomes the selected
+  device — the error is surfaced as a status warning instead.
+- The pulled cache appears in the device list as a non-removable `FTP · <label>`
+  row and is scanned with the normal platform scanners, so a 3DS/Switch
+  Checkpoint export pulled over FTP behaves exactly like a mounted card.
 
 ### Platform Rows
 `hand2` cursor; selected row tinted `#eaf3ff`, idle rows `#ffffff`. A small
@@ -356,4 +376,6 @@ White field background, dark text, `#d6d6d6` border, 6px padding.
 - `src/vajsave/covers.py` — read-only, exception-safe cover discovery and thumbnailing (`find_embedded_cover`, `user_cover_path`, `resolve_cover`, `load_thumbnail`); never imports tkinter and is unit tested in `tests/test_covers.py`.
 - `src/vajsave/app_ui.py` — `CanvasButton` (rounded Canvas button/checkbutton), `SaveList` (single-column save list + bounded cover cache), and `VajSaveApp` (window wiring).
 - `src/vajsave/scanner.py` — fills `SaveEntry.cover_path` with an embedded icon during the (bounded, read-only) scan.
+- `src/vajsave/remote_ftp.py` — read-only FTP client and presets (`RemoteFtpClient`, `FtpProfile`, `ensure_read_only`, `sanitize_component`); password-free `repr`, no mutating verbs, injected transport for tests.
+- `src/vajsave/ftp_fetch.py` — atomic preset pull into `<library>/ftp-cache/<preset>/` (`pull_preset`, `FtpPullResult`, `ftp_cache_root`); staged download + swap so a partial pull never becomes a device.
 - `scripts/ui_preview.py` — builds the app offscreen and writes `build/ui-preview/home-preview.png` (Pillow) plus `save-list.eps` (converted to PNG when Ghostscript is available; degrades gracefully and still exits 0). The Pillow image is an **illustrative mock**, not a screenshot of the live widgets.

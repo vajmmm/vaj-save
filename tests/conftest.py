@@ -1,8 +1,11 @@
 import gc
 import struct
-import pytest
 from pathlib import Path
 from typing import Any, Dict
+
+import pytest
+
+from vajsave.remote_ftp import FtpEntry, RemoteFtpError
 
 
 @pytest.fixture(autouse=True)
@@ -73,6 +76,113 @@ def build_sfo(entries: Dict[str, Any]) -> bytes:
         index_bytes.extend(struct.pack("<HHIII", k_off, fmt, d_len, d_max, d_off))
 
     return bytes(header + index_bytes + key_table + data_table)
+
+
+def checkpoint_ftp_tree() -> Dict[str, Any]:
+    """A tiny remote tree shaped like a Checkpoint export over FTP.
+
+    Directories are nested dicts; files are ``bytes`` leaves.  Both the 3DS and
+    Switch Checkpoint save roots are present so a pull/ex scan exercises the
+    real platform scanners without touching the network.
+    """
+    return {
+        "3ds": {
+            "Checkpoint": {
+                "saves": {
+                    "0x011C4 Pokemon Moon": {
+                        "slot0": {"main": b"MOON-SAVE"},
+                    }
+                }
+            }
+        },
+        "switch": {
+            "Checkpoint": {
+                "saves": {
+                    "0100000000010000 Super Mario Odyssey": {
+                        "slot0": {"main": b"ODYSSEY-SAVE"},
+                    }
+                }
+            }
+        },
+    }
+
+
+class FakeRemoteFtpClient:
+    """In-memory stand-in for :class:`vajsave.remote_ftp.RemoteFtpClient`.
+
+    It mirrors the real client's read-only surface (``connect``/``close``/
+    ``list_dir``/``download``) so ``ftp_fetch.pull_preset`` can be driven
+    deterministically.  ``fail_paths`` makes a specific remote path raise, which
+    is how partial-pull failure is reproduced.
+    """
+
+    def __init__(
+        self,
+        tree: Dict[str, Any],
+        *,
+        fail_paths: Any = (),
+        error_message: str = "",
+    ) -> None:
+        self.tree = tree
+        self.fail_paths = set(fail_paths)
+        self.error_message = error_message
+        self.commands: list = []
+        self.connected = False
+        self.closed = False
+
+    def connect(self) -> "FakeRemoteFtpClient":
+        self.commands.append("CONNECT")
+        self.connected = True
+        return self
+
+    def close(self) -> None:
+        self.closed = True
+
+    def _node(self, remote_path: str) -> Any:
+        parts = [part for part in str(remote_path).split("/") if part]
+        node: Any = self.tree
+        for part in parts:
+            node = node[part]
+        return node
+
+    def list_dir(self, remote_path: str):
+        if remote_path in self.fail_paths:
+            raise RemoteFtpError(
+                self.error_message or f"no such directory: {remote_path}"
+            )
+        self.commands.append(("MLSD", remote_path))
+        node = self._node(remote_path)
+        assert isinstance(node, dict), f"not a directory: {remote_path}"
+        entries = [
+            FtpEntry(name=name, is_dir=isinstance(value, dict))
+            for name, value in node.items()
+        ]
+        return entries
+
+    def download(self, remote_path: str, local_path: Path) -> int:
+        if remote_path in self.fail_paths:
+            raise RemoteFtpError(
+                self.error_message or f"no such file: {remote_path}"
+            )
+        self.commands.append(("RETR", remote_path))
+        data = self._node(remote_path)
+        assert isinstance(data, (bytes, bytearray)), f"not a file: {remote_path}"
+        path = Path(local_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(bytes(data))
+        return len(data)
+
+
+def fake_client_factory(tree: Dict[str, Any], **kwargs: Any):
+    """Return a ``client_factory`` plus the created clients (for assertions)."""
+
+    def factory(profile):
+        client = FakeRemoteFtpClient(tree, **kwargs)
+        factory.clients.append(client)
+        return client
+
+    factory.clients = []  # type: ignore[attr-defined]
+    return factory
 
 
 @pytest.fixture
