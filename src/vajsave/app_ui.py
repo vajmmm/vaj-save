@@ -18,6 +18,7 @@ from .identity import (
 )
 from .library import Snapshot
 from .models import SaveEntry, VolumeInfo
+from .rom_formats import supported_extensions
 from .ui_theme import PLATFORM_COLORS, SWITCH, save_row, status_label
 from .ui_widgets import (
     SELECTED_LIST,
@@ -78,6 +79,15 @@ def _format_ui_timestamp(value: Optional[str]) -> str:
     if not value:
         return "—"
     return str(value).replace("T", " ")[:16]
+
+
+def _rom_filetypes(platform: str) -> List[tuple[str, str]]:
+    """File-dialog filters derived from the canonical ROM extension registry."""
+    extensions = supported_extensions(platform)
+    if not extensions:
+        return [("所有文件", "*.*")]
+    patterns = " ".join(f"*{extension}" for extension in extensions)
+    return [(f"{platform.upper()} ROM", patterns), ("所有文件", "*.*")]
 
 
 _IDENTITY_STATUS_LABELS = {
@@ -1155,13 +1165,10 @@ class VajSaveApp:
         if save is None:
             return
         platform = (getattr(save, "platform", "") or "").lower()
-        if platform == "gba":
-            filetypes = [("GBA ROM", "*.gba *.agb"), ("所有文件", "*.*")]
-        elif platform == "nds":
-            filetypes = [("NDS ROM", "*.nds"), ("所有文件", "*.*")]
-        else:
-            filetypes = [("所有文件", "*.*")]
-        chosen = filedialog.askopenfilename(title="选择 ROM 文件", filetypes=filetypes)
+        chosen = filedialog.askopenfilename(
+            title="选择 ROM 文件",
+            filetypes=_rom_filetypes(platform),
+        )
         if not chosen:
             return
         self._bind_identity(save, rom_path=chosen)

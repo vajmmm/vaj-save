@@ -160,6 +160,12 @@ def test_binding_without_candidate_selection_warns(tk_root, tmp_path):
 # --- unresolved GBA/NDS: manual ROM dialog ----------------------------------
 
 
+def test_manual_rom_dialog_filters_follow_canonical_extensions():
+    assert app_ui._rom_filetypes("gba")[0] == ("GBA ROM", "*.gba *.agb")
+    assert app_ui._rom_filetypes("nds")[0] == ("NDS ROM", "*.nds *.ids")
+    assert app_ui._rom_filetypes("unknown") == [("所有文件", "*.*")]
+
+
 def test_unresolved_gba_offers_manual_rom_dialog(tk_root, tmp_path, monkeypatch):
     vol = _gba_volume(tmp_path, [])
     rom = tmp_path / "picked" / "Apotris.gba"

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from ..rom_formats import supported_extensions
 from .models import GameIdentityResult
-from .roms import ROM_EXTENSIONS, resolve_rom_identity
+from .roms import resolve_rom_identity
 
 PLATFORM = "nds"
-EXTENSIONS = ROM_EXTENSIONS["nds"]
+EXTENSIONS = supported_extensions(PLATFORM)
 
 
 def resolve(entry, ctx) -> GameIdentityResult:

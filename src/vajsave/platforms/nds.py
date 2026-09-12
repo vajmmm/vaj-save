@@ -187,7 +187,7 @@ def _scan_sibling_sav_in_dir(
             source_id="nds_r4",
             display_name=child.stem,
             source_root=source_root,
-            description="NDS R4/Wood sibling .sav next to .nds",
+            description="NDS R4/Wood sibling .sav next to .nds/.ids",
             root_resolved=root_resolved,
             sources=sources,
             saves=saves,
