@@ -733,6 +733,145 @@ def test_ensure_cover_for_title_unsupported_platform_and_no_title(tmp_path: Path
     ).source == SOURCE_PLACEHOLDER
 
 
+def test_ensure_cover_for_title_uses_named_boxarts_listing_after_404(tmp_path: Path):
+    """When every generated candidate 404s, the Named_Boxarts directory listing
+    gives the real file name; a unique match is downloaded."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="3ds", name="Kirby Super Star Ultra")
+    listing = (
+        '<html><body><a href="Kirby%20-%20Super%20Star%20Ultra%20(USA).png">'
+        "Kirby - Super Star Ultra (USA).png</a></body></html>"
+    )
+    calls = []
+
+    def opener(url, timeout=None):
+        calls.append(url)
+        if url.endswith("/Named_Boxarts/"):
+            return FakeResponse(listing.encode("utf-8"))
+        if url.endswith("Kirby%20-%20Super%20Star%20Ultra%20(USA).png"):
+            return FakeResponse(png_bytes())
+        return FakeResponse(b"missing", status=404)
+
+    service = ArtworkService(cache=cache, downloader=ArtworkDownloader(urlopen=opener))
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="3ds",
+        title="Kirby Super Star Ultra",
+        identity_key="3ds:name:kirby",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_DOWNLOADED
+    assert any(url.endswith("/Named_Boxarts/") for url in calls)
+    boxart = [url for url in calls if "Named_Boxarts" in url and url.endswith(".png")]
+    assert boxart and boxart[-1].endswith(
+        "Kirby%20-%20Super%20Star%20Ultra%20(USA).png"
+    )
+    assert "Nintendo%20-%20Nintendo%203DS" in boxart[-1]
+    assert cache.lookup("3ds", "3ds:name:kirby") is not None
+
+
+def test_ensure_cover_for_title_ambiguous_listing_is_not_downloaded(tmp_path: Path):
+    """Two region variants of the same base title are ambiguous: the listing
+    fallback must refuse to guess and leave the cover uncached."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="3ds", name="Mario Kart 7")
+    listing = (
+        '<a href="Mario%20Kart%207%20(USA).png">Mario Kart 7 (USA).png</a>'
+        '<a href="Mario%20Kart%207%20(Europe).png">Mario Kart 7 (Europe).png</a>'
+    )
+    calls = []
+
+    def opener(url, timeout=None):
+        calls.append(url)
+        if url.endswith("/Named_Boxarts/"):
+            return FakeResponse(listing.encode("utf-8"))
+        return FakeResponse(b"missing", status=404)
+
+    service = ArtworkService(cache=cache, downloader=ArtworkDownloader(urlopen=opener))
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="3ds",
+        title="Mario Kart 7",
+        identity_key="3ds:name:mk7",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_PLACEHOLDER
+    assert any(url.endswith("/Named_Boxarts/") for url in calls)
+    assert cache.lookup("3ds", "3ds:name:mk7") is None
+
+
+def test_ensure_cover_for_title_ds_cartridge_uses_nds_boxart(tmp_path: Path):
+    """A 3DS Checkpoint entry with no 3DS title id whose display name is a DS
+    cartridge code plus title must resolve against the NDS system folder."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="3ds", name="AZEJ Kirby Super Star Ultra")
+    calls = []
+
+    def opener(url, timeout=None):
+        calls.append(url)
+        if "Nintendo%20-%20Nintendo%20DS/Named_Boxarts/Kirby" in url:
+            return FakeResponse(png_bytes())
+        return FakeResponse(b"missing", status=404)
+
+    service = ArtworkService(cache=cache, downloader=ArtworkDownloader(urlopen=opener))
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="3ds",
+        title="AZEJ Kirby Super Star Ultra",
+        identity_key="3ds:name:azej",
+        library_root=library,
+        title_id=None,
+    )
+    assert resolution.source == SOURCE_DOWNLOADED
+    assert any("Nintendo%20-%20Nintendo%20DS" in url for url in calls)
+    assert not any("Nintendo%20-%20Nintendo%203DS" in url for url in calls)
+    # The NDS-routed cover is cached under the resolved platform, so a second
+    # resolution is a zero-network hit.
+    after_first = len(calls)
+    again = service.ensure_cover_for_title(
+        entry,
+        platform="3ds",
+        title="AZEJ Kirby Super Star Ultra",
+        identity_key="3ds:name:azej",
+        library_root=library,
+        title_id=None,
+    )
+    assert again.source == SOURCE_DOWNLOADED
+    assert again.path == resolution.path
+    assert len(calls) == after_first
+
+
+def test_ensure_cover_for_title_with_3ds_title_id_never_uses_nds(tmp_path: Path):
+    """A present 3DS title id keeps the lookup on the 3DS system folder even when
+    the display name happens to look like a DS cartridge name."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="3ds", name="MARIO KART 7")
+    calls = []
+
+    def opener(url, timeout=None):
+        calls.append(url)
+        if "Nintendo%20-%20Nintendo%203DS/Named_Boxarts/Mario%20Kart%207.png" in url:
+            return FakeResponse(png_bytes())
+        return FakeResponse(b"missing", status=404)
+
+    service = ArtworkService(cache=cache, downloader=ArtworkDownloader(urlopen=opener))
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="3ds",
+        title="MARIO KART 7",
+        identity_key="3ds:0x00306",
+        library_root=library,
+        title_id="0x00306",
+    )
+    assert resolution.source == SOURCE_DOWNLOADED
+    assert any("Nintendo%20-%20Nintendo%203DS" in url for url in calls)
+    assert not any("/Nintendo%20-%20Nintendo%20DS/" in url for url in calls)
+
+
 def test_service_cover_for_falls_through_bad_provider():
     class Exploding(ArtworkProvider):
         name = "boom"

@@ -460,6 +460,42 @@ def test_appstate_3ds_cover_uses_checkpoint_display_name(tmp_path: Path):
     assert "Persona%20Q2%20New%20Cinema%20Labyrinth" in boxart[0]
 
 
+def test_appstate_3ds_checkpoint_ds_cartridge_uses_nds_cover(tmp_path: Path):
+    """A Checkpoint entry for a DS cartridge (game code + title, no 3DS title
+    id) must download the NDS boxart, not the 3DS one."""
+    save_dir = tmp_path / "3ds" / "Checkpoint" / "saves" / "AZEJ Kirby Super Star Ultra" / "0"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    (save_dir / "save.dat").write_bytes(b"save")
+    entry = SaveEntry(
+        platform="3ds",
+        source_id="3ds_checkpoint",
+        display_name="AZEJ Kirby Super Star Ultra",
+        path=str(save_dir),
+    )
+
+    state = AppState(library_root=tmp_path / "lib")
+    result = state.resolve_save_identity(entry)
+    assert result.identity is not None
+    assert result.identity.title_id is None
+
+    urls = []
+
+    def opener(url, timeout=None):
+        urls.append(url)
+        if "Nintendo%20-%20Nintendo%20DS" in url:
+            return _FakeResponse(png_bytes())
+        return _FakeResponse(b"missing", status=404)
+
+    state._artwork_service = ArtworkService(
+        cache=CoverCache(state.library_root / COVER_CACHE_DIR),
+        downloader=ArtworkDownloader(urlopen=opener),
+    )
+    cover = state.ensure_save_cover(entry, result)
+    assert cover.source == SOURCE_DOWNLOADED
+    assert any("Nintendo%20-%20Nintendo%20DS" in url for url in urls)
+    assert not any("Nintendo%20-%20Nintendo%203DS" in url for url in urls)
+
+
 def test_appstate_gba_identity_without_canonical_metadata_never_network(tmp_path: Path):
     """GBA/NDS titles come from the canonical index only; without it the app
     must never guess a provider name (criterion: no network)."""

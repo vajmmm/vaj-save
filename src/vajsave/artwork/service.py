@@ -24,6 +24,11 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Tuple, Union
 
 from ..covers import find_embedded_cover, user_cover_path
+from .boxart_index import (
+    fetch_boxart_listing,
+    resolve_boxart_system,
+    unique_boxart_match,
+)
 from .cache import CoverCache
 from .downloader import ArtworkDownloader
 from .providers import (
@@ -240,11 +245,16 @@ class ArtworkService:
         try, so :func:`libretro_title_candidates` walks a short list of
         whitespace, case and region variants until one download succeeds.
         3DS Checkpoint short IDs (``0x00306``) are expanded to Title IDs and
-        looked up in the cached 3dsdb eShop list first.
+        looked up in the cached 3dsdb eShop list first.  When every candidate
+        404s the provider's ``Named_Boxarts`` directory listing is consulted and
+        accepted only for a unique match.  A 3DS entry without a usable title id
+        whose name is a DS cartridge (``AZEJ Kirby Super Star Ultra``) is looked
+        up under the NDS system instead.
         """
         if entry is None:
             return PLACEHOLDER
         plat = (platform or getattr(entry, "platform", "") or "").strip().lower()
+        plat, title = resolve_boxart_system(plat, title, title_id)
         user = _user_path(entry, library_root)
         if user is not None:
             return ArtworkResolution(str(user), SOURCE_USER)
@@ -271,7 +281,70 @@ class ArtworkService:
             )
             if stored is not None:
                 return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
-        return PLACEHOLDER
+        return self._download_from_listing(
+            plat, names, identity_key=identity_key
+        ) or PLACEHOLDER
+
+    def _download_from_listing(
+        self,
+        platform: str,
+        names: List[str],
+        *,
+        identity_key: Optional[str],
+    ) -> Optional[ArtworkResolution]:
+        """Last-resort fallback: match ``names`` against the provider's own
+        ``Named_Boxarts`` directory listing and download the unique hit.
+
+        Every generated candidate 404s often enough (renames, region tags) that
+        the real file name is only discoverable from the listing.  An ambiguous
+        match is refused by :func:`unique_boxart_match`.
+        """
+        provider = None
+        for candidate_provider in self.providers:
+            try:
+                if candidate_provider.supports(platform) and candidate_provider.boxart_listing_url(
+                    platform
+                ):
+                    provider = candidate_provider
+                    break
+            except Exception:  # noqa: BLE001 - one bad provider must not stop the rest
+                continue
+        if provider is None:
+            return None
+        listing_url = provider.boxart_listing_url(platform)
+        timeout = max(float(getattr(self.downloader, "timeout", 5) or 5), 20.0)
+        filenames = fetch_boxart_listing(
+            self.downloader._urlopen, listing_url, timeout=timeout
+        )
+        if not filenames:
+            return None
+        matched = None
+        for query in names:
+            matched = unique_boxart_match(filenames, query)
+            if matched:
+                break
+        if not matched:
+            return None
+        filename = matched[:-4] if matched.lower().endswith(".png") else matched
+        try:
+            url = provider.url_for(platform, filename)
+        except Exception:  # noqa: BLE001
+            url = None
+        if not url:
+            return None
+        artwork = Artwork(
+            url=url,
+            filename=filename,
+            provider=provider.name,
+            platform=platform,
+            canonical_title=names[0] if names else "",
+        )
+        stored = self._store_artwork(
+            artwork, identity_key=identity_key, platform=platform
+        )
+        if stored is None:
+            return None
+        return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
 
     def _3ds_names_for_title_id(self, title_id: object) -> Tuple[str, ...]:
         root = self.cache.root if self.cache is not None else None

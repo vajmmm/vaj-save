@@ -172,6 +172,15 @@ class ArtworkProvider:
     def url_for(self, platform: str, filename: str) -> Optional[str]:  # pragma: no cover
         raise NotImplementedError
 
+    def boxart_listing_url(self, platform: str) -> Optional[str]:
+        """Directory index of the boxart folder, or ``None`` when unsupported.
+
+        Used as a last-resort fallback: when every generated candidate filename
+        404s, the provider's own directory listing is consulted for the real
+        file name.
+        """
+        return None
+
 
 class LibretroThumbnailProvider(ArtworkProvider):
     """The official libretro thumbnail server."""
@@ -197,6 +206,13 @@ class LibretroThumbnailProvider(ArtworkProvider):
         system_encoded = quote(system, safe="")
         encoded = quote(filename, safe=_URL_SAFE)
         return f"{self.base_url}/{system_encoded}/{THUMBNAIL_BOXART}/{encoded}.png"
+
+    def boxart_listing_url(self, platform: str) -> Optional[str]:
+        system = LIBRETRO_SYSTEM_NAMES.get((platform or "").strip().lower())
+        if not system:
+            return None
+        system_encoded = quote(system, safe="")
+        return f"{self.base_url}/{system_encoded}/{THUMBNAIL_BOXART}/"
 
     def find_cover(self, metadata) -> Optional[Artwork]:
         if metadata is None:
