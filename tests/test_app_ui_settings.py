@@ -299,3 +299,87 @@ def test_settings_reads_current_llm_protocol(tk_root, tmp_path):
         assert dialog.llm_protocol_var.get() == PROTOCOL_ANTHROPIC
     finally:
         _dispose(app, tk_root)
+
+
+# --- provider presets: protocol / base URL / model combinations --------------
+
+
+def test_settings_dialog_exposes_llm_preset_selector(tk_root, tmp_path):
+    from vajsave.artwork.llm_choice import DEFAULT_LLM_PRESET, llm_preset_keys
+
+    app, state = _app(tk_root, tmp_path)
+    try:
+        dialog = _open_settings(app, tk_root)
+        assert hasattr(dialog, "llm_preset_var")
+        assert hasattr(dialog, "llm_preset_combo")
+        assert dialog.llm_preset_var.get() == DEFAULT_LLM_PRESET
+        values = list(dialog.llm_preset_combo.cget("values"))
+        assert values == list(llm_preset_keys())
+        assert "gemini" not in [str(v).lower() for v in values]
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_settings_reads_current_llm_preset(tk_root, tmp_path):
+    from vajsave.library import save_app_config
+
+    app, state = _app(tk_root, tmp_path)
+    try:
+        save_app_config({"llm_preset": "openrouter"})
+        state.llm_preset = "openrouter"
+        dialog = _open_settings(app, tk_root)
+        assert dialog.llm_preset_var.get() == "openrouter"
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_selecting_llm_preset_fills_protocol_base_and_model(tk_root, tmp_path):
+    from vajsave.artwork.llm_choice import (
+        DEFAULT_ANTHROPIC_BASE_URL,
+        DEFAULT_ANTHROPIC_MODEL,
+        PROTOCOL_ANTHROPIC,
+    )
+
+    app, state = _app(tk_root, tmp_path)
+    try:
+        dialog = _open_settings(app, tk_root)
+        dialog.llm_preset_var.set("anthropic")
+        dialog.llm_preset_select()
+        assert dialog.llm_protocol_var.get() == PROTOCOL_ANTHROPIC
+        assert dialog.llm_base_url_var.get() == DEFAULT_ANTHROPIC_BASE_URL
+        assert dialog.llm_model_var.get() == DEFAULT_ANTHROPIC_MODEL
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_selecting_llm_preset_does_not_clobber_edited_values(tk_root, tmp_path):
+    app, state = _app(tk_root, tmp_path)
+    try:
+        dialog = _open_settings(app, tk_root)
+        dialog.llm_base_url_var.set("https://my.gateway/v1")
+        dialog.llm_model_var.set("my-model")
+        dialog.llm_preset_var.set("deepseek")
+        dialog.llm_preset_select()
+        assert dialog.llm_base_url_var.get() == "https://my.gateway/v1"
+        assert dialog.llm_model_var.get() == "my-model"
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_settings_save_persists_llm_preset_and_filled_fields(tk_root, tmp_path):
+    from vajsave.library import load_app_config
+
+    app, state = _app(tk_root, tmp_path)
+    try:
+        dialog = _open_settings(app, tk_root)
+        dialog.llm_preset_var.set("deepseek")
+        dialog.llm_preset_select()
+        _find_button(dialog, "保存").invoke()
+
+        config = load_app_config()
+        assert config["llm_preset"] == "deepseek"
+        assert config["llm_base_url"] == "https://api.deepseek.com/v1"
+        assert state.llm_preset == "deepseek"
+        assert state.llm_base_url == "https://api.deepseek.com/v1"
+    finally:
+        _dispose(app, tk_root)

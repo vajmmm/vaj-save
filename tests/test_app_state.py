@@ -12,6 +12,7 @@ from vajsave.artwork.llm_choice import (
     DEFAULT_ANTHROPIC_MODEL,
     DEFAULT_LLM_BASE_URL,
     DEFAULT_LLM_MODEL,
+    DEFAULT_LLM_PRESET,
     DEFAULT_LLM_PROTOCOL,
     PROTOCOL_ANTHROPIC,
     PROTOCOL_OPENAI,
@@ -1770,3 +1771,119 @@ def test_switching_protocol_from_a_custom_base_via_the_ui_field_is_preserved(
     state.set_llm_cover(protocol=PROTOCOL_OPENAI, base_url=DEFAULT_LLM_BASE_URL)
     assert state.llm_protocol == PROTOCOL_OPENAI
     assert state.llm_base_url == DEFAULT_LLM_BASE_URL
+
+
+# --- provider presets: protocol / base URL / model combinations --------------
+
+
+def test_llm_preset_defaults_to_openai_and_stays_disabled(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
+    state = AppState(library_root=tmp_path / "lib")
+    assert state.llm_preset == DEFAULT_LLM_PRESET == "openai"
+    # A preset must not switch the optional feature on.
+    assert state.llm_cover_enabled is False
+    assert state.artwork_service.llm_chooser is None
+
+
+def test_set_llm_cover_preset_fills_protocol_base_and_model(tmp_path: Path, monkeypatch):
+    from vajsave.library import load_app_config
+
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
+    state = AppState(library_root=tmp_path / "lib")
+
+    state.set_llm_cover(preset="deepseek")
+
+    assert state.llm_preset == "deepseek"
+    assert state.llm_protocol == PROTOCOL_OPENAI
+    assert state.llm_base_url == "https://api.deepseek.com/v1"
+    assert state.llm_model == "deepseek-chat"
+    config = load_app_config()
+    assert config["llm_preset"] == "deepseek"
+    assert config["llm_protocol"] == PROTOCOL_OPENAI
+    assert config["llm_base_url"] == "https://api.deepseek.com/v1"
+    assert config["llm_model"] == "deepseek-chat"
+
+
+def test_anthropic_preset_switches_protocol_and_endpoint(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
+    state = AppState(library_root=tmp_path / "lib")
+
+    state.set_llm_cover(preset="anthropic")
+
+    assert state.llm_preset == "anthropic"
+    assert state.llm_protocol == PROTOCOL_ANTHROPIC
+    assert state.llm_base_url == DEFAULT_ANTHROPIC_BASE_URL
+    assert state.llm_model == DEFAULT_ANTHROPIC_MODEL
+
+
+def test_set_llm_cover_preset_does_not_overwrite_custom_values(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
+    state = AppState(library_root=tmp_path / "lib")
+    state.set_llm_cover(base_url="https://my.gateway/v1", model="my-model")
+
+    state.set_llm_cover(preset="deepseek")
+
+    # The preset is recorded but the user's endpoint/model survive.
+    assert state.llm_preset == "deepseek"
+    assert state.llm_base_url == "https://my.gateway/v1"
+    assert state.llm_model == "my-model"
+
+
+def test_set_llm_cover_custom_preset_keeps_current_values(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
+    state = AppState(library_root=tmp_path / "lib")
+    state.set_llm_cover(protocol=PROTOCOL_ANTHROPIC)
+
+    state.set_llm_cover(preset="custom")
+
+    assert state.llm_preset == "custom"
+    assert state.llm_protocol == PROTOCOL_ANTHROPIC
+    assert state.llm_base_url == DEFAULT_ANTHROPIC_BASE_URL
+    assert state.llm_model == DEFAULT_ANTHROPIC_MODEL
+
+
+def test_app_state_reads_llm_preset_from_config(tmp_path: Path, monkeypatch):
+    from vajsave.library import save_app_config
+
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
+    save_app_config(
+        {
+            "llm_cover_enabled": True,
+            "llm_api_key": "sk-openrouter",
+            "llm_preset": "openrouter",
+            "llm_base_url": "https://openrouter.ai/api/v1",
+            "llm_model": "openai/gpt-4o-mini",
+        }
+    )
+    state = AppState(library_root=tmp_path / "lib")
+    assert state.llm_preset == "openrouter"
+    assert state.llm_base_url == "https://openrouter.ai/api/v1"
+    chooser = state.artwork_service.llm_chooser
+    assert chooser is not None
+    assert chooser.base_url == "https://openrouter.ai/api/v1"
+    assert chooser.model == "openai/gpt-4o-mini"
+
+
+def test_unknown_llm_preset_falls_back_to_openai(tmp_path: Path, monkeypatch):
+    from vajsave.library import save_app_config
+
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
+    save_app_config({"llm_preset": "gemini"})
+    state = AppState(library_root=tmp_path / "lib")
+    assert state.llm_preset == DEFAULT_LLM_PRESET
+    assert state.llm_cover_enabled is False
+
+
+def test_llm_preset_round_trips_through_a_restart(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
+    state = AppState(library_root=tmp_path / "lib")
+    state.set_llm_cover(enabled=True, api_key="sk-key", preset="openrouter")
+
+    restarted = AppState(library_root=tmp_path / "lib")
+    assert restarted.llm_preset == "openrouter"
+    assert restarted.llm_base_url == "https://openrouter.ai/api/v1"
+    assert restarted.artwork_service.llm_chooser is not None

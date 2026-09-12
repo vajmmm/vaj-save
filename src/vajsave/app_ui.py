@@ -6,7 +6,14 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Dict, List, Optional, Union
 
 from .app_state import PLATFORM_LABELS, PLATFORM_ORDER, AppState
-from .artwork import LLM_PROTOCOLS, PLACEHOLDER, ArtworkLoader
+from .artwork import (
+    LLM_PROTOCOLS,
+    PLACEHOLDER,
+    ArtworkLoader,
+    fill_from_preset,
+    get_llm_preset,
+    llm_preset_keys,
+)
 from .covers import load_thumbnail
 from .identity import (
     STATUS_AMBIGUOUS,
@@ -1511,13 +1518,15 @@ class VajSaveApp:
         base_url: str = "",
         model: str = "",
         protocol: str = "",
+        preset: str = "",
     ) -> None:
         """Apply the optional LLM cover-disambiguation settings.
 
         The key is handed to the state, which persists it; it is never echoed
         into the status/warning text shown here. Blank base URL/model fall back
         to the selected protocol's built-in defaults, and switching protocol
-        only rewrites a still-default endpoint.
+        only rewrites a still-default endpoint. ``preset`` records the chosen
+        provider preset alongside the fields it filled.
         """
         self.state.set_llm_cover(
             enabled=enabled,
@@ -1525,6 +1534,7 @@ class VajSaveApp:
             base_url=base_url,
             model=model,
             protocol=protocol,
+            preset=preset,
         )
         if enabled and not api_key:
             self.update_status("已开启 LLM 封面消歧（未填 API Key，暂不生效）")
@@ -1635,6 +1645,22 @@ class VajSaveApp:
         # Persistent endpoint/model for the chooser; blank input falls back to
         # the built-in defaults. The protocol selector swaps a still-default
         # endpoint, so the field tracks the chosen OpenAI/Anthropic endpoint.
+        #
+        # Provider preset: choosing one auto-fills the protocol/base/model
+        # fields from the preset, but only where the field still holds the
+        # previous preset's value -- a customised endpoint/model is preserved.
+        llm_preset_var = tk.StringVar(value=self.state.llm_preset)
+        tk.Label(dialog, text="服务商预设", bg=BG, fg=TEXT, font=ui_font(12)).pack(
+            anchor="w", padx=16, pady=(8, 2)
+        )
+        llm_preset_combo = ttk.Combobox(
+            dialog,
+            textvariable=llm_preset_var,
+            values=list(llm_preset_keys()),
+            state="readonly",
+        )
+        llm_preset_combo.pack(fill=tk.X, padx=16)
+
         llm_protocol_var = tk.StringVar(value=self.state.llm_protocol)
         tk.Label(dialog, text="协议", bg=BG, fg=TEXT, font=ui_font(12)).pack(
             anchor="w", padx=16, pady=(8, 2)
@@ -1656,10 +1682,35 @@ class VajSaveApp:
             anchor="w", padx=16, pady=(8, 2)
         )
         ttk.Entry(dialog, textvariable=llm_model_var).pack(fill=tk.X, padx=16)
+
+        # The preset the fields currently track, updated as the user switches
+        # presets so consecutive selections chain correctly.
+        active_preset = [self.state.llm_preset]
+
+        def select_preset(_event: object = None) -> None:
+            """Auto-fill protocol/base/model from the chosen provider preset."""
+            target = get_llm_preset(llm_preset_var.get())
+            source = get_llm_preset(active_preset[0])
+            protocol, base, model = fill_from_preset(
+                target,
+                source,
+                llm_protocol_var.get(),
+                llm_base_var.get(),
+                llm_model_var.get(),
+            )
+            llm_protocol_var.set(protocol)
+            llm_base_var.set(base)
+            llm_model_var.set(model)
+            active_preset[0] = target.key
+
+        llm_preset_combo.bind("<<ComboboxSelected>>", select_preset)
         dialog.llm_protocol_var = llm_protocol_var
         dialog.llm_protocol_combo = llm_protocol_combo
         dialog.llm_base_url_var = llm_base_var
         dialog.llm_model_var = llm_model_var
+        dialog.llm_preset_var = llm_preset_var
+        dialog.llm_preset_combo = llm_preset_combo
+        dialog.llm_preset_select = select_preset
 
         def save() -> None:
             chosen = path_var.get().strip()
@@ -1683,6 +1734,7 @@ class VajSaveApp:
                 llm_base_var.get().strip(),
                 llm_model_var.get().strip(),
                 llm_protocol_var.get().strip(),
+                llm_preset_var.get().strip(),
             )
 
         def cancel() -> None:

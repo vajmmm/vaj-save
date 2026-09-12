@@ -44,6 +44,9 @@ from .artwork import (
     LLMCoverChooser,
     default_base_url,
     default_model,
+    fill_from_preset,
+    get_llm_preset,
+    normalize_preset,
     normalize_protocol,
 )
 from .metadata import (
@@ -229,6 +232,9 @@ class AppState:
             self._coerce_text(ftp_config.get("llm_model"))
             or default_model(self.llm_protocol)
         )
+        # The provider preset is only a convenience label + the source of the
+        # auto-filled protocol/base/model; an unknown value falls back to OpenAI.
+        self.llm_preset: str = normalize_preset(ftp_config.get("llm_preset"))
 
         self.volumes: List[VolumeInfo] = []
         self.current_mount: Optional[Path] = None
@@ -503,6 +509,7 @@ class AppState:
         base_url: object = _UNSET,
         model: object = _UNSET,
         protocol: object = _UNSET,
+        preset: object = _UNSET,
     ) -> None:
         """Persist the optional LLM cover-disambiguation settings.
 
@@ -516,7 +523,40 @@ class AppState:
         ``config.json`` so it survives a restart but is deliberately never copied
         into ``status_text`` or ``warnings``. The cached artwork service is
         dropped so the new chooser takes effect on the next cover lookup.
+
+        ``preset`` names a provider preset (``openai``/``anthropic``/
+        ``deepseek``/``openrouter``/``custom``). When it changes, the fields are
+        auto-filled from the preset -- but only where the current value is still
+        the previous preset's value (or blank), so a customised endpoint/model
+        is never clobbered; ``custom`` keeps every current value. The chosen
+        preset is persisted as ``llm_preset``. An unknown key (e.g. Gemini) falls
+        back to ``openai``.
         """
+        if preset is not _UNSET:
+            new_preset = normalize_preset(preset)
+            if new_preset != self.llm_preset:
+                target = get_llm_preset(new_preset)
+                source = get_llm_preset(self.llm_preset)
+                # An explicit argument wins over the stored value: the settings
+                # dialog always sends the current field text, so the preset must
+                # judge customisation from the *incoming* value.
+                cur_protocol = (
+                    self.llm_protocol
+                    if protocol is _UNSET
+                    else normalize_protocol(protocol)
+                )
+                cur_base = (
+                    self.llm_base_url
+                    if base_url is _UNSET
+                    else self._coerce_text(base_url)
+                )
+                cur_model = (
+                    self.llm_model if model is _UNSET else self._coerce_text(model)
+                )
+                protocol, base_url, model = fill_from_preset(
+                    target, source, cur_protocol, cur_base, cur_model
+                )
+            self.llm_preset = new_preset
         if protocol is not _UNSET:
             new_protocol = normalize_protocol(protocol)
             if new_protocol != self.llm_protocol:
@@ -555,6 +595,7 @@ class AppState:
         else:
             config.pop("llm_api_key", None)
         config["llm_protocol"] = self.llm_protocol
+        config["llm_preset"] = self.llm_preset
         config["llm_base_url"] = self.llm_base_url
         config["llm_model"] = self.llm_model
         save_app_config(config)
