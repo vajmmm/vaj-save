@@ -771,15 +771,52 @@ def test_ensure_cover_for_title_uses_named_boxarts_listing_after_404(tmp_path: P
     assert cache.lookup("3ds", "3ds:name:kirby") is not None
 
 
-def test_ensure_cover_for_title_ambiguous_listing_is_not_downloaded(tmp_path: Path):
-    """Two region variants of the same base title are ambiguous: the listing
-    fallback must refuse to guess and leave the cover uncached."""
+def test_ensure_cover_for_title_multi_region_listing_prefers_usa(tmp_path: Path):
+    """Several region variants of the same base title are now resolvable: the
+    listing fallback picks the USA release instead of refusing to guess."""
     library = tmp_path / "lib"
     cache = CoverCache(library / COVER_CACHE_DIR)
     entry = make_entry(tmp_path, platform="3ds", name="Mario Kart 7")
     listing = (
+        '<a href="Mario%20Kart%207%20(E)%20(En,Fr,De).png">'
+        "Mario Kart 7 (E) (En,Fr,De).png</a>"
+        '<a href="Mario%20Kart%207%20(U)%20(En).png">'
+        "Mario Kart 7 (U) (En).png</a>"
+    )
+    calls = []
+
+    def opener(url, timeout=None):
+        calls.append(url)
+        if url.endswith("/Named_Boxarts/"):
+            return FakeResponse(listing.encode("utf-8"))
+        if url.endswith("Mario%20Kart%207%20(U)%20(En).png"):
+            return FakeResponse(png_bytes())
+        return FakeResponse(b"missing", status=404)
+
+    service = ArtworkService(cache=cache, downloader=ArtworkDownloader(urlopen=opener))
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="3ds",
+        title="Mario Kart 7",
+        identity_key="3ds:name:mk7",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_DOWNLOADED
+    assert any(url.endswith("/Named_Boxarts/") for url in calls)
+    boxart = [url for url in calls if "Named_Boxarts" in url and url.endswith(".png")]
+    assert boxart and boxart[-1].endswith("Mario%20Kart%207%20(U)%20(En).png")
+    assert cache.lookup("3ds", "3ds:name:mk7") is not None
+
+
+def test_ensure_cover_for_title_conflicting_games_listing_is_not_downloaded(tmp_path: Path):
+    """Two *different* games matching one query are a genuine conflict: the
+    listing fallback must refuse to guess and leave the cover uncached."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="3ds", name="Mario")
+    listing = (
         '<a href="Mario%20Kart%207%20(USA).png">Mario Kart 7 (USA).png</a>'
-        '<a href="Mario%20Kart%207%20(Europe).png">Mario Kart 7 (Europe).png</a>'
+        '<a href="Mario%20Party%20(USA).png">Mario Party (USA).png</a>'
     )
     calls = []
 
@@ -793,13 +830,13 @@ def test_ensure_cover_for_title_ambiguous_listing_is_not_downloaded(tmp_path: Pa
     resolution = service.ensure_cover_for_title(
         entry,
         platform="3ds",
-        title="Mario Kart 7",
-        identity_key="3ds:name:mk7",
+        title="Mario",
+        identity_key="3ds:name:mario",
         library_root=library,
     )
     assert resolution.source == SOURCE_PLACEHOLDER
     assert any(url.endswith("/Named_Boxarts/") for url in calls)
-    assert cache.lookup("3ds", "3ds:name:mk7") is None
+    assert cache.lookup("3ds", "3ds:name:mario") is None
 
 
 def test_ensure_cover_for_title_ds_cartridge_uses_nds_boxart(tmp_path: Path):
@@ -842,6 +879,62 @@ def test_ensure_cover_for_title_ds_cartridge_uses_nds_boxart(tmp_path: Path):
     assert again.source == SOURCE_DOWNLOADED
     assert again.path == resolution.path
     assert len(calls) == after_first
+
+
+def test_ensure_cover_for_title_nano_assault_stays_on_3ds(tmp_path: Path):
+    """``NANO Assault`` is a 3DS title whose first word merely looks like a DS
+    code; it must be looked up under the 3DS system folder."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="3ds", name="NANO Assault")
+    calls = []
+
+    def opener(url, timeout=None):
+        calls.append(url)
+        if "Nintendo%20-%20Nintendo%203DS/Named_Boxarts/NANO%20Assault" in url:
+            return FakeResponse(png_bytes())
+        return FakeResponse(b"missing", status=404)
+
+    service = ArtworkService(cache=cache, downloader=ArtworkDownloader(urlopen=opener))
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="3ds",
+        title="NANO Assault",
+        identity_key="3ds:name:nano",
+        library_root=library,
+        title_id=None,
+    )
+    assert resolution.source == SOURCE_DOWNLOADED
+    assert any("Nintendo%20-%20Nintendo%203DS" in url for url in calls)
+    assert not any("/Nintendo%20-%20Nintendo%20DS/" in url for url in calls)
+
+
+def test_ensure_cover_for_title_real_ds_serial_uses_nds(tmp_path: Path):
+    """``IPKJ`` is a real NDS serial (Pokemon HeartGold, Japan); it must route
+    to the NDS system folder."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="3ds", name="IPKJ POKEMON HG")
+    calls = []
+
+    def opener(url, timeout=None):
+        calls.append(url)
+        if "Nintendo%20-%20Nintendo%20DS/Named_Boxarts/POKEMON%20HG" in url:
+            return FakeResponse(png_bytes())
+        return FakeResponse(b"missing", status=404)
+
+    service = ArtworkService(cache=cache, downloader=ArtworkDownloader(urlopen=opener))
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="3ds",
+        title="IPKJ POKEMON HG",
+        identity_key="3ds:name:ipkj",
+        library_root=library,
+        title_id=None,
+    )
+    assert resolution.source == SOURCE_DOWNLOADED
+    assert any("Nintendo%20-%20Nintendo%20DS" in url for url in calls)
+    assert not any("Nintendo%20-%20Nintendo%203DS" in url for url in calls)
 
 
 def test_ensure_cover_for_title_with_3ds_title_id_never_uses_nds(tmp_path: Path):

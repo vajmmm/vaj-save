@@ -496,6 +496,74 @@ def test_appstate_3ds_checkpoint_ds_cartridge_uses_nds_cover(tmp_path: Path):
     assert not any("Nintendo%20-%20Nintendo%203DS" in url for url in urls)
 
 
+def _3ds_cartridge_entry(tmp_path: Path, display: str) -> SaveEntry:
+    save_dir = tmp_path / "3ds" / "Checkpoint" / "saves" / display / "0"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    (save_dir / "save.dat").write_bytes(b"save")
+    return SaveEntry(
+        platform="3ds",
+        source_id="3ds_checkpoint",
+        display_name=display,
+        path=str(save_dir),
+    )
+
+
+def test_appstate_3ds_checkpoint_nano_assault_stays_on_3ds(tmp_path: Path):
+    """``NANO Assault`` is a 3DS title whose first word looks like a DS code;
+    it must use the 3DS folder, never the NDS one."""
+    entry = _3ds_cartridge_entry(tmp_path, "NANO Assault")
+
+    state = AppState(library_root=tmp_path / "lib")
+    result = state.resolve_save_identity(entry)
+    assert result.identity is not None
+    assert result.identity.title_id is None
+
+    urls = []
+
+    def opener(url, timeout=None):
+        urls.append(url)
+        if "Nintendo%20-%20Nintendo%203DS" in url:
+            return _FakeResponse(png_bytes())
+        return _FakeResponse(b"missing", status=404)
+
+    state._artwork_service = ArtworkService(
+        cache=CoverCache(state.library_root / COVER_CACHE_DIR),
+        downloader=ArtworkDownloader(urlopen=opener),
+    )
+    cover = state.ensure_save_cover(entry, result)
+    assert cover.source == SOURCE_DOWNLOADED
+    assert any("Nintendo%20-%20Nintendo%203DS" in url for url in urls)
+    assert not any("/Nintendo%20-%20Nintendo%20DS/" in url for url in urls)
+
+
+def test_appstate_3ds_checkpoint_real_ds_serial_uses_nds(tmp_path: Path):
+    """``IPKJ`` is a real NDS serial (Pokemon HeartGold, Japan); the entry must
+    download the NDS boxart, not the 3DS one."""
+    entry = _3ds_cartridge_entry(tmp_path, "IPKJ POKEMON HG")
+
+    state = AppState(library_root=tmp_path / "lib")
+    result = state.resolve_save_identity(entry)
+    assert result.identity is not None
+    assert result.identity.title_id is None
+
+    urls = []
+
+    def opener(url, timeout=None):
+        urls.append(url)
+        if "Nintendo%20-%20Nintendo%20DS" in url:
+            return _FakeResponse(png_bytes())
+        return _FakeResponse(b"missing", status=404)
+
+    state._artwork_service = ArtworkService(
+        cache=CoverCache(state.library_root / COVER_CACHE_DIR),
+        downloader=ArtworkDownloader(urlopen=opener),
+    )
+    cover = state.ensure_save_cover(entry, result)
+    assert cover.source == SOURCE_DOWNLOADED
+    assert any("Nintendo%20-%20Nintendo%20DS" in url for url in urls)
+    assert not any("Nintendo%20-%20Nintendo%203DS" in url for url in urls)
+
+
 def test_appstate_gba_identity_without_canonical_metadata_never_network(tmp_path: Path):
     """GBA/NDS titles come from the canonical index only; without it the app
     must never guess a provider name (criterion: no network)."""

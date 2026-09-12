@@ -3,23 +3,29 @@
 The libretro thumbnail server is an Apache autoindex: when a generated candidate
 filename 404s, the directory page already lists every real file name.  Instead of
 fanning out into more guessed variants, :func:`unique_boxart_match` accepts a
-listing entry only when **exactly one** is consistent with the query -- two
-region variants of the same base title are ambiguous and are rejected rather
-than picked arbitrarily.
+listing entry only when it is unambiguous: several region/language variants of
+**one** normalised title resolve to the USA release, while two genuinely
+different titles stay rejected rather than picked arbitrarily.
 
 The module also owns the one Checkpoint naming rule that changes the libretro
 *system*: a 3DS save with **no** usable 3DS title id whose display name is a DS
 cartridge code plus title (``AZEJ Kirby Super Star Ultra``) is a DS save and must
-be looked up under ``Nintendo - Nintendo DS``, never the 3DS folder.
+be looked up under ``Nintendo - Nintendo DS``, never the 3DS folder.  Only a
+*real* DS serial counts, so a 3DS title whose first word merely looks like one
+(``NANO Assault``) stays on 3DS.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
-from typing import Any, Callable, Optional, Sequence, Tuple
+from functools import lru_cache
+from typing import Any, Callable, FrozenSet, Optional, Sequence, Tuple
 from urllib.parse import unquote
 
+from ..identity.naming import extract_region, normalize_title
+from ..metadata.paths import bundled_libretro_dir
 from .title_ids import expand_3ds_title_id
 
 # A single directory entry link, e.g. ``<a href="Kirby%20...png">``.
@@ -28,6 +34,12 @@ _HREF_RE = re.compile(r"""href\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
 _NON_ALNUM_RE = re.compile(r"[^0-9a-z]+")
 # A DS cartridge Checkpoint folder: 4-char uppercase game code + a title.
 _DS_CARTRIDGE_RE = re.compile(r"^([0-9A-Z]{4})\s+(\S.*)$")
+# The fourth character of a DS game code is its region/language marker.  ``O``
+# is not one, so ``NANO`` (from the 3DS title "Nano Assault") is not a code.
+# This is only the fallback when the shipped serial index is unavailable; with
+# the index present, *real* serials are authoritative.
+_DS_REGION_MARKERS: FrozenSet[str] = frozenset("ABCDEFGHIJKLMNPQRSTUVWXYZ")
+_NDS_SERIAL_INDEX_NAME = "nds.json"
 # Never buffer more than this from a listing page (the largest real system
 # listing is a couple of MB).
 MAX_LISTING_BYTES = 16 * 1024 * 1024
@@ -85,6 +97,25 @@ def _contains(haystack: Tuple[str, ...], needle: Tuple[str, ...]) -> bool:
     return any(haystack[i : i + window] == needle for i in range(len(haystack) - window + 1))
 
 
+# Preference order for the region/language variants of one title.  USA wins; an
+# entry with no recognisable region tag is only used when nothing is tagged.
+_REGION_PREFERENCE = {"USA": 0, "World": 1, "Europe": 2, "Japan": 3}
+_UNKNOWN_REGION_RANK = 5
+_UNREGIONED_RANK = 9
+
+
+def _base_title_key(name: str) -> str:
+    """Region/language/extension-free key grouping one title's variants."""
+    return normalize_title(_strip_png(name))
+
+
+def _region_rank(name: str) -> Tuple[int, int]:
+    region = extract_region(_strip_png(name))
+    if region is None:
+        return (1, _UNREGIONED_RANK)
+    return (0, _REGION_PREFERENCE.get(region, _UNKNOWN_REGION_RANK))
+
+
 def unique_boxart_match(
     filenames: Sequence[str], query: Any
 ) -> Optional[str]:
@@ -92,9 +123,12 @@ def unique_boxart_match(
 
     A match is token-containment based so the query appears inside a longer
     real file name (``Kid Icarus Uprising`` -> ``Kid Icarus - Uprising (USA).png``)
-    or a region/language suffix still matches the bare Checkpoint title.  Zero or
-    more than one match returns ``None``: an ambiguous query is never resolved by
-    guessing.
+    or a region/language suffix still matches the bare Checkpoint title.
+
+    When several entries match, they are accepted only when they are all
+    region/language variants of **one** normalised title; the USA release is
+    then preferred.  Two genuinely different titles (a shared fragment such as
+    ``Super``) stay ambiguous and return ``None``.
     """
     query_tokens = _tokens(query)
     if not query_tokens:
@@ -110,9 +144,18 @@ def unique_boxart_match(
             query_tokens, entry_tokens
         ):
             matches.append(name)
+    if not matches:
+        return None
     if len(matches) == 1:
         return matches[0]
-    return None
+    keys = {_base_title_key(name) for name in matches}
+    if len(keys) != 1 or "" in keys:
+        return None
+    ranked = sorted(matches, key=_region_rank)
+    best_rank = _region_rank(ranked[0])
+    if sum(1 for name in matches if _region_rank(name) == best_rank) != 1:
+        return None
+    return ranked[0]
 
 
 def fetch_boxart_listing(
@@ -146,14 +189,54 @@ def fetch_boxart_listing(
     return parse_boxart_listing(raw)
 
 
+@lru_cache(maxsize=1)
+def _known_nds_serials() -> FrozenSet[str]:
+    """The 4-character NDS cartridge serials from the bundled offline index."""
+    path = bundled_libretro_dir() / _NDS_SERIAL_INDEX_NAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return frozenset()
+    records = data.get("records") if isinstance(data, dict) else None
+    if not isinstance(records, list):
+        return frozenset()
+    serials = set()
+    for record in records:
+        if isinstance(record, (list, tuple)) and len(record) > 3:
+            code = str(record[3] or "").strip().upper()
+            if len(code) == 4:
+                serials.add(code)
+    return frozenset(serials)
+
+
+def _is_ds_cartridge_code(code: str) -> bool:
+    """Whether a 4-character prefix is a real DS cartridge code.
+
+    The shipped NDS serial index is authoritative (so a title word like ``NANO``
+    is never a code, while an NDSi serial ending in ``O`` such as ``IRBO`` is).
+    Without the index a region/language marker on the fourth character is the
+    fallback.
+    """
+    serials = _known_nds_serials()
+    if serials:
+        return code in serials
+    return code[-1:] in _DS_REGION_MARKERS
+
+
 def strip_ds_cartridge_code(name: Any) -> Optional[str]:
     """Return the title in ``AZEJ Kirby Super Star Ultra``, or ``None``.
 
     Only an all-uppercase 4-character game code counts, so a normal mixed-case
     3DS title (``Cube Creator 3D``) is never mistaken for a cartridge code.
+    The code must also be a **real** DS serial from the shipped NDS index (or,
+    without that index, carry a region/language marker), so a bare title word
+    (``NANO`` in "Nano Assault") is rejected.
     """
     match = _DS_CARTRIDGE_RE.match(str(name or "").strip())
     if not match:
+        return None
+    code = match.group(1)
+    if not _is_ds_cartridge_code(code):
         return None
     title = match.group(2).strip()
     title = title.strip(" -_")
