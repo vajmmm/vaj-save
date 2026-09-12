@@ -496,3 +496,11 @@ def test_probe_uses_a_neutral_system_prompt_not_the_chooser_one():
     system = captured["body"]["messages"][0]["content"]
     assert "connectivity check" in system.lower()
     assert "box-art" not in system.lower()
+
+
+def test_default_timeout_fits_a_large_listing_prompt():
+    """A 40-candidate prompt answered by a reasoning model needs headroom; a
+    15s budget timed out on a real gateway and fell back to the placeholder."""
+    from vajsave.artwork.llm_choice import DEFAULT_LLM_TIMEOUT
+
+    assert DEFAULT_LLM_TIMEOUT >= 30.0

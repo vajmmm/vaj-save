@@ -34,7 +34,11 @@ from typing import Any, Callable, Optional, Sequence, Tuple, Union
 # self-hosted gateways.
 DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_LLM_MODEL = "gpt-4o-mini"
-DEFAULT_LLM_TIMEOUT = 15.0
+# A listing-disambiguation prompt carries up to 40 candidate names and is
+# answered by a reasoning model, so the default is generous: a 15s budget made
+# the optional cover step time out on slower gateways and fall back to the
+# placeholder even though the model would have answered.
+DEFAULT_LLM_TIMEOUT = 30.0
 MAX_LLM_RESPONSE_BYTES = 256 * 1024
 
 # Debug log written next to the library root when a chooser is built with a
