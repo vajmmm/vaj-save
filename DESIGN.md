@@ -297,7 +297,7 @@ no `ttk.Button`/`ttk.Checkbutton` remains.
 
 - **States**: `idle`, `hover` (`#e2e2e2` neutral / `#409cff` accent), `pressed`,
   and an `accent` variant for the primary 备份 action.
-- **Toggle state**: `selected` (used by "监听插拔" / "隐藏已备份") tints the button.
+- **Toggle state**: `selected` (used by "监听插拔" / "仅显示有更新") tints the button.
 - **API**: `set_text`, `set_selected`, `invoke`.
 - **Sizing**: height `30px` in the status bar, `34px` in secondary actions and
   `40px` in the primary inspector action; width is measured from the label font
