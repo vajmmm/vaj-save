@@ -624,7 +624,10 @@ class AppState:
                     identity is not None
                     and (identity.platform or "").strip().lower()
                     in _TITLE_PROVIDER_PLATFORMS
-                    and (identity.title or "").strip()
+                    and (
+                        (identity.title or "").strip()
+                        or (identity.title_id or "").strip()
+                    )
                 ):
                     return self.artwork_service.ensure_cover_for_title(
                         entry,
@@ -632,6 +635,7 @@ class AppState:
                         title=identity.title,
                         identity_key=identity.identity_key,
                         library_root=self.library_root,
+                        title_id=identity.title_id,
                     )
                 return self.resolve_save_cover(entry, result=result)
             if result is None:

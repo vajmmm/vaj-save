@@ -455,8 +455,9 @@ def test_appstate_3ds_cover_uses_checkpoint_display_name(tmp_path: Path):
     )
     cover = state.ensure_save_cover(entry, result)
     assert cover.source == SOURCE_DOWNLOADED
-    assert urls and "Nintendo%20-%20Nintendo%203DS" in urls[0]
-    assert "Persona%20Q2%20New%20Cinema%20Labyrinth" in urls[0]
+    boxart = [url for url in urls if "Named_Boxarts" in url]
+    assert boxart and "Nintendo%20-%20Nintendo%203DS" in boxart[0]
+    assert "Persona%20Q2%20New%20Cinema%20Labyrinth" in boxart[0]
 
 
 def test_appstate_gba_identity_without_canonical_metadata_never_network(tmp_path: Path):

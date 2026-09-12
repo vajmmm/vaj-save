@@ -518,6 +518,73 @@ def test_ensure_cover_for_title_downloads_psp_boxart(tmp_path: Path):
     assert cache.manifest()["psp:ULJM05800"]["remote_url"] == calls[0]
 
 
+def test_expand_3ds_checkpoint_id_and_eshop_name_cleanup():
+    from vajsave.artwork.title_ids import (
+        clean_eshop_name,
+        expand_3ds_title_id,
+        title_candidates_for_id,
+        titles_from_3dsdb_lists,
+    )
+
+    assert expand_3ds_title_id("0x00306") == "0004000000030600"
+    assert expand_3ds_title_id("0004000000030800") == "0004000000030800"
+    assert (
+        clean_eshop_name("The Legend of Zelda™: <br>A Link Between Worlds")
+        == "The Legend of Zelda: A Link Between Worlds"
+    )
+    catalog = titles_from_3dsdb_lists(
+        [
+            (
+                "USA",
+                [
+                    {
+                        "Name": "The Legend of Zelda™: <br>A Link Between Worlds",
+                        "TitleID": "00040000000EC300",
+                    }
+                ],
+            )
+        ]
+    )
+    names = title_candidates_for_id(catalog, "0x00EC3")
+    assert "The Legend of Zelda: A Link Between Worlds" in names
+    assert "The Legend of Zelda: A Link Between Worlds (USA)" in names
+
+
+def test_ensure_cover_for_title_uses_3ds_title_id_when_folder_name_misses(tmp_path: Path):
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="3ds", name="The Legend of Zelda")
+    calls = []
+    listing = json.dumps(
+        [
+            {
+                "Name": "The Legend of Zelda™: <br>A Link Between Worlds",
+                "TitleID": "00040000000EC300",
+            }
+        ]
+    ).encode()
+
+    def opener(url, timeout=None):
+        calls.append(url)
+        if "3dsdb" in url or "list_" in url:
+            return FakeResponse(listing)
+        if "A%20Link%20Between%20Worlds" in url:
+            return FakeResponse(png_bytes())
+        return FakeResponse(b"missing", status=404)
+
+    service = ArtworkService(cache=cache, downloader=ArtworkDownloader(urlopen=opener))
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="3ds",
+        title="The Legend of Zelda",
+        identity_key="3ds:0x00EC3",
+        library_root=library,
+        title_id="0x00EC3",
+    )
+    assert resolution.source == SOURCE_DOWNLOADED
+    assert any("A%20Link%20Between%20Worlds" in url for url in calls)
+
+
 def test_ensure_cover_for_title_retries_region_suffix_after_404(tmp_path: Path):
     library = tmp_path / "lib"
     cache = CoverCache(library / COVER_CACHE_DIR)

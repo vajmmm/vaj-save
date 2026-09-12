@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional, Union
+from typing import Iterable, List, Optional, Tuple, Union
 
 from ..covers import find_embedded_cover, user_cover_path
 from .cache import CoverCache
@@ -32,6 +32,7 @@ from .providers import (
     LibretroThumbnailProvider,
     libretro_title_candidates,
 )
+from .title_ids import fetch_3dsdb_catalog, load_catalog, store_catalog, title_candidates_for_id
 
 SOURCE_USER = "user"
 SOURCE_DOWNLOADED = "downloaded"
@@ -226,6 +227,7 @@ class ArtworkService:
         title: str,
         identity_key: Optional[str],
         library_root: Union[Path, str, None],
+        title_id: Optional[str] = None,
     ) -> ArtworkResolution:
         """Cover for a platform whose provider key is the save's own title.
 
@@ -237,6 +239,8 @@ class ArtworkService:
         Checkpoint / SFO titles often miss the No-Intro filename on the first
         try, so :func:`libretro_title_candidates` walks a short list of
         whitespace, case and region variants until one download succeeds.
+        3DS Checkpoint short IDs (``0x00306``) are expanded to Title IDs and
+        looked up in the cached 3dsdb eShop list first.
         """
         if entry is None:
             return PLACEHOLDER
@@ -250,7 +254,15 @@ class ArtworkService:
         embedded = _embedded_path(entry)
         if embedded is not None:
             return ArtworkResolution(str(embedded), SOURCE_EMBEDDED)
-        for candidate in libretro_title_candidates(title):
+        names = []
+        if plat == "3ds" and title_id:
+            names.extend(self._3ds_names_for_title_id(title_id))
+        names.extend(libretro_title_candidates(title))
+        seen = set()
+        for candidate in names:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
             artwork = self.ref_for(plat, candidate)
             if artwork is None:
                 continue
@@ -260,6 +272,16 @@ class ArtworkService:
             if stored is not None:
                 return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
         return PLACEHOLDER
+
+    def _3ds_names_for_title_id(self, title_id: object) -> Tuple[str, ...]:
+        root = self.cache.root if self.cache is not None else None
+        catalog = load_catalog(root)
+        if not catalog:
+            timeout = max(float(getattr(self.downloader, "timeout", 5) or 5), 20.0)
+            catalog = fetch_3dsdb_catalog(self.downloader._urlopen, timeout=timeout)
+            if catalog:
+                store_catalog(root, catalog)
+        return title_candidates_for_id(catalog, title_id)
 
     def ensure_cover(
         self,
