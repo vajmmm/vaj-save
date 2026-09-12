@@ -1496,3 +1496,72 @@ def test_pull_ftp_success_keeps_card_and_folder_behavior(tmp_path, psp_sfo_bytes
     folder.mkdir()
     state.select_custom_path(folder)
     assert state.current_mount == folder
+
+
+# --- optional LLM cover disambiguation ---------------------------------------
+
+
+def test_llm_cover_disabled_by_default(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
+    state = AppState(library_root=tmp_path / "lib")
+    assert state.llm_cover_enabled is False
+    assert state.llm_api_key == ""
+    assert state.artwork_service.llm_chooser is None
+
+
+def test_set_llm_cover_persists_key_but_never_leaks_it(tmp_path: Path, monkeypatch):
+    from vajsave.library import load_app_config
+
+    cfg = tmp_path / "config.json"
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(cfg))
+    secret = "sk-llm-secret-xyz"
+    state = AppState(library_root=tmp_path / "lib")
+
+    state.set_llm_cover(enabled=True, api_key=secret)
+
+    assert state.llm_cover_enabled is True
+    assert state.llm_api_key == secret
+    config = load_app_config()
+    assert config["llm_cover_enabled"] is True
+    assert config["llm_api_key"] == secret
+    assert secret not in state.status_text
+    assert all(secret not in warning for warning in state.warnings)
+    assert secret not in repr(state.artwork_service.llm_chooser)
+
+    # Turning it off and clearing the key removes the persisted secret.
+    state.set_llm_cover(enabled=False, api_key="")
+    assert state.llm_cover_enabled is False
+    assert state.artwork_service.llm_chooser is None
+    assert "llm_api_key" not in load_app_config()
+
+
+def test_llm_cover_enabled_without_key_has_no_chooser(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
+    state = AppState(library_root=tmp_path / "lib")
+    state.set_llm_cover(enabled=True)
+    assert state.llm_cover_enabled is True
+    assert state.llm_api_key == ""
+    assert state.artwork_service.llm_chooser is None
+
+
+def test_app_state_reads_llm_cover_from_config(tmp_path: Path, monkeypatch):
+    from vajsave.library import save_app_config
+
+    cfg = tmp_path / "config.json"
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(cfg))
+    save_app_config({"llm_cover_enabled": True, "llm_api_key": "sk-from-config"})
+    state = AppState(library_root=tmp_path / "lib")
+    assert state.llm_cover_enabled is True
+    assert state.llm_api_key == "sk-from-config"
+    assert state.artwork_service.llm_chooser is not None
+
+
+def test_llm_cover_enabled_config_values_are_coerced(tmp_path: Path, monkeypatch):
+    from vajsave.library import save_app_config
+
+    for raw, expected in ((True, True), ("true", True), ("off", False), (0, False)):
+        cfg = tmp_path / f"config-{raw}.json"
+        monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(cfg))
+        save_app_config({"llm_cover_enabled": raw})
+        state = AppState(library_root=tmp_path / "lib")
+        assert state.llm_cover_enabled is expected

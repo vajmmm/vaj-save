@@ -24,6 +24,13 @@ from .cache import (
 )
 from .downloader import DEFAULT_TIMEOUT, MAX_DOWNLOAD_BYTES, ArtworkDownloader
 from .loader import ArtworkLoader
+from .llm_choice import (
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MODEL,
+    DEFAULT_LLM_TIMEOUT,
+    LLMCoverChooser,
+    choose_cover_filename,
+)
 from .providers import (
     LIBRETRO_SYSTEM_NAMES,
     LIBRETRO_THUMBNAIL_BASE,
@@ -60,6 +67,11 @@ __all__ = [
     "DEFAULT_TIMEOUT",
     "MAX_DOWNLOAD_BYTES",
     "ArtworkLoader",
+    "LLMCoverChooser",
+    "choose_cover_filename",
+    "DEFAULT_LLM_BASE_URL",
+    "DEFAULT_LLM_MODEL",
+    "DEFAULT_LLM_TIMEOUT",
     "CoverCache",
     "COVER_CACHE_DIR",
     "MANIFEST_NAME",

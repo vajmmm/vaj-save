@@ -296,6 +296,17 @@ saturated accent fill.
   entry is rejected with a status warning, the dialog stays open, and
   `settings.json` is left untouched. Changing the value never prunes existing
   versions — pruning still happens only when a new version is added.
+- **Optional LLM cover disambiguation** sits below `keep_last`: an 启用 toggle and
+  a masked API Key field (both off/blank by default). The toggle and the key are
+  persisted to `config.json` (so they survive a restart); the key is written to
+  disk but never echoed into status/warning text or any log line. When enabled,
+  the LLM is consulted *only* for a genuinely ambiguous `Named_Boxarts` listing —
+  several *different* titles matching one query — and must return one exact file
+  name from the offered list. Region/language variants of a single title are
+  still resolved deterministically to the USA release without any LLM call, and
+  a disabled/blank configuration keeps multi-candidate behaviour byte-for-byte
+  as before (placeholder, no network). A failed, nonsense or `NONE` answer leaves
+  the placeholder in place and writes nothing to the cover cache.
 - **帮助** opens a short, non-resizable guide. Its copy makes the archive
   direction explicit ("把掌机存档备份到电脑，不会写入掌机") and separates 备份 from
   the copy-to-folder 恢复. It replaces the old "帮助中心暂未配置" placeholder status.

@@ -15,6 +15,7 @@ from __future__ import annotations
 import urllib.error
 
 from vajsave.artwork.boxart_index import (
+    ambiguous_boxart_matches,
     fetch_boxart_listing,
     normalize_boxart_name,
     parse_boxart_listing,
@@ -130,6 +131,29 @@ def test_unique_boxart_match_prefers_usa_among_same_title_regions():
     assert unique_boxart_match(names, "mario kart 7") == "Mario Kart 7 (USA).png"
     # A query that only names the region-free base still picks USA.
     assert unique_boxart_match(names, "Mario Kart") == "Mario Kart 7 (USA).png"
+
+
+def test_ambiguous_boxart_matches_only_for_genuinely_conflicting_titles():
+    """Region variants of one title are resolved deterministically (USA) and
+    must *not* be handed to the optional LLM; only two genuinely different
+    titles matching one query are ambiguous candidates."""
+    names = (
+        "Mario Kart 7 (USA).png",
+        "Mario Kart 7 (Europe).png",
+        "Mario Party (USA).png",
+        "Kirby Super Star Ultra (USA).png",
+    )
+    assert ambiguous_boxart_matches(names, "Mario Kart 7") == ()
+    assert ambiguous_boxart_matches(names, "Mario") == (
+        "Mario Kart 7 (USA).png",
+        "Mario Kart 7 (Europe).png",
+        "Mario Party (USA).png",
+    )
+    # A unique match, no match at all, or an empty listing is never ambiguous.
+    assert ambiguous_boxart_matches(names, "Kirby Super Star Ultra") == ()
+    assert ambiguous_boxart_matches(names, "Metroid") == ()
+    assert ambiguous_boxart_matches((), "Mario") == ()
+    assert ambiguous_boxart_matches(names, "") == ()
 
 
 def test_unique_boxart_match_conflicting_games_stay_unresolved():

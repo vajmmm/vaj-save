@@ -148,3 +148,54 @@ def test_settings_negative_keep_last_is_rejected(tk_root, tmp_path):
         assert load_keep_last(state.library_root) == DEFAULT_KEEP_LAST
     finally:
         _dispose(app, tk_root)
+
+
+# --- optional LLM cover disambiguation ---------------------------------------
+
+
+def test_settings_dialog_exposes_llm_cover_controls(tk_root, tmp_path):
+    app, state = _app(tk_root, tmp_path)
+    try:
+        dialog = _open_settings(app, tk_root)
+        assert hasattr(dialog, "llm_cover_button")
+        assert hasattr(dialog, "llm_api_key_var")
+        assert dialog.llm_cover_button.selected is False
+        assert dialog.llm_api_key_var.get() == ""
+        # The key field is masked so it is not shown in cleartext.
+        assert dialog.llm_api_key_entry.cget("show") == "\u2022"
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_settings_save_persists_llm_cover_and_key(tk_root, tmp_path):
+    from vajsave.library import load_app_config
+
+    app, state = _app(tk_root, tmp_path)
+    try:
+        dialog = _open_settings(app, tk_root)
+        dialog.llm_cover_button.invoke()  # toggle the feature on
+        assert dialog.llm_cover_button.selected is True
+        dialog.llm_api_key_var.set("sk-ui-secret")
+        _find_button(dialog, "保存").invoke()
+
+        config = load_app_config()
+        assert config["llm_cover_enabled"] is True
+        assert config["llm_api_key"] == "sk-ui-secret"
+        assert "sk-ui-secret" not in state.status_text
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_settings_reads_current_llm_cover_settings(tk_root, tmp_path):
+    from vajsave.library import save_app_config
+
+    app, state = _app(tk_root, tmp_path)
+    try:
+        save_app_config({"llm_cover_enabled": True, "llm_api_key": "sk-existing"})
+        state.llm_cover_enabled = True
+        state.llm_api_key = "sk-existing"
+        dialog = _open_settings(app, tk_root)
+        assert dialog.llm_cover_button.selected is True
+        assert dialog.llm_api_key_var.get() == "sk-existing"
+    finally:
+        _dispose(app, tk_root)

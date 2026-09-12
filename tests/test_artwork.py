@@ -839,6 +839,198 @@ def test_ensure_cover_for_title_conflicting_games_listing_is_not_downloaded(tmp_
     assert cache.lookup("3ds", "3ds:name:mario") is None
 
 
+def test_ensure_cover_for_title_ambiguous_listing_without_llm_stays_placeholder(
+    tmp_path: Path,
+):
+    """Default OFF: an ambiguous listing behaves exactly as before -- no chooser
+    is consulted, nothing is cached and the placeholder is returned."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="3ds", name="Mario")
+    listing = (
+        '<a href="Mario%20Kart%207%20(USA).png">Mario Kart 7 (USA).png</a>'
+        '<a href="Mario%20Party%20(USA).png">Mario Party (USA).png</a>'
+    )
+    calls = []
+    offered = []
+
+    def opener(url, timeout=None):
+        calls.append(url)
+        if url.endswith("/Named_Boxarts/"):
+            return FakeResponse(listing.encode("utf-8"))
+        return FakeResponse(b"missing", status=404)
+
+    def chooser(candidates, query):
+        offered.append((tuple(candidates), query))
+        return "Mario Party (USA).png"
+
+    service = ArtworkService(cache=cache, downloader=ArtworkDownloader(urlopen=opener))
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="3ds",
+        title="Mario",
+        identity_key="3ds:name:mario",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_PLACEHOLDER
+    assert offered == []
+    assert cache.lookup("3ds", "3ds:name:mario") is None
+
+
+def test_ensure_cover_for_title_llm_picks_ambiguous_candidate(tmp_path: Path):
+    """When enabled and the model returns one of the offered file names, that
+    cover is downloaded and cached."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="3ds", name="Mario")
+    listing = (
+        '<a href="Mario%20Kart%207%20(USA).png">Mario Kart 7 (USA).png</a>'
+        '<a href="Mario%20Party%20(USA).png">Mario Party (USA).png</a>'
+    )
+    calls = []
+    offered = []
+
+    def opener(url, timeout=None):
+        calls.append(url)
+        if url.endswith("/Named_Boxarts/"):
+            return FakeResponse(listing.encode("utf-8"))
+        if url.endswith("Mario%20Party%20(USA).png"):
+            return FakeResponse(png_bytes())
+        return FakeResponse(b"missing", status=404)
+
+    def chooser(candidates, query):
+        offered.append((tuple(candidates), query))
+        return "Mario Party (USA).png"
+
+    service = ArtworkService(
+        cache=cache,
+        downloader=ArtworkDownloader(urlopen=opener),
+        llm_chooser=chooser,
+    )
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="3ds",
+        title="Mario",
+        identity_key="3ds:name:mario",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_DOWNLOADED
+    assert offered == [
+        (("Mario Kart 7 (USA).png", "Mario Party (USA).png"), "Mario")
+    ]
+    boxart = [url for url in calls if "Named_Boxarts" in url and url.endswith(".png")]
+    assert boxart and boxart[-1].endswith("Mario%20Party%20(USA).png")
+    assert cache.lookup("3ds", "3ds:name:mario") is not None
+
+
+def test_ensure_cover_for_title_llm_nonsense_is_placeholder_and_uncached(
+    tmp_path: Path,
+):
+    """A model that answers NONE, nonsense, or a name outside the list leaves the
+    placeholder in place with no cache write."""
+    library = tmp_path / "lib"
+    entry = make_entry(tmp_path, platform="3ds", name="Mario")
+    listing = (
+        '<a href="Mario%20Kart%207%20(USA).png">Mario Kart 7 (USA).png</a>'
+        '<a href="Mario%20Party%20(USA).png">Mario Party (USA).png</a>'
+    )
+
+    def opener(url, timeout=None):
+        if url.endswith("/Named_Boxarts/"):
+            return FakeResponse(listing.encode("utf-8"))
+        return FakeResponse(b"missing", status=404)
+
+    for answer in ("NONE", "I cannot tell", "Kirby Super Star Ultra (USA).png"):
+        cache = CoverCache(library / ("covers-" + str(abs(hash(answer)))))
+        service = ArtworkService(
+            cache=cache,
+            downloader=ArtworkDownloader(urlopen=opener),
+            llm_chooser=lambda candidates, query, answer=answer: answer,
+        )
+        resolution = service.ensure_cover_for_title(
+            entry,
+            platform="3ds",
+            title="Mario",
+            identity_key="3ds:name:mario",
+            library_root=library,
+        )
+        assert resolution.source == SOURCE_PLACEHOLDER
+        assert cache.lookup("3ds", "3ds:name:mario") is None
+
+
+def test_ensure_cover_for_title_llm_chooser_exception_keeps_placeholder(
+    tmp_path: Path,
+):
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="3ds", name="Mario")
+    listing = (
+        '<a href="Mario%20Kart%207%20(USA).png">Mario Kart 7 (USA).png</a>'
+        '<a href="Mario%20Party%20(USA).png">Mario Party (USA).png</a>'
+    )
+
+    def opener(url, timeout=None):
+        if url.endswith("/Named_Boxarts/"):
+            return FakeResponse(listing.encode("utf-8"))
+        return FakeResponse(b"missing", status=404)
+
+    def boom(candidates, query):
+        raise RuntimeError("chooser exploded")
+
+    service = ArtworkService(
+        cache=cache,
+        downloader=ArtworkDownloader(urlopen=opener),
+        llm_chooser=boom,
+    )
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="3ds",
+        title="Mario",
+        identity_key="3ds:name:mario",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_PLACEHOLDER
+    assert cache.lookup("3ds", "3ds:name:mario") is None
+
+
+def test_ensure_cover_for_title_multi_region_never_calls_llm(tmp_path: Path):
+    """Several region variants of one game are already resolved to USA by the
+    deterministic matcher, so the optional LLM must not be consulted."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="3ds", name="Mario Kart 7")
+    listing = (
+        '<a href="Mario%20Kart%207%20(Japan).png">Mario Kart 7 (Japan).png</a>'
+        '<a href="Mario%20Kart%207%20(Europe).png">Mario Kart 7 (Europe).png</a>'
+        '<a href="Mario%20Kart%207%20(USA).png">Mario Kart 7 (USA).png</a>'
+    )
+
+    def opener(url, timeout=None):
+        if url.endswith("/Named_Boxarts/"):
+            return FakeResponse(listing.encode("utf-8"))
+        if url.endswith("Mario%20Kart%207%20(USA).png"):
+            return FakeResponse(png_bytes())
+        return FakeResponse(b"missing", status=404)
+
+    def chooser(candidates, query):
+        raise AssertionError("LLM must not be consulted for region variants")
+
+    service = ArtworkService(
+        cache=cache,
+        downloader=ArtworkDownloader(urlopen=opener),
+        llm_chooser=chooser,
+    )
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="3ds",
+        title="Mario Kart 7",
+        identity_key="3ds:name:mk7",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_DOWNLOADED
+    assert Path(resolution.path).name == cache.identity_hash("3ds:name:mk7") + ".png"
+
+
 def test_ensure_cover_for_title_ds_cartridge_uses_nds_boxart(tmp_path: Path):
     """A 3DS Checkpoint entry with no 3DS title id whose display name is a DS
     cartridge code plus title must resolve against the NDS system folder."""

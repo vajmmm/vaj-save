@@ -21,10 +21,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple, Union
+from typing import Callable, Iterable, List, Optional, Sequence, Tuple, Union
 
 from ..covers import find_embedded_cover, user_cover_path
 from .boxart_index import (
+    ambiguous_boxart_matches,
     fetch_boxart_listing,
     resolve_boxart_system,
     unique_boxart_match,
@@ -128,9 +129,14 @@ class ArtworkService:
         cache: Optional[CoverCache] = None,
         downloader: Optional[ArtworkDownloader] = None,
         providers: Optional[Iterable[ArtworkProvider]] = None,
+        llm_chooser: Optional[Callable[[Sequence[str], str], Optional[str]]] = None,
     ) -> None:
         self.cache = cache
         self.downloader = downloader or ArtworkDownloader()
+        # Optional ``(candidates, query) -> filename|None`` resolver for a
+        # genuinely ambiguous listing (different titles sharing a query).
+        # ``None`` keeps the app fully deterministic and offline-by-default.
+        self.llm_chooser = llm_chooser
         if providers is None:
             self.providers: List[ArtworkProvider] = [LibretroThumbnailProvider()]
         else:
@@ -324,6 +330,11 @@ class ArtworkService:
             if matched:
                 break
         if not matched:
+            # Deterministic matching is exhausted. Only a genuine multi-title
+            # ambiguity is eligible for the optional LLM; region variants were
+            # already resolved above, and a no-match query has no candidates.
+            matched = self._choose_listing_with_llm(filenames, names)
+        if not matched:
             return None
         filename = matched[:-4] if matched.lower().endswith(".png") else matched
         try:
@@ -345,6 +356,30 @@ class ArtworkService:
         if stored is None:
             return None
         return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
+
+    def _choose_listing_with_llm(
+        self, filenames: Tuple[str, ...], names: List[str]
+    ) -> Optional[str]:
+        """Ask the optional chooser to resolve an ambiguous listing.
+
+        Only candidates the deterministic matcher leaves unresolved are offered,
+        and the reply is accepted only when it is one of them. No chooser, a
+        chooser error, or a name outside the list all resolve to ``None`` so the
+        caller keeps the placeholder and never writes the cache.
+        """
+        if self.llm_chooser is None:
+            return None
+        for query in names:
+            candidates = ambiguous_boxart_matches(filenames, query)
+            if not candidates:
+                continue
+            try:
+                choice = self.llm_chooser(candidates, query)
+            except Exception:  # noqa: BLE001 - a bad chooser must not break fallback
+                continue
+            if isinstance(choice, str) and choice in candidates:
+                return choice
+        return None
 
     def _3ds_names_for_title_id(self, title_id: object) -> Tuple[str, ...]:
         root = self.cache.root if self.cache is not None else None

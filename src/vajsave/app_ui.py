@@ -1504,6 +1504,18 @@ class VajSaveApp:
         self.update_status(self.state.status_text)
         self.update_warning("")
 
+    def _apply_llm_cover(self, enabled: bool, api_key: str) -> None:
+        """Apply the optional LLM cover-disambiguation settings.
+
+        The key is handed to the state, which persists it; it is never echoed
+        into the status/warning text shown here.
+        """
+        self.state.set_llm_cover(enabled=enabled, api_key=api_key)
+        if enabled and not api_key:
+            self.update_status("已开启 LLM 封面消歧（未填 API Key，暂不生效）")
+        else:
+            self.update_status("LLM 封面消歧设置已更新")
+
     def on_help_clicked(self) -> None:
         """Open the short guide; the archive direction is the point."""
         dialog = tk.Toplevel(self.root)
@@ -1579,6 +1591,32 @@ class VajSaveApp:
         # Exposed so the dialog's bound value is reachable from tests.
         dialog.keep_last_var = keep_var
 
+        # Optional LLM cover disambiguation: off by default, only consulted for
+        # a genuinely ambiguous listing, and inert without a key.
+        tk.Label(
+            dialog,
+            text="LLM 封面消歧（可选，仅多候选歧义时）",
+            bg=BG,
+            fg=TEXT,
+            font=ui_font(13, "bold"),
+        ).pack(anchor="w", padx=16, pady=(12, 6))
+        llm_row = tk.Frame(dialog, bg=BG)
+        llm_row.pack(fill=tk.X, padx=16)
+        llm_toggle = CanvasButton(
+            llm_row,
+            text="启用",
+            selected=self.state.llm_cover_enabled,
+            command=lambda: llm_toggle.set_selected(not llm_toggle.selected),
+        )
+        llm_toggle.pack(side=tk.LEFT)
+        llm_key_var = tk.StringVar(value=self.state.llm_api_key)
+        llm_key_entry = ttk.Entry(llm_row, textvariable=llm_key_var, width=30)
+        llm_key_entry.configure(show="\u2022")
+        llm_key_entry.pack(side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True)
+        dialog.llm_cover_button = llm_toggle
+        dialog.llm_api_key_var = llm_key_var
+        dialog.llm_api_key_entry = llm_key_entry
+
         def save() -> None:
             chosen = path_var.get().strip()
             if not chosen:
@@ -1595,6 +1633,9 @@ class VajSaveApp:
             self._apply_rom_dirs(gba or None, nds or None)
             self._apply_libretro_dir(meta or None)
             self._apply_keep_last(keep_value)
+            self._apply_llm_cover(
+                dialog.llm_cover_button.selected, llm_key_var.get().strip()
+            )
 
         def cancel() -> None:
             dialog.destroy()

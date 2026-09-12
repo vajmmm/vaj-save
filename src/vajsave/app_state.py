@@ -41,6 +41,7 @@ from .artwork import (
     ArtworkResolution,
     ArtworkService,
     CoverCache,
+    LLMCoverChooser,
 )
 from .metadata import (
     METADATA_CACHE_NAME,
@@ -203,6 +204,15 @@ class AppState:
         self.ftp_user: str = self._coerce_text(ftp_config.get("ftp_user"))
         self._ftp_password: str = ""
 
+        # Optional LLM cover disambiguation: only ever consulted for a listing
+        # where several *different* titles share a query. Disabled by default
+        # and inert without a key. The key is persisted so the setting survives
+        # a restart, but is never echoed into status/warning text.
+        self.llm_cover_enabled: bool = self._coerce_bool(
+            ftp_config.get("llm_cover_enabled")
+        )
+        self.llm_api_key: str = self._coerce_text(ftp_config.get("llm_api_key"))
+
         self.volumes: List[VolumeInfo] = []
         self.current_mount: Optional[Path] = None
         self.current_result: Optional[ScanResult] = None
@@ -228,6 +238,15 @@ class AppState:
     @staticmethod
     def _coerce_text(value: object) -> str:
         return "" if value is None else str(value).strip()
+
+    @staticmethod
+    def _coerce_bool(value: object) -> bool:
+        """Interpret a persisted config value as a boolean (JSON is preferred)."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
+        return bool(value)
 
     @staticmethod
     def _resolve_ftp_preset_key(config: Dict) -> str:
@@ -430,8 +449,42 @@ class AppState:
         """Cover provider/downloader bound to the library's ``covers/`` tree."""
         if self._artwork_service is None:
             cache = CoverCache(self.library_root / COVER_CACHE_DIR)
-            self._artwork_service = ArtworkService(cache=cache)
+            self._artwork_service = ArtworkService(
+                cache=cache, llm_chooser=self._build_llm_chooser()
+            )
         return self._artwork_service
+
+    def _build_llm_chooser(self):
+        """The optional cover chooser, or ``None`` when disabled/unconfigured."""
+        if not self.llm_cover_enabled or not self.llm_api_key:
+            return None
+        return LLMCoverChooser(api_key=self.llm_api_key)
+
+    def set_llm_cover(
+        self,
+        enabled: Optional[bool] = None,
+        api_key: object = _UNSET,
+    ) -> None:
+        """Persist the optional LLM cover-disambiguation settings.
+
+        ``enabled`` toggles the feature and ``api_key`` (when passed) replaces
+        the stored key; the key is written to ``config.json`` so it survives a
+        restart but is deliberately never copied into ``status_text`` or
+        ``warnings``. The cached artwork service is dropped so the new chooser
+        takes effect on the next cover lookup.
+        """
+        if enabled is not None:
+            self.llm_cover_enabled = bool(enabled)
+        if api_key is not _UNSET:
+            self.llm_api_key = self._coerce_text(api_key)
+        config = load_app_config()
+        config["llm_cover_enabled"] = self.llm_cover_enabled
+        if self.llm_api_key:
+            config["llm_api_key"] = self.llm_api_key
+        else:
+            config.pop("llm_api_key", None)
+        save_app_config(config)
+        self._artwork_service = None
 
     def set_libretro_dir(self, value: object = None) -> Optional[Path]:
         """Persist (or clear) the optional libretro ``.dat`` directory."""

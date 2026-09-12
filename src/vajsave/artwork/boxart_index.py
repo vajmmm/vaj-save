@@ -116,6 +116,47 @@ def _region_rank(name: str) -> Tuple[int, int]:
     return (0, _REGION_PREFERENCE.get(region, _UNKNOWN_REGION_RANK))
 
 
+def _matching_entries(filenames: Sequence[str], query: Any) -> list:
+    """Listing entries whose tokens and ``query`` contain one another."""
+    query_tokens = _tokens(query)
+    if not query_tokens:
+        return []
+    matches = []
+    for name in filenames:
+        if not name:
+            continue
+        entry_tokens = _tokens(_strip_png(str(name)))
+        if not entry_tokens:
+            continue
+        if _contains(entry_tokens, query_tokens) or _contains(
+            query_tokens, entry_tokens
+        ):
+            matches.append(name)
+    return matches
+
+
+def _resolve_unique_match(matches: Sequence[str]) -> Optional[str]:
+    """Reduce a set of matches to one pick, or ``None`` when genuinely ambiguous.
+
+    A single entry wins outright. Several entries are accepted only when they
+    are all region/language variants of **one** normalised title; the USA
+    release is then preferred. Two different titles (or two equally-ranked
+    region variants) stay unresolved.
+    """
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    keys = {_base_title_key(name) for name in matches}
+    if len(keys) != 1 or "" in keys:
+        return None
+    ranked = sorted(matches, key=_region_rank)
+    best_rank = _region_rank(ranked[0])
+    if sum(1 for name in matches if _region_rank(name) == best_rank) != 1:
+        return None
+    return ranked[0]
+
+
 def unique_boxart_match(
     filenames: Sequence[str], query: Any
 ) -> Optional[str]:
@@ -130,32 +171,26 @@ def unique_boxart_match(
     then preferred.  Two genuinely different titles (a shared fragment such as
     ``Super``) stay ambiguous and return ``None``.
     """
-    query_tokens = _tokens(query)
-    if not query_tokens:
-        return None
-    matches = []
-    for name in filenames:
-        if not name:
-            continue
-        entry_tokens = _tokens(_strip_png(str(name)))
-        if not entry_tokens:
-            continue
-        if _contains(entry_tokens, query_tokens) or _contains(
-            query_tokens, entry_tokens
-        ):
-            matches.append(name)
-    if not matches:
-        return None
-    if len(matches) == 1:
-        return matches[0]
-    keys = {_base_title_key(name) for name in matches}
-    if len(keys) != 1 or "" in keys:
-        return None
-    ranked = sorted(matches, key=_region_rank)
-    best_rank = _region_rank(ranked[0])
-    if sum(1 for name in matches if _region_rank(name) == best_rank) != 1:
-        return None
-    return ranked[0]
+    return _resolve_unique_match(_matching_entries(filenames, query))
+
+
+def ambiguous_boxart_matches(
+    filenames: Sequence[str], query: Any
+) -> Tuple[str, ...]:
+    """Listing entries the deterministic matcher cannot reduce to one pick.
+
+    Returns the matching file names only when at least two are present *and*
+    :func:`unique_boxart_match` cannot resolve them -- i.e. genuinely different
+    titles sharing a query.  Region/language variants of one title (already
+    resolved to USA) and unique/no-match queries both return ``()``, so the
+    optional LLM is consulted only for a real ambiguity.
+    """
+    matches = _matching_entries(filenames, query)
+    if len(matches) < 2:
+        return ()
+    if _resolve_unique_match(matches) is not None:
+        return ()
+    return tuple(matches)
 
 
 def fetch_boxart_listing(
@@ -261,6 +296,7 @@ def resolve_boxart_system(
 
 
 __all__ = [
+    "ambiguous_boxart_matches",
     "fetch_boxart_listing",
     "normalize_boxart_name",
     "parse_boxart_listing",
