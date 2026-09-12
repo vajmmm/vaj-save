@@ -313,3 +313,43 @@ def test_resolved_and_empty_selection_hide_binding_section(tk_root, tmp_path):
         assert app.identity_frame.winfo_manager() == ""
     finally:
         _dispose(app, tk_root)
+
+
+# --- local library rows are already identified ------------------------------
+
+
+def test_library_mode_rows_are_resolved_and_hide_binding_section(tk_root, tmp_path):
+    """A catalog row carries its identity, so no ROM binding UI is offered."""
+    from datetime import datetime
+
+    from vajsave.library import backup_save
+
+    lib = tmp_path / "lib"
+    folder = tmp_path / "src" / "gba"
+    folder.mkdir(parents=True)
+    (folder / "Apotris.sav").write_bytes(b"save-data")
+    backup_save(
+        SaveEntry(
+            platform="gba",
+            source_id="gba",
+            display_name="Apotris",
+            path=str(folder),
+            title_id="AGBE01",
+        ),
+        lib,
+        when=datetime(2024, 1, 1, 10, 0, 0),
+    )
+
+    state = AppState(provider=FakeVolumeProvider([]), library_root=lib)
+    state.set_library_mode(True)
+    app = build_app(state=state, root=tk_root)
+    try:
+        app.refresh_saves_ui()
+        assert app.save_list.size() == 1
+        entry = app._saves_index[0]
+        result = state.resolve_save_identity(entry)
+        assert result.status == STATUS_RESOLVED
+        app._update_identity_section(entry, result)
+        assert app.identity_frame.winfo_manager() == ""
+    finally:
+        _dispose(app, tk_root)

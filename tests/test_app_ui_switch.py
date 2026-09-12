@@ -11,6 +11,7 @@ from __future__ import annotations
 import inspect
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,8 @@ from vajsave import app_ui
 from vajsave import ui_theme
 from vajsave.app_ui import CanvasButton, build_app
 from vajsave.app_state import AppState
-from vajsave.models import SaveEntry, VolumeInfo
+from vajsave.library import backup_save
+from vajsave.models import SaveEntry, ScanResult, VolumeInfo
 from vajsave.ui_theme import SWITCH
 from vajsave.volume import FakeVolumeProvider
 
@@ -738,3 +740,164 @@ def test_ui_preview_has_no_tile_vocabulary():
     assert "TILE_" not in preview
     assert "tile_face" not in preview
     assert "grid_columns" not in preview
+
+
+# --- default device presentation / other-device entry -----------------------
+
+
+def _stub_scan(root):
+    return ScanResult(root_path=str(root), platform="unknown", sources=[], saves=[], warnings=[])
+
+
+def _drive_volumes():
+    """C/D/E fixed drives plus a removable USB stick on F, as Windows reports."""
+    return [
+        VolumeInfo(name="C: 本地磁盘", mount_point=Path("C:\\"), is_removable=False),
+        VolumeInfo(name="D: 本地磁盘", mount_point=Path("D:\\"), is_removable=False),
+        VolumeInfo(name="E: 本地磁盘", mount_point=Path("E:\\"), is_removable=False),
+        VolumeInfo(name="F: KINGSTON", mount_point=Path("F:\\"), is_removable=True),
+    ]
+
+
+def _library_backup(tmp_path, lib, platform, title_id, name, when):
+    folder = tmp_path / "src" / platform / title_id
+    folder.mkdir(parents=True)
+    (folder / "save.bin").write_bytes((title_id + name).encode("utf-8"))
+    entry = SaveEntry(
+        platform=platform,
+        source_id=platform,
+        display_name=name,
+        path=str(folder),
+        title_id=title_id,
+    )
+    backup_save(entry, lib, when=when)
+    return entry
+
+
+def test_device_list_defaults_to_only_the_current_removable(tk_root, tmp_path):
+    state = AppState(
+        provider=FakeVolumeProvider(_drive_volumes()),
+        scan_fn=_stub_scan,
+        library_root=tmp_path / "lib",
+    )
+    state.refresh_volumes()
+    state.ensure_mount_selected()
+    app = build_app(state=state, root=tk_root)
+    try:
+        app.refresh_volumes_ui()
+        assert app.vol_list.size() == 1
+        assert [v.mount_point for v in app._volumes_index] == [Path("F:\\")]
+        assert app.vol_list.curselection() == (0,)
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_other_devices_entry_reveals_all_and_explicit_pick_persists(tk_root, tmp_path):
+    import tkinter as tk
+
+    state = AppState(
+        provider=FakeVolumeProvider(_drive_volumes()),
+        scan_fn=_stub_scan,
+        library_root=tmp_path / "lib",
+    )
+    state.refresh_volumes()
+    state.ensure_mount_selected()
+    app = build_app(state=state, root=tk_root)
+    try:
+        app.refresh_volumes_ui()
+        assert app.vol_list.size() == 1
+
+        app._other_devices_button.invoke()
+        assert app.vol_list.size() == 4
+        d_index = next(
+            i for i, v in enumerate(app._volumes_index) if v.mount_point == Path("D:\\")
+        )
+        app.vol_list.selection_clear(0, tk.END)
+        app.vol_list.selection_set(d_index)
+        app.on_volume_selected()
+        assert state.current_mount == Path("D:\\")
+
+        # an explicit pick survives a later removable arrival
+        state.apply_watch_event(
+            "appeared", VolumeInfo(name="G: USB", mount_point=Path("G:\\"), is_removable=True)
+        )
+        assert state.current_mount == Path("D:\\")
+
+        # the list collapses back to the chosen device
+        app.refresh_volumes_ui()
+        assert app.vol_list.size() == 1
+        assert app._volumes_index[0].mount_point == Path("D:\\")
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_library_browse_button_toggles_source(tk_root, tmp_path):
+    lib = tmp_path / "lib"
+    _library_backup(tmp_path, lib, "psp", "ULJM05800", "PSP Game", datetime(2024, 1, 1, 10, 0, 0))
+    _library_backup(tmp_path, lib, "gba", "AGBE01", "GBA Game", datetime(2024, 2, 1, 10, 0, 0))
+    state = AppState(provider=FakeVolumeProvider([]), library_root=lib)
+    app = build_app(state=state, root=tk_root)
+    try:
+        assert app._library_browse_button._text == "浏览"
+        app._library_browse_button.invoke()
+        assert state.library_mode is True
+        assert app.save_list.size() == 2
+        assert [s.display_name for s in app._saves_index] == ["GBA Game", "PSP Game"]
+
+        app._library_browse_button.invoke()
+        assert state.library_mode is False
+        assert app.save_list.size() == 0
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_initial_window_size_fits_common_768_screen():
+    width, height = app_ui._initial_window_size(1366, 768)
+    assert height <= 768
+    assert height < 900
+    assert 1180 <= width <= 1480
+
+    _, tall_height = app_ui._initial_window_size(1920, 1080)
+    assert tall_height <= 900
+
+
+def test_bottom_bar_stays_visible_at_small_height_with_identity_frame(tk_root, tmp_path):
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    app = build_app(state=state, root=tk_root)
+    original_minsize = tk_root.minsize()
+    try:
+        _map_root(tk_root)
+        # Force a small usable height so the bottom bar would be clipped if it
+        # were not reserved before the expanding body.
+        tk_root.minsize(1180, 520)
+        tk_root.geometry("1320x560")
+        tk_root.update()
+        tk_root.update()
+
+        app._show_identity_frame()
+        tk_root.update()
+        tk_root.update()
+
+        bar = app._bottombar
+        assert bar.winfo_viewable()
+        assert bar.winfo_rooty() + bar.winfo_height() <= (
+            tk_root.winfo_rooty() + tk_root.winfo_height() + 1
+        )
+    finally:
+        _unmap_root(tk_root)
+        tk_root.minsize(*original_minsize)
+        _dispose(app, tk_root)
+
+
+def test_app_window_geometry_fits_a_768_screen(tk_root, tmp_path, monkeypatch):
+    monkeypatch.setattr(tk_root, "winfo_screenheight", lambda: 768)
+    monkeypatch.setattr(tk_root, "winfo_screenwidth", lambda: 1366)
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    app = build_app(state=state, root=tk_root)
+    try:
+        size = tk_root.geometry().split("+")[0]
+        width, height = (int(part) for part in size.split("x"))
+        assert height <= 768
+        assert width <= 1366
+    finally:
+        _dispose(app, tk_root)

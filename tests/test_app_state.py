@@ -8,7 +8,7 @@ import pytest
 
 from vajsave.app_state import AppState
 from vajsave.library import backup_save
-from vajsave.models import SaveEntry, VolumeInfo
+from vajsave.models import SaveEntry, ScanResult, VolumeInfo
 from vajsave.volume import FakeVolumeProvider
 from vajsave.backend import FakeStorageBackend
 from conftest import build_sfo
@@ -938,6 +938,9 @@ def test_app_ui_detail_scroll_and_volume_index(tk_root, tmp_path: Path, psp_sfo_
         assert set(app.versions_frame.grid_info().get("sticky") or "") == set("nsew")
         assert int(app.versions_frame.grid_rowconfigure(1)["weight"]) == 1
 
+        assert len(app._volumes_index) == 0
+        # The device list only shows the current device; ask it to present one.
+        app.refresh_volumes_ui(select_path=vol_dir)
         assert len(app._volumes_index) == 1
         tk_root.update_idletasks()
         app.vol_list.selection_clear(0, tk.END)
@@ -1003,12 +1006,12 @@ def test_preferred_volume_prefers_removable_over_fixed():
     assert state.preferred_volume().mount_point == Path("F:\\")
 
 
-def test_ensure_mount_selected_falls_back_to_highest_letter():
-    state = _drive_state(_drives()[:3])  # no removable device attached
+def test_no_removable_device_does_not_auto_scan_fixed():
+    state = _drive_state(_drives()[:3])  # C/D/E fixed, no removable device
     state.refresh_volumes()
-    chosen = state.ensure_mount_selected()
-    assert chosen.mount_point == Path("E:\\")  # never the C: system drive
-    assert state.current_mount == Path("E:\\")
+    assert state.preferred_volume() is None
+    assert state.ensure_mount_selected() is None
+    assert state.current_mount is None
 
 
 def test_startup_burst_settles_on_removable_drive():
@@ -1028,15 +1031,16 @@ def test_user_selection_survives_later_removable_arrival():
 
 
 def test_auto_selection_upgrades_to_better_removable():
-    state = _drive_state([_drives()[2]])  # only E: fixed, auto-selected
+    state = _drive_state([_drives()[2]])  # only E: fixed: nothing is auto-selected
     state.refresh_volumes()
-    assert state.ensure_mount_selected().mount_point == Path("E:\\")
+    assert state.ensure_mount_selected() is None
+    assert state.current_mount is None
 
     state.apply_watch_event("appeared", _drives()[3])  # USB stick on F:
     assert state.current_mount == Path("F:\\")
 
 
-def test_watch_disappeared_current_falls_back_to_remaining():
+def test_watch_disappeared_current_does_not_fall_back_to_fixed():
     usb = _drives()[3]
     state = _drive_state([usb])
     state.refresh_volumes()
@@ -1045,5 +1049,184 @@ def test_watch_disappeared_current_falls_back_to_remaining():
     state.apply_watch_event("disappeared", usb)
     assert state.current_mount is None
 
-    state.apply_watch_event("appeared", _drives()[2])  # E: still attached
-    assert state.current_mount == Path("E:\\")
+    state.apply_watch_event("appeared", _drives()[2])  # E: fixed stays unselected
+    assert state.current_mount is None
+
+
+# --- local library browse mode ----------------------------------------------
+
+
+def _library_backup(tmp_path, lib, platform, title_id, name, when):
+    folder = tmp_path / "src" / platform / title_id
+    folder.mkdir(parents=True)
+    (folder / "save.bin").write_bytes((title_id + name).encode("utf-8"))
+    entry = SaveEntry(
+        platform=platform,
+        source_id=platform,
+        display_name=name,
+        path=str(folder),
+        title_id=title_id,
+    )
+    backup_save(entry, lib, when=when)
+    return entry
+
+
+def test_library_mode_lists_cross_platform_games_newest_first(tmp_path):
+    lib = tmp_path / "lib"
+    _library_backup(tmp_path, lib, "psp", "ULJM05800", "Older PSP", datetime(2024, 1, 1, 10, 0, 0))
+    _library_backup(tmp_path, lib, "gba", "AGBE01", "Newer GBA", datetime(2024, 5, 1, 10, 0, 0))
+    _library_backup(tmp_path, lib, "nds", "ADME01", "Middle NDS", datetime(2024, 3, 1, 10, 0, 0))
+
+    state = AppState(provider=FakeVolumeProvider([]), library_root=lib)
+    state.set_library_mode(True)
+
+    assert state.library_mode is True
+    saves = state.visible_saves()
+    assert [s.display_name for s in saves] == ["Newer GBA", "Middle NDS", "Older PSP"]
+    assert len({s.extra["library_game_id"] for s in saves}) == 3  # one row per game
+    # every library row is already backed up, so the "有更新" filter must not blank it
+    state.toggle_hide_unchanged()
+    assert [s.display_name for s in state.visible_saves()] == [
+        "Newer GBA",
+        "Middle NDS",
+        "Older PSP",
+    ]
+    assert state.save_status(saves[0]).status == "unchanged"
+
+
+def test_library_mode_platform_search_star_note_and_versions(tmp_path):
+    lib = tmp_path / "lib"
+    _library_backup(tmp_path, lib, "psp", "ULJM05800", "Older PSP", datetime(2024, 1, 1, 10, 0, 0))
+    _library_backup(tmp_path, lib, "gba", "AGBE01", "Newer GBA", datetime(2024, 5, 1, 10, 0, 0))
+
+    state = AppState(provider=FakeVolumeProvider([]), library_root=lib)
+    state.set_library_mode(True)
+    gba = next(s for s in state.visible_saves() if s.platform == "gba")
+
+    state.set_platform_filter("gba")
+    assert [s.platform for s in state.visible_saves()] == ["gba"]
+    assert state.platform_counts()["gba"] == 1
+
+    state.set_platform_filter("all")
+    state.set_search_query("Newer")
+    assert [s.display_name for s in state.visible_saves()] == ["Newer GBA"]
+    state.set_search_query("")
+
+    state.toggle_star(gba)
+    state.toggle_starred_only()
+    assert [s.display_name for s in state.visible_saves()] == ["Newer GBA"]
+    state.toggle_starred_only()
+
+    assert len(state.versions_for_entry(gba)) == 1
+    state.set_note(gba, "存档备注")
+    assert state.game_note(gba) == "存档备注"
+
+    fresh = AppState(provider=FakeVolumeProvider([]), library_root=lib)
+    fresh.set_library_mode(True)
+    gba2 = next(s for s in fresh.visible_saves() if s.platform == "gba")
+    assert fresh.is_starred(gba2)
+    assert fresh.game_note(gba2) == "存档备注"
+
+
+def test_library_mode_backup_does_not_copy_library_into_itself(tmp_path):
+    lib = tmp_path / "lib"
+    _library_backup(tmp_path, lib, "psp", "ULJM05800", "PSP Game", datetime(2024, 1, 1, 10, 0, 0))
+    state = AppState(provider=FakeVolumeProvider([]), library_root=lib)
+    state.set_library_mode(True)
+    saves = state.visible_saves()
+
+    before = sorted(str(p) for p in lib.rglob("*") if p.is_file())
+    assert state.import_save(saves[0]) is None
+    assert state.import_selected_saves(saves) == []
+    after = sorted(str(p) for p in lib.rglob("*") if p.is_file())
+    assert after == before
+
+
+def test_switching_source_resets_stale_platform_filter(tmp_path):
+    lib = tmp_path / "lib"
+    _library_backup(tmp_path, lib, "gba", "AGBE01", "GBA Game", datetime(2024, 1, 1, 10, 0, 0))
+    vol_dir = tmp_path / "VOL"
+    vol_dir.mkdir()
+    vol = VolumeInfo(name="VOL", mount_point=vol_dir, is_removable=True)
+
+    state = AppState(
+        provider=FakeVolumeProvider([vol]), scan_fn=_stub_scan, library_root=lib
+    )
+    state.refresh_volumes()
+
+    state.set_library_mode(True)
+    state.set_platform_filter("gba")
+    state.select_mount(vol_dir)  # switching back to a device source
+    assert state.library_mode is False
+    assert state.selected_platform == "all"
+
+    state.set_platform_filter("psp")
+    state.set_library_mode(True)  # switching to the library source
+    assert state.selected_platform == "all"
+
+
+def test_library_mode_versions_export_and_restore_use_library_payload(tmp_path):
+    lib = tmp_path / "lib"
+    _library_backup(tmp_path, lib, "psp", "ULJM05800", "PSP Game", datetime(2024, 1, 1, 10, 0, 0))
+    state = AppState(provider=FakeVolumeProvider([]), library_root=lib)
+    state.set_library_mode(True)
+
+    entry = state.visible_saves()[0]
+    versions = state.versions_for_entry(entry)
+    assert len(versions) == 1
+    snapshot = versions[0]
+
+    zip_path = state.export_version_zip(snapshot, tmp_path / "exported")
+    assert zip_path is not None and Path(zip_path).is_file()
+
+    restored = state.restore_version(snapshot, tmp_path / "restored")
+    assert restored is not None and Path(restored).exists()
+
+
+def test_library_mode_survives_later_device_events(tmp_path):
+    lib = tmp_path / "lib"
+    _library_backup(tmp_path, lib, "psp", "ULJM05800", "PSP Game", datetime(2024, 1, 1, 10, 0, 0))
+    usb = VolumeInfo(name="F: KINGSTON", mount_point=Path("F:\\"), is_removable=True)
+
+    state = AppState(
+        provider=FakeVolumeProvider([usb]), scan_fn=_stub_scan, library_root=lib
+    )
+    state.refresh_volumes()
+    assert state.ensure_mount_selected().mount_point == Path("F:\\")
+
+    state.set_library_mode(True)
+    state.apply_watch_event(
+        "appeared", VolumeInfo(name="G: USB", mount_point=Path("G:\\"), is_removable=True)
+    )
+    assert state.library_mode is True
+    assert state.current_mount == Path("F:\\")
+    assert [s.display_name for s in state.visible_saves()] == ["PSP Game"]
+
+
+def test_library_entry_status_resolves_without_a_prior_list(tmp_path):
+    """A catalog row asks the library for its status, never a device hash."""
+    from vajsave.library import catalog_entries, load_catalog
+
+    lib = tmp_path / "lib"
+    _library_backup(tmp_path, lib, "gba", "AGBE01", "GBA Game", datetime(2024, 1, 1, 10, 0, 0))
+    state = AppState(provider=FakeVolumeProvider([]), library_root=lib)
+
+    entry = catalog_entries(load_catalog(lib), lib)[0]
+    status = state.save_status(entry)
+    assert status.status == "unchanged"
+    assert status.sha256
+
+
+def test_backup_refuses_a_source_inside_the_library(tmp_path):
+    """Even outside library-mode, a library-owned path must never be re-copied."""
+    lib = tmp_path / "lib"
+    inside = lib / "gba" / "GAME" / "default" / "2024-01-01_10-00-00"
+    inside.mkdir(parents=True)
+    (inside / "save.bin").write_bytes(b"payload")
+
+    state = AppState(provider=FakeVolumeProvider([]), library_root=lib)
+    entry = SaveEntry(
+        platform="gba", source_id="gba", display_name="GAME", path=str(inside)
+    )
+    assert state.import_save(entry) is None
+    assert state.status_text == "本地存档库无需备份"

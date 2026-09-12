@@ -793,3 +793,51 @@ def test_save_app_config_failure_is_safe(tmp_path: Path, monkeypatch):
     blocker.write_text("x", encoding="utf-8")
     monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(blocker / "config.json"))
     assert save_app_config({"library_root": "/tmp/x"}) is False
+
+
+# --- local library browsing rows --------------------------------------------
+
+
+def test_catalog_entries_one_row_per_game_newest_first(tmp_path: Path):
+    """One row per catalog game, across platforms, most recent backup first."""
+    from vajsave.library import catalog_entries
+
+    lib = tmp_path / "lib"
+    source = tmp_path / "src"
+
+    def _make(platform: str, title_id: str, name: str, when: datetime) -> None:
+        folder = source / platform / title_id
+        folder.mkdir(parents=True)
+        (folder / "save.bin").write_bytes((title_id + name).encode("utf-8"))
+        entry = SaveEntry(
+            platform=platform,
+            source_id=platform,
+            display_name=name,
+            path=str(folder),
+            title_id=title_id,
+        )
+        backup_save(entry, lib, when=when)
+
+    _make("psp", "ULJM05800", "Older PSP", datetime(2024, 1, 1, 10, 0, 0))
+    _make("gba", "AGBE01", "Newer GBA", datetime(2024, 5, 1, 10, 0, 0))
+    _make("nds", "ADME01", "Middle NDS", datetime(2024, 3, 1, 10, 0, 0))
+
+    catalog = load_catalog(lib)
+    entries = catalog_entries(catalog, lib)
+
+    assert [e.display_name for e in entries] == ["Newer GBA", "Middle NDS", "Older PSP"]
+    assert all(e.source_id == "library" for e in entries)
+    assert len({e.extra["library_game_id"] for e in entries}) == 3
+
+    newest = entries[0]
+    game = catalog.games[newest.extra["library_game_id"]]
+    assert newest.path == str(game.versions[-1].absolute_path(lib))
+    # The synthesized entry must recompute back to the exact catalog key so
+    # versions/notes/starring keep resolving against the same game.
+    assert game_key(newest) == newest.extra["library_game_id"]
+
+
+def test_catalog_entries_empty_catalog_returns_empty(tmp_path: Path):
+    from vajsave.library import catalog_entries
+
+    assert catalog_entries(Catalog(), tmp_path / "lib") == []
