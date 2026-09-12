@@ -27,6 +27,7 @@ from ..covers import find_embedded_cover, user_cover_path
 from .boxart_index import (
     ambiguous_boxart_matches,
     fetch_boxart_listing,
+    loose_boxart_candidates,
     resolve_boxart_system,
     unique_boxart_match,
 )
@@ -360,25 +361,50 @@ class ArtworkService:
     def _choose_listing_with_llm(
         self, filenames: Tuple[str, ...], names: List[str]
     ) -> Optional[str]:
-        """Ask the optional chooser to resolve an ambiguous listing.
+        """Offer the optional chooser a candidate pool from the listing.
 
-        Only candidates the deterministic matcher leaves unresolved are offered,
-        and the reply is accepted only when it is one of them. No chooser, a
-        chooser error, or a name outside the list all resolve to ``None`` so the
-        caller keeps the placeholder and never writes the cache.
+        The strict pool (full token containment, conflicting titles) is
+        authoritative: whenever any query yields strict candidates they are the
+        only ones offered. Only when *no* query does is a looser word-overlap
+        pool offered, so the old strict hand-off and the deterministic path are
+        unchanged. No chooser, a chooser error, or a name outside the offered
+        list all resolve to ``None`` so the caller keeps the placeholder and
+        never writes the cache.
         """
         if self.llm_chooser is None:
             return None
+        strict_seen = False
         for query in names:
             candidates = ambiguous_boxart_matches(filenames, query)
             if not candidates:
                 continue
-            try:
-                choice = self.llm_chooser(candidates, query)
-            except Exception:  # noqa: BLE001 - a bad chooser must not break fallback
-                continue
-            if isinstance(choice, str) and choice in candidates:
+            strict_seen = True
+            choice = self._ask_listing_chooser(candidates, query)
+            if choice is not None:
                 return choice
+        if strict_seen:
+            return None
+        seen_pools = set()
+        for query in names:
+            candidates = loose_boxart_candidates(filenames, query)
+            if not candidates or candidates in seen_pools:
+                continue
+            seen_pools.add(candidates)
+            choice = self._ask_listing_chooser(candidates, query)
+            if choice is not None:
+                return choice
+        return None
+
+    def _ask_listing_chooser(
+        self, candidates: Sequence[str], query: str
+    ) -> Optional[str]:
+        """Offer ``candidates`` to the chooser, accepting only an offered name."""
+        try:
+            choice = self.llm_chooser(candidates, query)
+        except Exception:  # noqa: BLE001 - a bad chooser must not break fallback
+            return None
+        if isinstance(choice, str) and choice in candidates:
+            return choice
         return None
 
     def _3ds_names_for_title_id(self, title_id: object) -> Tuple[str, ...]:

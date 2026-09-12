@@ -923,6 +923,101 @@ def test_ensure_cover_for_title_llm_picks_ambiguous_candidate(tmp_path: Path):
     assert cache.lookup("3ds", "3ds:name:mario") is not None
 
 
+def test_ensure_cover_for_title_llm_uses_loose_pool_when_strict_pool_empty(
+    tmp_path: Path,
+):
+    """When no listing entry contains the query token-for-token, the chooser is
+    offered a looser word-overlap pool instead of nothing."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="nds", name="Pokemon Heart Gold")
+    listing = (
+        '<a href="Pokemon%20-%20HeartGold%20Version%20(USA).png">'
+        "Pokemon - HeartGold Version (USA).png</a>"
+        '<a href="Pokemon%20-%20SoulSilver%20Version%20(USA).png">'
+        "Pokemon - SoulSilver Version (USA).png</a>"
+    )
+    calls = []
+    offered = []
+
+    def opener(url, timeout=None):
+        calls.append(url)
+        if url.endswith("/Named_Boxarts/"):
+            return FakeResponse(listing.encode("utf-8"))
+        if url.endswith("Pokemon%20-%20HeartGold%20Version%20(USA).png"):
+            return FakeResponse(png_bytes())
+        return FakeResponse(b"missing", status=404)
+
+    def chooser(candidates, query):
+        offered.append((tuple(candidates), query))
+        return "Pokemon - HeartGold Version (USA).png"
+
+    service = ArtworkService(
+        cache=cache,
+        downloader=ArtworkDownloader(urlopen=opener),
+        llm_chooser=chooser,
+    )
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="nds",
+        title="Pokemon Heart Gold",
+        identity_key="nds:name:hg",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_DOWNLOADED
+    assert offered and offered[0][0] == (
+        "Pokemon - HeartGold Version (USA).png",
+        "Pokemon - SoulSilver Version (USA).png",
+    )
+    boxart = [url for url in calls if "Named_Boxarts" in url and url.endswith(".png")]
+    assert boxart and boxart[-1].endswith(
+        "Pokemon%20-%20HeartGold%20Version%20(USA).png"
+    )
+    assert cache.lookup("nds", "nds:name:hg") is not None
+
+
+def test_ensure_cover_for_title_llm_does_not_widen_beyond_strict_pool(
+    tmp_path: Path,
+):
+    """A non-empty strict pool is authoritative: a chooser failure must not
+    trigger the loose word-overlap pool."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="3ds", name="Mario")
+    listing = (
+        '<a href="Mario%20Kart%207%20(USA).png">Mario Kart 7 (USA).png</a>'
+        '<a href="Mario%20Party%20(USA).png">Mario Party (USA).png</a>'
+    )
+    offered = []
+
+    def opener(url, timeout=None):
+        if url.endswith("/Named_Boxarts/"):
+            return FakeResponse(listing.encode("utf-8"))
+        return FakeResponse(b"missing", status=404)
+
+    def chooser(candidates, query):
+        offered.append((tuple(candidates), query))
+        return "NONE"
+
+    service = ArtworkService(
+        cache=cache,
+        downloader=ArtworkDownloader(urlopen=opener),
+        llm_chooser=chooser,
+    )
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="3ds",
+        title="Mario",
+        identity_key="3ds:name:mario",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_PLACEHOLDER
+    assert offered == [
+        (("Mario Kart 7 (USA).png", "Mario Party (USA).png"), "Mario")
+    ]
+    assert cache.lookup("3ds", "3ds:name:mario") is None
+
+
 def test_ensure_cover_for_title_llm_nonsense_is_placeholder_and_uncached(
     tmp_path: Path,
 ):

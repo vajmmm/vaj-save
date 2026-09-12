@@ -5,7 +5,10 @@ filename 404s, the directory page already lists every real file name.  Instead o
 fanning out into more guessed variants, :func:`unique_boxart_match` accepts a
 listing entry only when it is unambiguous: several region/language variants of
 **one** normalised title resolve to the USA release, while two genuinely
-different titles stay rejected rather than picked arbitrarily.
+different titles stay rejected rather than picked arbitrarily.  When even that
+strict matcher cannot line up a candidate, :func:`loose_boxart_candidates`
+offers a scored, capped word-overlap pool (stopwords ignored) to the optional
+LLM so a real file name whose words merely overlap the query can still resolve.
 
 The module also owns the one Checkpoint naming rule that changes the libretro
 *system*: a 3DS save with **no** usable 3DS title id whose display name is a DS
@@ -193,6 +196,79 @@ def ambiguous_boxart_matches(
     return tuple(matches)
 
 
+# Generic function words that carry no box-art signal.  Dropping them before the
+# loose comparison stops ``The Legend of Zelda`` from matching every file that
+# merely contains "the"/"of".
+_LOOSE_STOPWORDS: FrozenSet[str] = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "the",
+        "of",
+        "or",
+        "to",
+        "in",
+        "on",
+        "for",
+        "with",
+        "at",
+        "by",
+        "from",
+        "as",
+        "is",
+        "it",
+        "its",
+        "no",
+        "vs",
+    }
+)
+
+# Never offer the optional LLM more than this many loose candidates, so one
+# listing page cannot grow the prompt without bound.
+MAX_LOOSE_CANDIDATES = 40
+
+
+def _content_tokens(value: Any) -> Tuple[str, ...]:
+    """Tokens of ``value`` with the non-distinctive stopwords removed."""
+    return tuple(token for token in _tokens(value) if token not in _LOOSE_STOPWORDS)
+
+
+def loose_boxart_candidates(
+    filenames: Sequence[str],
+    query: Any,
+    *,
+    limit: int = MAX_LOOSE_CANDIDATES,
+) -> Tuple[str, ...]:
+    """A scored, capped word-overlap pool for the optional LLM.
+
+    Unlike :func:`unique_boxart_match`, a candidate only needs **one** shared
+    content word (stopwords ignored), which catches real filenames the strict
+    token matcher cannot line up (``Pokemon Heart Gold`` ->
+    ``Pokemon - HeartGold Version (USA).png``).  Entries are ordered by the
+    number of shared words and then by region preference (USA first), and the
+    result is capped so a listing page cannot produce an unbounded prompt.
+    """
+    query_set = set(_content_tokens(query))
+    if not query_set:
+        return ()
+    scored = []
+    for name in filenames:
+        if not name:
+            continue
+        entry_tokens = _content_tokens(_strip_png(str(name)))
+        if not entry_tokens:
+            continue
+        overlap = len(query_set.intersection(entry_tokens))
+        if overlap:
+            scored.append((overlap, _region_rank(name), str(name)))
+    if not scored:
+        return ()
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    capped = scored[: max(int(limit), 0)]
+    return tuple(name for _, _, name in capped)
+
+
 def fetch_boxart_listing(
     urlopen: Callable[..., Any], url: Optional[str], *, timeout: float = 20.0
 ) -> Tuple[str, ...]:
@@ -296,8 +372,10 @@ def resolve_boxart_system(
 
 
 __all__ = [
+    "MAX_LOOSE_CANDIDATES",
     "ambiguous_boxart_matches",
     "fetch_boxart_listing",
+    "loose_boxart_candidates",
     "normalize_boxart_name",
     "parse_boxart_listing",
     "resolve_boxart_system",

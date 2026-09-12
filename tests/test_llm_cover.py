@@ -94,6 +94,28 @@ def test_choose_accepts_a_filename_wrapped_in_prose():
     assert chooser.choose(_CANDIDATES, "Mario") == "Mario Kart 7 (USA).png"
 
 
+def test_choose_prefers_an_exact_match_over_a_substring_ambiguity():
+    """An exact reply wins even when a shorter candidate is also a substring of
+    it (``Mario`` inside ``Mario Party (USA).png``)."""
+    candidates = ("Mario", "Mario Party (USA).png")
+    assert _chooser("Mario Party (USA).png").choose(candidates, "Mario") == (
+        "Mario Party (USA).png"
+    )
+    # The whole reply being exactly a candidate is still accepted.
+    assert _chooser("Mario").choose(candidates, "Mario") == "Mario"
+
+
+def test_choose_keeps_unique_substring_and_rejects_multiple():
+    candidates = ("Mario Kart 7 (USA).png", "Mario Party (USA).png")
+    assert _chooser("Mario Kart 7 (USA).png and Mario Party (USA).png").choose(
+        candidates, "Mario"
+    ) is None
+    # A single candidate wrapped in trailing prose still resolves.
+    assert _chooser("I pick Mario Kart 7 (USA).png.").choose(candidates, "Mario") == (
+        "Mario Kart 7 (USA).png"
+    )
+
+
 def test_choose_rejects_nonsense_none_and_ambiguous_replies():
     for content in (
         "NONE",

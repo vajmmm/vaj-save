@@ -15,8 +15,10 @@ from __future__ import annotations
 import urllib.error
 
 from vajsave.artwork.boxart_index import (
+    MAX_LOOSE_CANDIDATES,
     ambiguous_boxart_matches,
     fetch_boxart_listing,
+    loose_boxart_candidates,
     normalize_boxart_name,
     parse_boxart_listing,
     resolve_boxart_system,
@@ -166,6 +168,78 @@ def test_unique_boxart_match_conflicting_games_stay_unresolved():
     assert unique_boxart_match(names, "Mario") is None
     assert unique_boxart_match(names, "Mario Kart") == "Mario Kart 7 (USA).png"
     assert unique_boxart_match(names, "Mario Party") == "Mario Party (USA).png"
+
+
+# --- loose candidate pool ----------------------------------------------------
+
+
+def test_loose_boxart_candidates_match_on_a_single_shared_word():
+    """A word-overlap pool catches titles the strict token matcher cannot line
+    up (``Heart Gold`` vs ``HeartGold``) so they can reach the optional LLM."""
+    names = (
+        "Pokemon - HeartGold Version (USA).png",
+        "Pokemon - SoulSilver Version (USA).png",
+        "Metroid Prime (USA).png",
+    )
+    assert unique_boxart_match(names, "Pokemon Heart Gold") is None
+    assert loose_boxart_candidates(names, "Pokemon Heart Gold") == (
+        "Pokemon - HeartGold Version (USA).png",
+        "Pokemon - SoulSilver Version (USA).png",
+    )
+
+
+def test_loose_boxart_candidates_rank_more_shared_words_first():
+    names = (
+        "Star Fox Adventures (USA).png",
+        "Star Wars - Rogue Squadron (USA).png",
+        "Metroid Prime (USA).png",
+    )
+    assert loose_boxart_candidates(names, "Star Wars") == (
+        "Star Wars - Rogue Squadron (USA).png",
+        "Star Fox Adventures (USA).png",
+    )
+
+
+def test_loose_boxart_candidates_ignore_stopwords():
+    names = (
+        "The Legend of Zelda (USA).png",
+        "Metroid Prime (USA).png",
+    )
+    # Only function words overlap -> no candidate.
+    assert loose_boxart_candidates(names, "The Of And A") == ()
+    # A real word still matches even amid stopwords.
+    assert loose_boxart_candidates(names, "The Zelda") == (
+        "The Legend of Zelda (USA).png",
+    )
+
+
+def test_loose_boxart_candidates_prefer_usa_on_equal_score():
+    names = (
+        "Mario Kart 7 (Japan).png",
+        "Mario Kart 7 (Europe).png",
+        "Mario Kart 7 (USA).png",
+    )
+    assert loose_boxart_candidates(names, "Mario") == (
+        "Mario Kart 7 (USA).png",
+        "Mario Kart 7 (Europe).png",
+        "Mario Kart 7 (Japan).png",
+    )
+
+
+def test_loose_boxart_candidates_are_capped_and_drop_non_overlapping():
+    names = tuple(
+        f"Mario Soccer {i} (USA).png" for i in range(MAX_LOOSE_CANDIDATES + 5)
+    ) + ("Metroid Prime (USA).png",)
+    candidates = loose_boxart_candidates(names, "Mario")
+    assert len(candidates) == MAX_LOOSE_CANDIDATES
+    assert "Metroid Prime (USA).png" not in candidates
+    assert all("Mario" in name for name in candidates)
+
+
+def test_loose_boxart_candidates_empty_inputs():
+    assert loose_boxart_candidates((), "Mario") == ()
+    assert loose_boxart_candidates(("Mario (USA).png",), "") == ()
+    assert loose_boxart_candidates(("Mario (USA).png",), None) == ()
 
 
 # --- listing fetch -----------------------------------------------------------

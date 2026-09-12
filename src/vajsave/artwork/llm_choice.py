@@ -123,13 +123,19 @@ def normalize_base_url(
 def _match_choice(text: Optional[str], candidates: Sequence[str]) -> Optional[str]:
     """The one candidate named by ``text``, else ``None``.
 
-    A reply may wrap the name in prose/quotes, so a candidate is accepted when
-    it appears as a substring -- but only when exactly one candidate does, so an
-    answer mentioning several (or none) is rejected rather than guessed.
+    A reply may wrap the name in prose/quotes, so after an **exact** equality
+    win (which outranks a shorter candidate merely contained in the reply) a
+    candidate is accepted when it appears as a substring -- but only when
+    exactly one candidate does, so an answer mentioning several (or none) is
+    rejected rather than guessed.
     """
     if not text:
         return None
-    found = [name for name in candidates if name and name in text]
+    cleaned = str(text).strip()
+    for name in candidates:
+        if name and name == cleaned:
+            return name
+    found = [name for name in candidates if name and name in cleaned]
     if len(found) == 1:
         return found[0]
     return None
