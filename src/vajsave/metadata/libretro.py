@@ -158,6 +158,48 @@ def _variant_sort_key(metadata: GameMetadata):
     )
 
 
+# A header-title token shorter than this is too generic ("ds", "ph", "2") to
+# safely prove which family an ambiguous game code refers to.
+_MIN_TITLE_HINT_TOKEN = 4
+
+
+def _title_hint_tokens(title: Optional[str]) -> List[str]:
+    """Distinctive, normalised tokens of a ROM header title."""
+    return [
+        token
+        for token in normalize_title(str(title or "")).split()
+        if len(token) >= _MIN_TITLE_HINT_TOKEN
+    ]
+
+
+def _family_matches_title(family_key: str, header_title: Optional[str]) -> bool:
+    """Whether a header title distinctively names the family behind ``family_key``.
+
+    Comparison is on normalised tokens of at least four characters so short,
+    generic fragments (``ds``, ``64``) cannot create a false match.  A token
+    counts when it appears verbatim in the family title or when one is a prefix
+    of the other -- the second case absorbs header titles that glue words
+    together (``MARIO64DS`` vs the family token ``mario``) or truncate at the
+    twelve-byte header limit.  An empty/weak title yields no tokens and so never
+    matches, keeping ambiguous game codes unresolved.
+    """
+    hints = _title_hint_tokens(header_title)
+    if not hints:
+        return False
+    family_tokens = [
+        token
+        for token in family_key.split()
+        if len(token) >= _MIN_TITLE_HINT_TOKEN
+    ]
+    if not family_tokens:
+        return False
+    return any(
+        hint == token or hint.startswith(token) or token.startswith(hint)
+        for hint in hints
+        for token in family_tokens
+    )
+
+
 def detect_platform(*names: Optional[str]) -> Optional[str]:
     """Best-effort platform from a datafile header/filename (or ``None``)."""
     for name in names:
@@ -422,24 +464,33 @@ class LibretroIndex:
         *,
         platform: str,
         serial: Optional[str],
+        title: Optional[str] = None,
     ) -> Optional[GameMetadata]:
         """Conservative **digest-miss** fallback keyed by cartridge game code.
 
-        Only GBA header game codes are understood here.  A code that maps to a
-        single *family* of games resolves to a deterministic member of that
-        family (see :func:`_variant_sort_key`); regional/revision variants of
-        one title therefore collapse to one release.
+        Both indexed cartridge platforms (GBA and NDS) are understood.  A code
+        that maps to a single *family* of games resolves to a deterministic
+        member of that family (see :func:`_variant_sort_key`); regional/revision
+        variants of one title therefore collapse to one release.
 
-        A code shared by several families is normally a real serial collision
-        and returns ``None``.  The one safe exception: when every family but one
-        is *explicitly* non-retail (e.g. a demo/proto that reused the code), the
-        single remaining retail family is trusted -- this is what lets a patched
-        ROM such as the Chinese ``Gyakuten Saiban 2`` (code ``A3GJ``, shared with
-        a ``Gyakuten Saiban 3`` demo) resolve.  Two or more distinct retail
-        families stay ambiguous and still return ``None``.
+        A code shared by several families is normally a real serial collision.
+        Two conservative escapes exist:
+
+        * a strong ``title`` (the ROM header title) that names **exactly one**
+          family resolves to that family -- this is how a patched ROM such as the
+          Chinese Zelda: Phantom Hourglass (code ``AZEJ``) is disambiguated from
+          an unrelated family that reused the code.  An empty, weak or
+          conflicting title matches zero or several families and stays
+          unresolved;
+        * for GBA only, when every family but one is *explicitly* non-retail
+          (e.g. a demo/proto that reused the code), the single remaining retail
+          family is trusted -- this is what lets a patched ROM such as the
+          Chinese ``Gyakuten Saiban 2`` (code ``A3GJ``, shared with a ``Gyakuten
+          Saiban 3`` demo) resolve.  Two or more distinct retail families stay
+          ambiguous and still return ``None``.
         """
         wanted = (platform or "").strip().lower()
-        if wanted != "gba":
+        if wanted not in SUPPORTED_PLATFORMS:
             return None
         normalized = _normalize_serial(serial)
         if not normalized:
@@ -452,13 +503,25 @@ class LibretroIndex:
         families: Dict[str, List[GameMetadata]] = {}
         for item in candidates:
             families.setdefault(_family_key(item.canonical_title), []).append(item)
-        if len(families) != 1:
-            # Cross-family: a shared game code is normally a real serial
-            # collision and must stay unresolved.  The one safe exception is a
-            # code shared by exactly one retail family plus one or more families
-            # that are *explicitly* non-retail (a demo/proto/beta that reused the
-            # code).  Only then can the single retail family be trusted; two or
-            # more distinct retail families remain ambiguous and return ``None``.
+        if len(families) == 1:
+            return min(next(iter(families.values())), key=_variant_sort_key)
+        # A shared game code: try the header title first, then the GBA retail rule.
+        if title:
+            titled = {
+                key: variants
+                for key, variants in families.items()
+                if _family_matches_title(key, title)
+            }
+            if len(titled) == 1:
+                return min(next(iter(titled.values())), key=_variant_sort_key)
+            # Zero or several matches fall through to the platform-specific rule.
+        if wanted == "gba":
+            # A shared game code is normally a real serial collision and must
+            # stay unresolved.  The one safe exception is a code shared by
+            # exactly one retail family plus one or more families that are
+            # *explicitly* non-retail (a demo/proto/beta that reused the code).
+            # Only then can the single retail family be trusted; two or more
+            # distinct retail families remain ambiguous and return ``None``.
             retail = {
                 key: variants
                 for key, variants in families.items()
@@ -466,9 +529,8 @@ class LibretroIndex:
             }
             if len(retail) != 1:
                 return None
-            families = retail
-        family = next(iter(families.values()))
-        return min(family, key=_variant_sort_key)
+            return min(next(iter(retail.values())), key=_variant_sort_key)
+        return None
 
     # -- introspection -------------------------------------------------------
 

@@ -88,17 +88,21 @@ class LibretroMetadataProvider(MetadataProvider):
             return None
         sha1, crc32 = _digests(identity)
         game_code = getattr(identity, "game_code", None)
-        # A digest is the authoritative key; the game-code fallback only exists
-        # for patched/modified GBA ROMs whose hash is in no No-Intro index.
-        if not sha1 and not crc32 and not (platform == "gba" and game_code):
+        header_title = getattr(identity, "title", None)
+        # A digest is the authoritative key; the game-code fallback exists for
+        # patched/modified GBA/NDS ROMs whose hash is in no No-Intro index, and
+        # uses the ROM header title only to break a serial collision.
+        if not sha1 and not crc32 and not (platform in SUPPORTED_PLATFORMS and game_code):
             return None
         try:
             index = self._ensure_index()
             found = None
             if sha1 or crc32:
                 found = index.lookup(platform=platform, sha1=sha1, crc32=crc32)
-            if found is None and platform == "gba" and game_code:
-                found = index.lookup_serial(platform=platform, serial=game_code)
+            if found is None and platform in SUPPORTED_PLATFORMS and game_code:
+                found = index.lookup_serial(
+                    platform=platform, serial=game_code, title=header_title
+                )
         except Exception:  # noqa: BLE001 - metadata must never break the caller
             return None
         if found is None:

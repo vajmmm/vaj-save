@@ -55,11 +55,12 @@ IDENTITY_KEY = f"gba:sha1:{SHA1_A}"
 
 
 class FakeIdentity:
-    def __init__(self, platform="gba", sha1=SHA1_A, crc=CRC_A, key=None, game_code=None):
+    def __init__(self, platform="gba", sha1=SHA1_A, crc=CRC_A, key=None, game_code=None, title=None):
         self.platform = platform
         self.rom_sha1 = sha1
         self.rom_crc32 = crc
         self.game_code = game_code
+        self.title = title
         self.identity_key = key if key is not None else (
             f"{platform}:sha1:{sha1}" if sha1 else f"{platform}:crc32:{crc}"
         )
@@ -322,9 +323,115 @@ def test_index_lookup_serial_does_not_cross_platforms(tmp_path: Path):
     write_compact(tmp_path / "gba.json", "gba", [(SHA1_A, CRC_A, "GBA Game (USA)", "Z9ZQ", "1")])
     write_compact(tmp_path / "nds.json", "nds", [(SHA1_B, CRC_B, "NDS Game (Japan)", "Z9ZQ", "2")])
     index = LibretroIndex.from_paths([tmp_path])
+    # Each platform's serial fallback only ever sees its own records, so a code
+    # registered under one platform never leaks into the other.
     assert index.lookup_serial(platform="gba", serial="Z9ZQ").canonical_title == "GBA Game (USA)"
-    # The serial fallback is GBA-only by design, even with an NDS record loaded.
-    assert index.lookup_serial(platform="nds", serial="Z9ZQ") is None
+    assert index.lookup_serial(platform="nds", serial="Z9ZQ").canonical_title == "NDS Game (Japan)"
+    # A platform outside the supported cartridge set still has no fallback.
+    assert index.lookup_serial(platform="psp", serial="Z9ZQ") is None
+
+
+def test_index_lookup_serial_nds_single_family_resolves(tmp_path: Path):
+    path = write_compact(
+        tmp_path / "nds.json",
+        "nds",
+        [
+            (SHA1_A, CRC_A, "Dragon Quest V - Tenkuu no Hanayome (Japan)", "YV5J", "1"),
+            (SHA1_B, CRC_B, "Dragon Quest V - Tenkuu no Hanayome (Japan) (Rev 1)", "YV5J", "2"),
+        ],
+    )
+    index = LibretroIndex.from_paths([path])
+    picked = index.lookup_serial(platform="nds", serial="YV5J")
+    assert picked is not None
+    assert picked.canonical_title == "Dragon Quest V - Tenkuu no Hanayome (Japan)"
+    assert picked.platform == "nds"
+    # Region/rev variants of one title collapse to a deterministic member.
+    assert index.lookup_serial(platform="nds", serial=" yv5j ") == picked
+
+
+def test_index_lookup_serial_nds_strong_header_title_disambiguates(tmp_path: Path):
+    # AZEJ is used by two unrelated families; the real header title
+    # ``ZELDA_DS:PH`` may only be trusted because it names exactly one of them.
+    path = write_compact(
+        tmp_path / "nds.json",
+        "nds",
+        [
+            (SHA1_A, CRC_A, "Zelda no Densetsu - Mugen no Sunadokei (Japan)", "AZEJ", "1"),
+            (SHA1_B, CRC_B, "Dragon Quest V - Tenkuu no Hanayome (Japan)", "AZEJ", "2"),
+        ],
+    )
+    index = LibretroIndex.from_paths([path])
+    picked = index.lookup_serial(platform="nds", serial="AZEJ", title="ZELDA_DS:PH")
+    assert picked is not None
+    assert picked.canonical_title == "Zelda no Densetsu - Mugen no Sunadokei (Japan)"
+
+
+def test_index_lookup_serial_nds_empty_or_weak_title_stays_none(tmp_path: Path):
+    path = write_compact(
+        tmp_path / "nds.json",
+        "nds",
+        [
+            (SHA1_A, CRC_A, "Zelda no Densetsu - Mugen no Sunadokei (Japan)", "AZEJ", "1"),
+            (SHA1_B, CRC_B, "Dragon Quest V - Tenkuu no Hanayome (Japan)", "AZEJ", "2"),
+        ],
+    )
+    index = LibretroIndex.from_paths([path])
+    # No hint, or a hint sharing no distinctive token, must never pick a family.
+    assert index.lookup_serial(platform="nds", serial="AZEJ", title=None) is None
+    assert index.lookup_serial(platform="nds", serial="AZEJ", title="") is None
+    assert index.lookup_serial(platform="nds", serial="AZEJ", title="UNKNOWN") is None
+    assert index.lookup_serial(platform="nds", serial="AZEJ", title="AAAABBBB") is None
+    # A title made only of short, generic fragments carries no usable hint.
+    assert index.lookup_serial(platform="nds", serial="AZEJ", title="A B C") is None
+
+
+def test_index_lookup_serial_nds_short_family_tokens_never_match(tmp_path: Path):
+    # A family whose own tokens are all short is too coarse to be proven from a
+    # header title, so it can neither hijack nor block the real family.
+    path = write_compact(
+        tmp_path / "nds.json",
+        "nds",
+        [
+            (SHA1_A, CRC_A, "DS", "AZEJ", "1"),
+            (SHA1_B, CRC_B, "Zelda no Densetsu - Mugen no Sunadokei (Japan)", "AZEJ", "2"),
+        ],
+    )
+    index = LibretroIndex.from_paths([path])
+    picked = index.lookup_serial(platform="nds", serial="AZEJ", title="ZELDA_DS:PH")
+    assert picked is not None
+    assert picked.canonical_title == "Zelda no Densetsu - Mugen no Sunadokei (Japan)"
+
+
+def test_index_lookup_serial_nds_conflicting_title_stays_none(tmp_path: Path):
+    path = write_compact(
+        tmp_path / "nds.json",
+        "nds",
+        [
+            (SHA1_A, CRC_A, "Zelda no Densetsu - Mugen no Sunadokei (Japan)", "AZEJ", "1"),
+            (SHA1_B, CRC_B, "Dragon Quest V - Tenkuu no Hanayome (Japan)", "AZEJ", "2"),
+        ],
+    )
+    index = LibretroIndex.from_paths([path])
+    # A hint that names more than one family is a genuine conflict -> unresolved.
+    assert index.lookup_serial(platform="nds", serial="AZEJ", title="ZELDA DRAGON QUEST") is None
+
+
+def test_index_lookup_serial_gba_title_does_not_break_retail_exception(tmp_path: Path):
+    # The real Gyakuten Saiban 2 header title names both the retail game and the
+    # demo that reused A3GJ; the title stage must defer to the retail rule rather
+    # than declaring a conflict.
+    path = write_compact(
+        tmp_path / "gba.json",
+        "gba",
+        [
+            (SHA1_A, CRC_A, "Gyakuten Saiban 2 (Japan)", "A3GJ", "1"),
+            (SHA1_B, CRC_B, "Gyakuten Saiban 3 (Japan) (Demo) (Kiosk, GameCube)", "A3GJ", "2"),
+        ],
+    )
+    index = LibretroIndex.from_paths([path])
+    picked = index.lookup_serial(platform="gba", serial="A3GJ", title="GYAKUTEN_SA2")
+    assert picked is not None
+    assert picked.canonical_title == "Gyakuten Saiban 2 (Japan)"
 
 
 def test_index_lookup_serial_cross_family_single_retail_resolves(tmp_path: Path):
@@ -430,6 +537,50 @@ def test_bundled_index_serial_fallback_resolves_real_game_code():
 def test_bundled_index_serial_fallback_unknown_code_is_none():
     provider = LibretroMetadataProvider()
     identity = FakeIdentity(sha1="c" * 40, crc="deadbeef", game_code="2ATE")
+    assert provider.resolve(identity) is None
+
+
+def test_bundled_index_nds_serial_fallback_resolves_with_header_title():
+    # The real Chinese-patched Zelda: Phantom Hourglass digest misses the bundled
+    # index; its AZEJ game code plus the strong header title resolves the family.
+    provider = LibretroMetadataProvider()
+    identity = FakeIdentity(
+        platform="nds",
+        sha1="c" * 40,
+        crc="deadbeef",
+        game_code="AZEJ",
+        title="ZELDA_DS:PH",
+    )
+    metadata = provider.resolve(identity)
+    assert metadata is not None
+    assert metadata.canonical_title == "Zelda no Densetsu - Mugen no Sunadokei (Japan)"
+    assert metadata.platform == "nds"
+    assert metadata.identity_key == identity.identity_key
+
+
+def test_bundled_index_nds_serial_fallback_single_family_resolves():
+    provider = LibretroMetadataProvider()
+    identity = FakeIdentity(
+        platform="nds",
+        sha1="c" * 40,
+        crc="deadbeef",
+        game_code="YV5J",
+        title="DRAGONQUEST5",
+    )
+    metadata = provider.resolve(identity)
+    assert metadata is not None
+    assert metadata.canonical_title == "Dragon Quest V - Tenkuu no Hanayome (Japan)"
+
+
+def test_bundled_index_nds_serial_fallback_unknown_code_is_none():
+    provider = LibretroMetadataProvider()
+    identity = FakeIdentity(
+        platform="nds",
+        sha1="c" * 40,
+        crc="deadbeef",
+        game_code="ZZZZ",
+        title="WHATEVER",
+    )
     assert provider.resolve(identity) is None
 
 
@@ -683,6 +834,24 @@ def test_provider_digest_miss_falls_back_to_game_code(tmp_path: Path):
     found = provider.resolve(identity)
     assert found is not None
     assert found.canonical_title == "Serial Game (USA)"
+    assert found.identity_key == identity.identity_key
+
+
+def test_provider_nds_digest_miss_falls_back_to_game_code(tmp_path: Path):
+    # RED target: a digest-locked NDS 汉化/修改 ROM is not in the index, so only
+    # its 4-char header game code can recover metadata.
+    path = write_compact(
+        tmp_path / "nds.json",
+        "nds",
+        [(SHA1_B, CRC_B, "MapleStory DS (Korea)", "YMPK", "2")],
+    )
+    provider = LibretroMetadataProvider([tmp_path])
+    identity = FakeIdentity(
+        platform="nds", sha1=SHA1_A, crc=CRC_A, game_code="YMPK", title="MAPLESTORYDS"
+    )
+    found = provider.resolve(identity)
+    assert found is not None
+    assert found.canonical_title == "MapleStory DS (Korea)"
     assert found.identity_key == identity.identity_key
 
 

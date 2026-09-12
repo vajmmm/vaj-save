@@ -27,6 +27,13 @@ def make_gba_rom(title: str = "APOTRIS", code: str = "APTR", size: int = 0x200) 
     return bytes(data)
 
 
+def make_nds_rom(title: str = "MAPLESTORYDS", code: str = "YMPK", size: int = 0x200) -> bytes:
+    data = bytearray(size)
+    data[0x00:0x0C] = title.ljust(12)[:12].encode("ascii")
+    data[0x0C:0x10] = code.ljust(4)[:4].encode("ascii")
+    return bytes(data)
+
+
 def png_bytes() -> bytes:
     buffer = BytesIO()
     Image.new("RGBA", (4, 4), (1, 2, 3, 255)).save(buffer, format="PNG")
@@ -55,6 +62,19 @@ def _entry(tmp_path: Path, *, name="Apotris", cover_path=None) -> SaveEntry:
     return SaveEntry(
         platform="gba",
         source_id="gba_test",
+        display_name=name,
+        path=str(save),
+        cover_path=cover_path,
+    )
+
+
+def _entry_nds(tmp_path: Path, *, name="MapleStory DS", cover_path=None) -> SaveEntry:
+    save = tmp_path / "SAVEGAME" / f"{name}.sav"
+    save.parent.mkdir(parents=True, exist_ok=True)
+    save.write_bytes(b"x")
+    return SaveEntry(
+        platform="nds",
+        source_id="nds_test",
         display_name=name,
         path=str(save),
         cover_path=cover_path,
@@ -163,6 +183,70 @@ def test_appstate_bundled_serial_fallback_resolves_gyakuten2_and_cover(tmp_path:
     cover = state.ensure_save_cover(entry, result, metadata)
     assert cover.source == SOURCE_DOWNLOADED
     assert urls and "Gyakuten%20Saiban%202%20(Japan)" in urls[0]
+
+
+def test_appstate_nds_serial_fallback_resolves_modified_rom(tmp_path: Path):
+    """A patched/汉化 NDS ROM whose digest misses the index still gets metadata
+    from its 4-char header game code and header title."""
+    rom_dir = tmp_path / "roms"
+    rom_dir.mkdir()
+    rom = rom_dir / "MapleStory DS (Chinese).nds"
+    rom.write_bytes(make_nds_rom(title="MAPLESTORYDS", code="YMPK"))
+
+    dat_dir = tmp_path / "dats"
+    dat_dir.mkdir()
+    # The digest deliberately does NOT match the patched ROM; only the serial does.
+    (dat_dir / "nds.dat").write_text(
+        '<?xml version="1.0"?><datafile><header><name>Nintendo - Nintendo DS</name>'
+        '</header><game name="MapleStory DS (Korea)">'
+        '<rom name="x.nds" crc="00000001" sha1="' + "a" * 40 + '" serial="YMPK"/>'
+        '</game></datafile>',
+        encoding="utf-8",
+    )
+
+    state = AppState(library_root=tmp_path / "lib")
+    state.set_rom_dirs(None, rom_dir)
+    state.set_libretro_dir(dat_dir)
+    entry = _entry_nds(tmp_path)
+
+    result = state.resolve_save_identity(entry)
+    assert result.is_resolved
+    assert result.identity.game_code == "YMPK"
+    metadata = state.resolve_save_metadata(entry, result.identity)
+    assert metadata is not None
+    assert metadata.canonical_title == "MapleStory DS (Korea)"
+    assert metadata.identity_key == result.identity.identity_key
+
+
+def test_appstate_nds_ambiguous_serial_without_title_stays_unresolved(tmp_path: Path):
+    """An ambiguous NDS serial must stay unresolved when no distinctive header
+    title is available, instead of guessing a wrong game."""
+    rom_dir = tmp_path / "roms"
+    rom_dir.mkdir()
+    rom = rom_dir / "Unknown.nds"
+    # Empty header title so the title stage cannot disambiguate.
+    rom.write_bytes(make_nds_rom(title="", code="AZEJ"))
+
+    dat_dir = tmp_path / "dats"
+    dat_dir.mkdir()
+    (dat_dir / "nds.dat").write_text(
+        '<?xml version="1.0"?><datafile><header><name>Nintendo - Nintendo DS</name></header>'
+        '<game name="Zelda no Densetsu - Mugen no Sunadokei (Japan)">'
+        '<rom name="a.nds" crc="00000001" sha1="' + "a" * 40 + '" serial="AZEJ"/></game>'
+        '<game name="Dragon Quest V - Tenkuu no Hanayome (Japan)">'
+        '<rom name="b.nds" crc="00000002" sha1="' + "b" * 40 + '" serial="AZEJ"/></game>'
+        '</datafile>',
+        encoding="utf-8",
+    )
+
+    state = AppState(library_root=tmp_path / "lib")
+    state.set_rom_dirs(None, rom_dir)
+    state.set_libretro_dir(dat_dir)
+    entry = _entry_nds(tmp_path, name="Unknown")
+
+    result = state.resolve_save_identity(entry)
+    assert result.identity is not None
+    assert state.resolve_save_metadata(entry, result.identity) is None
 
 
 def test_appstate_resolves_metadata_from_configured_index(tmp_path: Path):
