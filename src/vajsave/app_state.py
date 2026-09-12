@@ -27,8 +27,10 @@ from .library import (
     load_catalog,
     latest_snapshot,
     path_mtime_iso,
+    parse_keep_last,
     restore_snapshot,
     save_app_config,
+    save_keep_last,
     set_game_meta,
     versions_for,
 )
@@ -243,6 +245,24 @@ class AppState:
         else:
             self.status_text = f"备份库路径已更新: {self.library_root}"
         return self.library_root
+
+    def set_keep_last(self, value: object) -> Optional[int]:
+        """Persist the per-library ``keep_last`` (0 = unlimited).
+
+        Accepts an ``int`` or a base-10 digit string (the settings entry text);
+        anything else is rejected with ``None`` and ``settings.json`` is left
+        untouched. Changing the setting never prunes existing versions -- pruning
+        still happens only when a new version is added.
+        """
+        parsed = parse_keep_last(value)
+        if parsed is None:
+            return None
+        if not save_keep_last(self.library_root, parsed):
+            return None
+        self.status_text = (
+            "保留版本数已设为不限制" if parsed == 0 else f"保留版本数已设为 {parsed}"
+        )
+        return parsed
 
     def set_rom_dirs(
         self,

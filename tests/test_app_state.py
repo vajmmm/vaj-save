@@ -911,6 +911,55 @@ def test_set_library_root_without_scan(tmp_path: Path, monkeypatch):
     assert load_app_config()["library_root"] == str(new_lib)
 
 
+def test_set_keep_last_persists_and_accepts_zero(tmp_path: Path):
+    from vajsave.library import load_keep_last
+
+    state = AppState(library_root=tmp_path / "lib")
+    assert state.set_keep_last(3) == 3
+    assert load_keep_last(state.library_root) == 3
+    # 0 is a valid value meaning "unlimited".
+    assert state.set_keep_last(0) == 0
+    assert load_keep_last(state.library_root) == 0
+    # Numeric strings from the settings entry are accepted.
+    assert state.set_keep_last("5") == 5
+    assert load_keep_last(state.library_root) == 5
+
+
+def test_set_keep_last_rejects_invalid_without_writing(tmp_path: Path):
+    from vajsave.library import load_keep_last
+
+    state = AppState(library_root=tmp_path / "lib")
+    state.set_keep_last(2)
+    for bad in (-1, True, "abc", "", 1.5, None):
+        assert state.set_keep_last(bad) is None
+    assert load_keep_last(state.library_root) == 2
+
+
+def test_set_keep_last_does_not_prune_existing_versions(tmp_path: Path):
+    from vajsave.library import backup_save, game_key, load_catalog
+    from vajsave.models import SaveEntry
+
+    lib = tmp_path / "lib"
+    folder = tmp_path / "src" / "save"
+    folder.mkdir(parents=True)
+    entry = SaveEntry(
+        platform="psp",
+        source_id="psp",
+        display_name="Game",
+        path=str(folder),
+        title_id="ULJM05800",
+    )
+    for i, payload in enumerate((b"a", b"b", b"c")):
+        (folder / "save.bin").write_bytes(payload)
+        backup_save(entry, lib, datetime(2026, 1, 1, 10, i, 0))
+    assert len(load_catalog(lib).games[game_key(entry)].versions) == 3
+
+    state = AppState(library_root=lib)
+    assert state.set_keep_last(1) == 1
+    # Changing the setting must not immediately delete existing versions.
+    assert len(load_catalog(lib).games[game_key(entry)].versions) == 3
+
+
 # --- app UI structure ---
 
 

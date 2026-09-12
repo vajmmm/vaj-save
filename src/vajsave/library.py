@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .models import SaveEntry
+from .persistence import atomic_write_json
 
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 CATALOG_NAME = "catalog.json"
@@ -477,6 +478,47 @@ def load_keep_last(library_root: Path) -> int:
     if value < 0:
         return DEFAULT_KEEP_LAST
     return value
+
+
+def parse_keep_last(value: Any) -> Optional[int]:
+    """Coerce a user-supplied ``keep_last`` to a non-negative int, else None.
+
+    Accepts an ``int`` (not ``bool``) or a base-10 digit string. ``0`` is a valid
+    value meaning "unlimited"; negative numbers, signs, blank/whitespace and any
+    other type are rejected so the caller can leave ``settings.json`` untouched.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isdigit():
+            return int(text, 10)
+    return None
+
+
+def save_keep_last(library_root: Path, value: Any) -> bool:
+    """Persist ``keep_last`` into the library ``settings.json`` atomically.
+
+    Only a non-negative ``int`` (never a ``bool``) is written; an invalid value
+    returns ``False`` and leaves the existing file untouched. Other keys already
+    present are preserved. ``0`` means "unlimited".
+    """
+    if type(value) is not int or value < 0:
+        return False
+    root = Path(library_root)
+    path = settings_path(root)
+    data: Dict[str, Any] = {}
+    if path.is_file():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            existing = None
+        if isinstance(existing, dict):
+            data = existing
+    data["keep_last"] = value
+    return atomic_write_json(path, data)
 
 
 def _is_safe_library_path(target: Path, library_root: Path) -> bool:

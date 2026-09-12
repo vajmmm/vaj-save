@@ -16,7 +16,7 @@ from .identity import (
     GameIdentity,
     GameIdentityResult,
 )
-from .library import Snapshot
+from .library import Snapshot, load_keep_last, parse_keep_last
 from .models import SaveEntry, VolumeInfo
 from .rom_formats import supported_extensions
 from .ui_theme import PLATFORM_COLORS, SWITCH, save_row, status_label
@@ -55,6 +55,18 @@ SELECTED_ROW = SWITCH["selected"]
 
 # Sentinel for "compute the cover path from the entry" in ``_render_detail_cover``.
 _AUTO = object()
+
+# Short, explicit help copy. The archive direction is the important part: the
+# app copies saves from the handheld to the computer and never writes back.
+HELP_TEXT = (
+    "vaj-save 把掌机存档备份到电脑，不会写入掌机。\n\n"
+    "· 备份：选中设备上的存档行，点右侧蓝色「备份存档」，"
+    "版本会保存到本地备份库。\n"
+    "· 恢复：在右侧「版本」里选一个版本，点「恢复」，"
+    "版本只会拷贝到你选择的文件夹，不会写入掌机。\n"
+    "· 设置：可修改本地备份库路径、可选 ROM 目录与保留版本数"
+    "（0 表示不限制）。"
+)
 
 
 def open_in_file_manager(path: Union[Path, str]) -> tuple[bool, str]:
@@ -356,10 +368,14 @@ class VajSaveApp:
         tk.Label(top_tools, textvariable=self.stats_var, bg=APP_BG, fg=MUTED_STRONG, font=ui_font(11)).pack(
             side=tk.RIGHT, padx=(18, 0)
         )
-        CanvasButton(top_tools, text="帮助", command=lambda: self.update_status("帮助中心暂未配置"), height=30, padding=10).pack(
-            side=tk.RIGHT, padx=(6, 0)
+        self.help_button = CanvasButton(
+            top_tools, text="帮助", command=self.on_help_clicked, height=30, padding=10
         )
-        CanvasButton(top_tools, text="设置", command=self.on_settings_clicked, height=30, padding=10).pack(side=tk.RIGHT)
+        self.help_button.pack(side=tk.RIGHT, padx=(6, 0))
+        self.settings_button = CanvasButton(
+            top_tools, text="设置", command=self.on_settings_clicked, height=30, padding=10
+        )
+        self.settings_button.pack(side=tk.RIGHT)
 
         body = tk.Frame(self.root, bg=APP_BG)
         body.pack(fill=tk.BOTH, expand=True)
@@ -1204,7 +1220,14 @@ class VajSaveApp:
         if not self._selected_snapshot:
             self.update_warning("先在右侧选一个版本")
             return
-        chosen = filedialog.askdirectory(title="恢复到哪个文件夹？")
+        confirmed = messagebox.askyesno(
+            "恢复版本",
+            "将把所选版本拷贝到你选择的文件夹，不会写入掌机。\n继续吗？",
+            parent=self.root,
+        )
+        if not confirmed:
+            return
+        chosen = filedialog.askdirectory(title="恢复到哪个文件夹？", parent=self.root)
         if not chosen:
             return
         restored = self.state.restore_version(self._selected_snapshot, chosen)
@@ -1358,6 +1381,39 @@ class VajSaveApp:
         self.refresh_saves_ui()
         self.update_status("元数据目录已更新")
 
+    def _apply_keep_last(self, value: int) -> None:
+        """Apply the keep_last (保留版本数) chosen in the settings dialog."""
+        if self.state.set_keep_last(value) is None:
+            self.update_warning("保留版本数设置失败")
+            return
+        self.update_status(self.state.status_text)
+        self.update_warning("")
+
+    def on_help_clicked(self) -> None:
+        """Open the short guide; the archive direction is the point."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("帮助")
+        dialog.configure(bg=BG)
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        tk.Label(dialog, text="使用说明", bg=BG, fg=INK, font=ui_font(15, "bold")).pack(
+            anchor="w", padx=16, pady=(16, 6)
+        )
+        tk.Label(
+            dialog,
+            text=HELP_TEXT,
+            bg=BG,
+            fg=TEXT,
+            font=ui_font(12),
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=380,
+        ).pack(anchor="w", padx=16)
+        CanvasButton(dialog, text="关闭", command=dialog.destroy).pack(
+            side=tk.RIGHT, padx=16, pady=16
+        )
+        dialog.grab_set()
+
     def on_settings_clicked(self) -> None:
         dialog = tk.Toplevel(self.root)
         dialog.title("设置")
@@ -1394,9 +1450,27 @@ class VajSaveApp:
             "选择包含 libretro/No-Intro .dat 的目录",
         )
 
+        keep_var = tk.StringVar(value=str(load_keep_last(self.state.library_root)))
+        tk.Label(
+            dialog,
+            text="保留版本数（0 表示不限制）",
+            bg=BG,
+            fg=TEXT,
+            font=ui_font(13, "bold"),
+        ).pack(anchor="w", padx=16, pady=(12, 6))
+        keep_row = tk.Frame(dialog, bg=BG)
+        keep_row.pack(fill=tk.X, padx=16)
+        ttk.Entry(keep_row, textvariable=keep_var, width=12).pack(side=tk.LEFT)
+        # Exposed so the dialog's bound value is reachable from tests.
+        dialog.keep_last_var = keep_var
+
         def save() -> None:
             chosen = path_var.get().strip()
             if not chosen:
+                return
+            keep_value = parse_keep_last(keep_var.get())
+            if keep_value is None:
+                self.update_warning("保留版本数需为不小于 0 的整数")
                 return
             gba = gba_var.get().strip()
             nds = nds_var.get().strip()
@@ -1405,6 +1479,7 @@ class VajSaveApp:
             self._apply_library_root(chosen)
             self._apply_rom_dirs(gba or None, nds or None)
             self._apply_libretro_dir(meta or None)
+            self._apply_keep_last(keep_value)
 
         def cancel() -> None:
             dialog.destroy()

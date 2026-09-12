@@ -272,6 +272,10 @@ Right panel, top to bottom:
   stays reserved for backing a device save up, and the action deletes the
   selected games' local snapshots and covers after a confirmation.
 - **Secondary actions**: 恢复, 导出 ZIP and 打开位置 in one measured row.
+  - **恢复** first asks for confirmation and states that the selected version is
+    copied to a folder and the handheld console is not written to; cancelling the
+    confirmation copies nothing. It calls `restore_snapshot`, which only copies
+    out of the library and never prunes the existing versions.
 - **Game-identity binding (contextual)**: shown only when the selected save still
   needs help. An `ambiguous` save lists its candidate ROMs and offers a measured
   绑定所选 ROM button; an `unresolved` GBA/NDS save offers a 手动选择 ROM… button
@@ -281,6 +285,20 @@ Right panel, top to bottom:
 - **Note entry**: a white input pinned to the bottom.
 
 The path is one row in the metadata grid; there is no separate full-width path strip.
+
+### Settings & Help (top brand bar)
+Two quiet neutral buttons sit at the right of the top brand bar; neither uses a
+saturated accent fill.
+- **设置** opens a non-resizable dialog listing the local backup library path, the
+  optional GBA/NDS ROM directories and the libretro metadata directory, plus the
+  **保留版本数 (`keep_last`)** field. `keep_last` is read from and written back to
+  the library's `settings.json`; `0` means unlimited. A blank/negative/non-numeric
+  entry is rejected with a status warning, the dialog stays open, and
+  `settings.json` is left untouched. Changing the value never prunes existing
+  versions — pruning still happens only when a new version is added.
+- **帮助** opens a short, non-resizable guide. Its copy makes the archive
+  direction explicit ("把掌机存档备份到电脑，不会写入掌机") and separates 备份 from
+  the copy-to-folder 恢复. It replaces the old "帮助中心暂未配置" placeholder status.
 
 ### Platform Rows
 `hand2` cursor; selected row tinted `#eaf3ff`, idle rows `#ffffff`. A small

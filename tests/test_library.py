@@ -428,6 +428,49 @@ def test_load_keep_last_edge_cases(tmp_path: Path):
     assert load_keep_last(lib) == 3
 
 
+def test_save_keep_last_roundtrip_preserves_other_keys(tmp_path: Path):
+    from vajsave.library import load_keep_last, save_keep_last
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "settings.json").write_text(
+        json.dumps({"note": "keep-me", "keep_last": 2}), encoding="utf-8"
+    )
+
+    assert save_keep_last(lib, 7) is True
+    assert load_keep_last(lib) == 7
+    data = json.loads((lib / "settings.json").read_text(encoding="utf-8"))
+    assert data["note"] == "keep-me"
+
+    # 0 is valid and means unlimited.
+    assert save_keep_last(lib, 0) is True
+    assert load_keep_last(lib) == 0
+
+
+def test_save_keep_last_rejects_invalid_without_touching_file(tmp_path: Path):
+    from vajsave.library import load_keep_last, save_keep_last
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    path = lib / "settings.json"
+    path.write_text(json.dumps({"keep_last": 3}), encoding="utf-8")
+
+    for bad in (-1, True, False, "2", 1.5, None, [1]):
+        assert save_keep_last(lib, bad) is False
+
+    assert load_keep_last(lib) == 3
+    assert json.loads(path.read_text(encoding="utf-8"))["keep_last"] == 3
+
+
+def test_save_keep_last_creates_file_for_missing_library(tmp_path: Path):
+    from vajsave.library import load_keep_last, save_keep_last, settings_path
+
+    lib = tmp_path / "lib"
+    assert save_keep_last(lib, 4) is True
+    assert settings_path(lib).is_file()
+    assert load_keep_last(lib) == 4
+
+
 def test_prune_skips_library_root_and_deletes_file_payload(tmp_path: Path):
     from vajsave.library import GameRecord, Snapshot, prune_game_versions
 
