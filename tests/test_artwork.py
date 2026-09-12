@@ -126,12 +126,13 @@ def test_libretro_provider_find_cover_and_url_rules():
     assert provider.find_cover(None) is None
 
 
-def test_libretro_system_names_include_psp_and_vita():
+def test_libretro_system_names_include_psp_vita_and_3ds():
     assert LIBRETRO_SYSTEM_NAMES["psp"] == "Sony - PlayStation Portable"
     assert LIBRETRO_SYSTEM_NAMES["vita"] == "Sony - PlayStation Vita"
+    assert LIBRETRO_SYSTEM_NAMES["3ds"] == "Nintendo - Nintendo 3DS"
 
 
-def test_libretro_provider_psp_and_vita_boxart_urls():
+def test_libretro_provider_psp_vita_and_3ds_boxart_urls():
     provider = LibretroThumbnailProvider()
     psp = provider.ref_for("psp", "Monster Hunter Portable 3rd")
     assert psp is not None
@@ -144,6 +145,12 @@ def test_libretro_provider_psp_and_vita_boxart_urls():
     assert vita.url == (
         "https://thumbnails.libretro.com/Sony%20-%20PlayStation%20Vita/"
         "Named_Boxarts/Persona%204%20Golden.png"
+    )
+    ds3 = provider.ref_for("3ds", "Persona Q2 New Cinema Labyrinth")
+    assert ds3 is not None
+    assert ds3.url == (
+        "https://thumbnails.libretro.com/Nintendo%20-%20Nintendo%203DS/"
+        "Named_Boxarts/Persona%20Q2%20New%20Cinema%20Labyrinth.png"
     )
 
 

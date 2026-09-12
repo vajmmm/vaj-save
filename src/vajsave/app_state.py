@@ -76,7 +76,7 @@ PLATFORM_ORDER = ["all", "psp", "vita", "switch", "3ds", "nds", "gba"]
 
 # Platforms whose libretro provider name is the save's own SFO / display title
 # rather than a ROM-digest index canonical title.
-_TITLE_PROVIDER_PLATFORMS = ("psp", "vita")
+_TITLE_PROVIDER_PLATFORMS = ("psp", "vita", "3ds")
 
 # Sentinel distinguishing "leave this setting untouched" from an explicit None
 # (which clears a persisted ROM directory) in ``set_rom_dirs``.
@@ -612,9 +612,10 @@ class AppState:
 
         The official libretro filename rule needs the index's canonical title, so
         without metadata this stays a local-only resolution: the app never guesses
-        a name (and never touches the network) for an unknown ROM.  PSP/Vita are
-        the exception: they have no ROM index, so their PARAM.SFO / display title
-        is used directly -- but only when the save ships no embedded icon.
+        a name (and never touches the network) for an unknown ROM.  PSP/Vita/3DS
+        are the exception: they have no ROM index, so their PARAM.SFO / Checkpoint
+        display title is used directly -- but only when the save ships no embedded
+        icon.
         """
         try:
             if metadata is None or not metadata.canonical_title:

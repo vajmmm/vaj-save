@@ -424,6 +424,41 @@ def test_appstate_vita_cover_uses_sfo_title(tmp_path: Path, vita_sfo_bytes: byte
     assert "Persona%204%20Golden" in urls[0]
 
 
+def _3ds_entry(tmp_path: Path, *, title_id: str = "00040000001B5000", display: str = "Persona Q2 New Cinema Labyrinth") -> SaveEntry:
+    save_dir = tmp_path / "3ds" / "Checkpoint" / "saves" / f"{title_id} {display}" / "0"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    (save_dir / "save.dat").write_bytes(b"save")
+    return SaveEntry(
+        platform="3ds",
+        source_id="3ds_checkpoint",
+        display_name=display,
+        path=str(save_dir),
+        title_id=title_id,
+    )
+
+
+def test_appstate_3ds_cover_uses_checkpoint_display_name(tmp_path: Path):
+    """Checkpoint 3DS folders have no ICON0; the scanned display name is used
+    to fetch Nintendo 3DS Named_Boxarts."""
+    entry = _3ds_entry(tmp_path)
+    state = AppState(library_root=tmp_path / "lib")
+    result = state.resolve_save_identity(entry)
+    assert result.is_resolved
+    assert result.identity.title == "Persona Q2 New Cinema Labyrinth"
+
+    urls = []
+    state._artwork_service = ArtworkService(
+        cache=CoverCache(state.library_root / COVER_CACHE_DIR),
+        downloader=ArtworkDownloader(
+            urlopen=lambda url, timeout=None: urls.append(url) or _FakeResponse(png_bytes())
+        ),
+    )
+    cover = state.ensure_save_cover(entry, result)
+    assert cover.source == SOURCE_DOWNLOADED
+    assert urls and "Nintendo%20-%20Nintendo%203DS" in urls[0]
+    assert "Persona%20Q2%20New%20Cinema%20Labyrinth" in urls[0]
+
+
 def test_appstate_gba_identity_without_canonical_metadata_never_network(tmp_path: Path):
     """GBA/NDS titles come from the canonical index only; without it the app
     must never guess a provider name (criterion: no network)."""
