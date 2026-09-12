@@ -129,6 +129,42 @@ def test_appstate_serial_fallback_caches_and_downloads_by_canonical_title(tmp_pa
     )
 
 
+def test_appstate_bundled_serial_fallback_resolves_gyakuten2_and_cover(tmp_path: Path):
+    """The real 汉化逆转裁判2 shape: the digest misses the bundled index and the
+    A3GJ game code is shared with a Gyakuten Saiban 3 demo, yet the single retail
+    family resolves and the cover is fetched by its canonical title."""
+    rom_dir = tmp_path / "roms"
+    rom_dir.mkdir()
+    rom = rom_dir / "Gyakuten Saiban 2 (Chinese).gba"
+    rom.write_bytes(make_gba_rom(title="GYAKUTEN_SA2", code="A3GJ"))
+
+    state = AppState(library_root=tmp_path / "lib")
+    state.set_rom_dirs(rom_dir, None)
+    # No explicit libretro dir: the bundled offline index is the provider.
+    entry = _entry(tmp_path, name="Gyakuten Saiban 2")
+
+    result = state.resolve_save_identity(entry)
+    assert result.is_resolved
+    assert result.identity.game_code == "A3GJ"
+    metadata = state.resolve_save_metadata(entry, result.identity)
+    assert metadata is not None
+    assert metadata.canonical_title == "Gyakuten Saiban 2 (Japan)"
+
+    urls = []
+
+    def opener(url, timeout=None):
+        urls.append(url)
+        return _FakeResponse(png_bytes())
+
+    state._artwork_service = ArtworkService(
+        cache=CoverCache(state.library_root / COVER_CACHE_DIR),
+        downloader=ArtworkDownloader(urlopen=opener),
+    )
+    cover = state.ensure_save_cover(entry, result, metadata)
+    assert cover.source == SOURCE_DOWNLOADED
+    assert urls and "Gyakuten%20Saiban%202%20(Japan)" in urls[0]
+
+
 def test_appstate_resolves_metadata_from_configured_index(tmp_path: Path):
     rom_dir = tmp_path / "roms"
     rom_dir.mkdir()

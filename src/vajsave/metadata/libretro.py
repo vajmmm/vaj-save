@@ -125,13 +125,37 @@ def _tag_tokens(title: str) -> List[str]:
     return tokens
 
 
+def _is_non_retail(metadata: GameMetadata) -> bool:
+    """Whether a record's tags explicitly mark a non-retail build.
+
+    ``beta``/``proto``/``demo``/... are unambiguous build markers, so a record
+    carrying one is never treated as a real release.  Used both to rank variants
+    inside one family and to discard whole non-retail families during the
+    cross-family serial fallback.
+    """
+    tokens = _tag_tokens(metadata.canonical_title)
+    return any(token.startswith(prefix) for token in tokens for prefix in _NON_RETAIL_TAGS)
+
+
+def _is_retail_family(variants: Iterable[GameMetadata]) -> bool:
+    """Whether a family contains at least one real (retail) release.
+
+    A family whose every variant is explicitly non-retail (e.g. only a demo) is
+    discarded during the cross-family fallback; a family with one retail variant
+    survives even if it also carries betas/protos alongside it.
+    """
+    return any(not _is_non_retail(item) for item in variants)
+
+
 def _variant_sort_key(metadata: GameMetadata):
     """Deterministic ranking of same-family variants: retail first, then fewest tags."""
     tokens = _tag_tokens(metadata.canonical_title)
-    non_retail = any(
-        token.startswith(prefix) for token in tokens for prefix in _NON_RETAIL_TAGS
+    return (
+        _is_non_retail(metadata),
+        len(tokens),
+        metadata.canonical_title,
+        metadata.identity_key,
     )
-    return (non_retail, len(tokens), metadata.canonical_title, metadata.identity_key)
 
 
 def detect_platform(*names: Optional[str]) -> Optional[str]:
@@ -401,11 +425,18 @@ class LibretroIndex:
     ) -> Optional[GameMetadata]:
         """Conservative **digest-miss** fallback keyed by cartridge game code.
 
-        Only GBA header game codes are understood here.  A code that maps to
-        more than one *family* of games is a real serial collision and returns
-        ``None`` -- the caller must not guess between different titles.  When a
-        code maps to several regional/revision variants of one family, the
-        release is chosen deterministically (see :func:`_variant_sort_key`).
+        Only GBA header game codes are understood here.  A code that maps to a
+        single *family* of games resolves to a deterministic member of that
+        family (see :func:`_variant_sort_key`); regional/revision variants of
+        one title therefore collapse to one release.
+
+        A code shared by several families is normally a real serial collision
+        and returns ``None``.  The one safe exception: when every family but one
+        is *explicitly* non-retail (e.g. a demo/proto that reused the code), the
+        single remaining retail family is trusted -- this is what lets a patched
+        ROM such as the Chinese ``Gyakuten Saiban 2`` (code ``A3GJ``, shared with
+        a ``Gyakuten Saiban 3`` demo) resolve.  Two or more distinct retail
+        families stay ambiguous and still return ``None``.
         """
         wanted = (platform or "").strip().lower()
         if wanted != "gba":
@@ -422,7 +453,20 @@ class LibretroIndex:
         for item in candidates:
             families.setdefault(_family_key(item.canonical_title), []).append(item)
         if len(families) != 1:
-            return None
+            # Cross-family: a shared game code is normally a real serial
+            # collision and must stay unresolved.  The one safe exception is a
+            # code shared by exactly one retail family plus one or more families
+            # that are *explicitly* non-retail (a demo/proto/beta that reused the
+            # code).  Only then can the single retail family be trusted; two or
+            # more distinct retail families remain ambiguous and return ``None``.
+            retail = {
+                key: variants
+                for key, variants in families.items()
+                if _is_retail_family(variants)
+            }
+            if len(retail) != 1:
+                return None
+            families = retail
         family = next(iter(families.values()))
         return min(family, key=_variant_sort_key)
 

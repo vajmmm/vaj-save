@@ -43,6 +43,14 @@ EMERALD_CRC = "1f1c08fb"
 HEARTGOLD_SHA1 = "007d061e1abc8d9b56c6378c82fcfb3fc990adf3"
 HEARTGOLD_CRC = "4723410a"
 
+# Real Chinese-patched sample: "逆转裁判2[Eastred][Chapter 1](简)(JP)(96Mb).gba".
+# Its digest is in no No-Intro index, but its header game code (A3GJ) is shared
+# with a Gyakuten Saiban 3 demo, so the cross-family fallback must still resolve
+# it to the one retail family.
+GYAKUTEN2_SHA1 = "cb15b3b90607df4c9fe933bdc6e206e55686b9f1"
+GYAKUTEN2_CRC = "7fd7ff2e"
+GYAKUTEN2_CODE = "A3GJ"
+
 IDENTITY_KEY = f"gba:sha1:{SHA1_A}"
 
 
@@ -319,6 +327,68 @@ def test_index_lookup_serial_does_not_cross_platforms(tmp_path: Path):
     assert index.lookup_serial(platform="nds", serial="Z9ZQ") is None
 
 
+def test_index_lookup_serial_cross_family_single_retail_resolves(tmp_path: Path):
+    # A retail game and an unrelated demo share one game code (the real A3GJ
+    # shape): dropping the explicitly non-retail family leaves one retail family.
+    path = write_compact(
+        tmp_path / "gba.json",
+        "gba",
+        [
+            (SHA1_A, CRC_A, "Gyakuten Saiban 2 (Japan)", "A3GJ", "1"),
+            (SHA1_B, CRC_B, "Gyakuten Saiban 3 (Japan) (Demo) (Kiosk, GameCube)", "A3GJ", "2"),
+        ],
+    )
+    index = LibretroIndex.from_paths([path])
+    picked = index.lookup_serial(platform="gba", serial="A3GJ")
+    assert picked is not None
+    assert picked.canonical_title == "Gyakuten Saiban 2 (Japan)"
+
+
+def test_index_lookup_serial_cross_family_two_retail_families_is_none(tmp_path: Path):
+    # Two genuinely different retail titles sharing a code stay ambiguous.
+    path = write_compact(
+        tmp_path / "gba.json",
+        "gba",
+        [
+            (SHA1_A, CRC_A, "Alpha (USA)", "A3GJ", "1"),
+            (SHA1_B, CRC_B, "Beta (Japan)", "A3GJ", "2"),
+        ],
+    )
+    index = LibretroIndex.from_paths([path])
+    assert index.lookup_serial(platform="gba", serial="A3GJ") is None
+
+
+def test_index_lookup_serial_cross_family_retail_plus_beta_family_is_none(tmp_path: Path):
+    # A family carrying both a retail and a beta variant is still a retail family,
+    # so two retail families remain and the code must not resolve.
+    path = write_compact(
+        tmp_path / "gba.json",
+        "gba",
+        [
+            (SHA1_A, CRC_A, "Game A (Beta)", "A3GJ", "1"),
+            (SHA1_B, CRC_B, "Game A (USA)", "A3GJ", "2"),
+            ("c" * 40, "abcdef01", "Game B (Japan)", "A3GJ", "3"),
+        ],
+    )
+    index = LibretroIndex.from_paths([path])
+    assert index.lookup_serial(platform="gba", serial="A3GJ") is None
+
+
+def test_index_lookup_serial_cross_family_all_non_retail_is_none(tmp_path: Path):
+    # If every family tied to the code is a demo/proto there is no retail release
+    # to trust, so the fallback stays unresolved.
+    path = write_compact(
+        tmp_path / "gba.json",
+        "gba",
+        [
+            (SHA1_A, CRC_A, "Game A (Beta)", "A3GJ", "1"),
+            (SHA1_B, CRC_B, "Game B (Japan) (Proto)", "A3GJ", "2"),
+        ],
+    )
+    index = LibretroIndex.from_paths([path])
+    assert index.lookup_serial(platform="gba", serial="A3GJ") is None
+
+
 # --- bundled real index ------------------------------------------------------
 
 
@@ -361,6 +431,27 @@ def test_bundled_index_serial_fallback_unknown_code_is_none():
     provider = LibretroMetadataProvider()
     identity = FakeIdentity(sha1="c" * 40, crc="deadbeef", game_code="2ATE")
     assert provider.resolve(identity) is None
+
+
+def test_bundled_index_serial_fallback_resolves_gyakuten_saiban_2():
+    # The real patched ROM's digest misses the index; its A3GJ game code is shared
+    # with a Gyakuten Saiban 3 demo, so only the cross-family rule can resolve it.
+    provider = LibretroMetadataProvider()
+    identity = FakeIdentity(sha1=GYAKUTEN2_SHA1, crc=GYAKUTEN2_CRC, game_code=GYAKUTEN2_CODE)
+    metadata = provider.resolve(identity)
+    assert metadata is not None
+    assert metadata.canonical_title == "Gyakuten Saiban 2 (Japan)"
+    assert metadata.region == "Japan"
+    assert metadata.platform == "gba"
+    assert metadata.identity_key == identity.identity_key
+
+
+def test_bundled_index_serial_fallback_two_retail_families_is_none():
+    # FSMJ is shared by two distinct retail GBA titles (a Hot Mario Campaign
+    # Super Mario Bros. and Famicom Mini 01); the real bundled index must keep
+    # returning ``None`` for it.
+    index = LibretroIndex.from_paths([bundled_libretro_dir()])
+    assert index.lookup_serial(platform="gba", serial="FSMJ") is None
 
 
 # --- value object ------------------------------------------------------------
