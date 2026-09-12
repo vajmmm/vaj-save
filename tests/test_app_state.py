@@ -1230,3 +1230,59 @@ def test_backup_refuses_a_source_inside_the_library(tmp_path):
     )
     assert state.import_save(entry) is None
     assert state.status_text == "本地存档库无需备份"
+
+
+def test_import_save_persists_resolved_rom_identity_key(tmp_path):
+    """The backup path stores the ROM identity the cover cache is keyed by."""
+    from vajsave.library import game_key, load_catalog
+
+    lib = tmp_path / "lib"
+    folder = tmp_path / "src" / "ULJM05800"
+    folder.mkdir(parents=True)
+    (folder / "DATA.BIN").write_bytes(b"save-data")
+    entry = SaveEntry(
+        platform="psp",
+        source_id="psp",
+        display_name="PSP Game",
+        path=str(folder),
+        title_id="ULJM05800",
+    )
+
+    state = AppState(provider=FakeVolumeProvider([]), library_root=lib)
+    assert state.import_save(entry) is not None
+
+    game = load_catalog(lib).games[game_key(entry)]
+    assert game.identity_key == "psp:ULJM05800"
+    assert game.id == game_key(entry)
+
+
+def test_library_row_uses_persisted_identity_key(tmp_path):
+    from vajsave.library import load_catalog, save_catalog
+
+    lib = tmp_path / "lib"
+    _library_backup(tmp_path, lib, "gba", "AGBE01", "GBA Game", datetime(2024, 1, 1, 10, 0, 0))
+    catalog = load_catalog(lib)
+    game = next(iter(catalog.games.values()))
+    game.identity_key = "gba:sha1:" + "a" * 40
+    save_catalog(lib, catalog)
+
+    state = AppState(provider=FakeVolumeProvider([]), library_root=lib)
+    state.set_library_mode(True)
+    entry = state.visible_saves()[0]
+    result = state.resolve_save_identity(entry)
+    assert result.status == "resolved"
+    assert result.identity_key == "gba:sha1:" + "a" * 40
+    assert result.identity.title == "GBA Game"
+
+
+def test_library_row_without_identity_key_falls_back_to_catalog_id(tmp_path):
+    lib = tmp_path / "lib"
+    _library_backup(tmp_path, lib, "gba", "AGBE01", "GBA Game", datetime(2024, 1, 1, 10, 0, 0))
+
+    state = AppState(provider=FakeVolumeProvider([]), library_root=lib)
+    state.set_library_mode(True)
+    entry = state.visible_saves()[0]
+    result = state.resolve_save_identity(entry)
+    assert result.status == "resolved"
+    # A legacy record keeps its catalog id; no ROM identity is fabricated.
+    assert result.identity_key == entry.extra["library_game_id"]

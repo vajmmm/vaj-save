@@ -455,9 +455,12 @@ class AppState:
         game_id = self._library_game_id(entry)
         if game_id is not None:
             # A catalog row already knows which game it is; never re-resolve it
-            # against a device or trigger a ROM lookup.
+            # against a device or trigger a ROM lookup. The persisted ROM
+            # identity_key (when present) is what the cover cache is keyed by;
+            # without one we fall back to the catalog id, which misses the
+            # identity-hash cache and keeps the placeholder.
             identity = GameIdentity(
-                identity_key=game_id,
+                identity_key=self._library_identity_key(entry) or game_id,
                 platform=getattr(entry, "platform", "") or "unknown",
                 title=entry.display_name or game_id,
                 title_id=entry.title_id or None,
@@ -489,6 +492,20 @@ class AppState:
         extra = getattr(entry, "extra", None) or {}
         game_id = extra.get("library_game_id")
         return game_id or None
+
+    @staticmethod
+    def _library_identity_key(entry: SaveEntry) -> Optional[str]:
+        """ROM identity_key persisted on a catalog row, else ``None``.
+
+        Library rows carry the key recorded at backup time; a legacy row has
+        none, so callers fall back to the catalog id and never fabricate a ROM
+        identity.
+        """
+        extra = getattr(entry, "extra", None) or {}
+        key = extra.get("identity_key")
+        if not key:
+            return None
+        return str(key).strip() or None
 
     def _game_id(self, entry: SaveEntry) -> str:
         """Catalog/device game key for an entry, preferring the library marker."""
@@ -745,6 +762,18 @@ class AppState:
         elif self.current_result:
             self.status_text = f"{label} · {count} 个存档 | [只读]"
 
+    def _identity_key_for_backup(self, entry: SaveEntry) -> Optional[str]:
+        """Best-effort ROM identity key to persist with a backup.
+
+        ``None`` means the resolver could not identify the ROM (unresolved or
+        ambiguous); it is forwarded as-is so ``backup_save`` never clobbers an
+        identity a previous backup already stored.
+        """
+        try:
+            return self.resolve_save_identity(entry).identity_key
+        except Exception:  # noqa: BLE001 - identity is best-effort; backup proceeds
+            return None
+
     def import_save(self, entry: SaveEntry) -> Optional[Path]:
         """Backup one save into the versioned local library. Never writes to the source volume."""
         if (
@@ -756,8 +785,9 @@ class AppState:
             # back in would duplicate the library into its own tree.
             self.status_text = "本地存档库无需备份"
             return None
+        identity_key = self._identity_key_for_backup(entry)
         try:
-            result = backup_save(entry, self.library_root)
+            result = backup_save(entry, self.library_root, identity_key=identity_key)
         except Exception as e:
             self.warnings.append(f"备份失败: {e}")
             self.status_text = f"备份失败: {e}"

@@ -237,6 +237,12 @@ class GameRecord:
     versions: List[Snapshot] = field(default_factory=list)
     starred: bool = False
     note: str = ""
+    # ROM identity key (``<platform>:sha1:<hex>`` / ``<platform>:<title_id>`` ...)
+    # captured when the backup ran, so browsing the local library can hit the
+    # identity-hash cover cache without re-resolving against a device. ``None``
+    # for legacy records: a missing key is never fabricated, so an unidentified
+    # game keeps its placeholder cover.
+    identity_key: Optional[str] = None
 
     def find_hash(self, digest: str) -> Optional[Snapshot]:
         for snap in self.versions:
@@ -358,10 +364,14 @@ class Catalog:
         self.games: Dict[str, GameRecord] = games or {}
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "version": 1,
-            "games": [asdict(game) for game in self.games.values()],
-        }
+        games: List[Dict[str, Any]] = []
+        for game in self.games.values():
+            data = asdict(game)
+            # Keep catalogs clean for games whose identity is unknown yet.
+            if data.get("identity_key") is None:
+                data.pop("identity_key", None)
+            games.append(data)
+        return {"version": 1, "games": games}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Catalog":
@@ -380,6 +390,7 @@ class Catalog:
                         user=item.get("user"),
                     )
                 )
+            raw_key = raw.get("identity_key")
             record = GameRecord(
                 id=raw["id"],
                 platform=raw.get("platform") or "unknown",
@@ -388,6 +399,7 @@ class Catalog:
                 versions=versions,
                 starred=bool(raw.get("starred")),
                 note=str(raw.get("note") or ""),
+                identity_key=(str(raw_key).strip() or None) if raw_key else None,
             )
             games[record.id] = record
         return cls(games)
@@ -530,13 +542,24 @@ def backup_save(
     entry: SaveEntry,
     library_root: Path,
     when: Optional[datetime] = None,
+    *,
+    identity_key: Optional[str] = None,
 ) -> BackupResult:
-    """Create a new version, or reuse an existing one if content is identical."""
+    """Create a new version, or reuse an existing one if content is identical.
+
+    ``identity_key`` is the ROM identity resolved by the caller. It is stored on
+    the :class:`GameRecord` so browsing the local library can hit covers cached
+    under ``covers/<platform>/<sha1(identity_key)>.png``. A missing key backfills
+    an existing record; an unresolved key (``None``) never erases a stored one,
+    and the catalog id itself (:func:`game_key`) is never derived from it.
+    """
     root = Path(library_root)
     digest = hash_tree(Path(entry.path))
     catalog = load_catalog(root)
     key = game_key(entry)
+    resolved_key = str(identity_key).strip() if identity_key else None
     game = catalog.games.get(key)
+    catalog_dirty = False
     if game is None:
         game = GameRecord(
             id=key,
@@ -544,11 +567,21 @@ def backup_save(
             title_id=entry.title_id or "",
             display_name=entry.display_name,
             versions=[],
+            identity_key=resolved_key,
         )
         catalog.games[key] = game
+    elif resolved_key and not game.identity_key:
+        # Backfill a missing key on an existing record, but never overwrite a
+        # stored key (with None or a different value): the recorded identity is
+        # what already-cached covers are keyed by.
+        game.identity_key = resolved_key
+        catalog_dirty = True
     existing = game.find_hash(digest)
     if existing is not None:
-        # Identical content reuses the snapshot and must not prune.
+        # Identical content reuses the snapshot and must not prune. A backfilled
+        # identity_key still has to be persisted.
+        if catalog_dirty:
+            save_catalog(root, catalog)
         return BackupResult(game=game, snapshot=existing, is_new=False, path=existing.absolute_path(root))
 
     now = when or datetime.now()
@@ -644,6 +677,12 @@ def game_entry(game: GameRecord, library_root: Union[Path, str]) -> SaveEntry:
         path = str(latest.absolute_path(root))
     else:
         path = str(root / game.id)
+    extra: Dict[str, Any] = {"library_game_id": game.id}
+    identity_key = getattr(game, "identity_key", None)
+    if identity_key:
+        # Carried on the row so cover/metadata lookups keep using the ROM
+        # identity the cache was written under, without a per-row catalog read.
+        extra["identity_key"] = identity_key
     return SaveEntry(
         platform=game.platform or "unknown",
         source_id=LIBRARY_SOURCE_ID,
@@ -651,7 +690,7 @@ def game_entry(game: GameRecord, library_root: Union[Path, str]) -> SaveEntry:
         path=path,
         title_id=game.title_id or None,
         slot=library_game_slot(game.id),
-        extra={"library_game_id": game.id},
+        extra=extra,
     )
 
 

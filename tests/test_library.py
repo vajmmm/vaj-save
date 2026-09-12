@@ -841,3 +841,107 @@ def test_catalog_entries_empty_catalog_returns_empty(tmp_path: Path):
     from vajsave.library import catalog_entries
 
     assert catalog_entries(Catalog(), tmp_path / "lib") == []
+
+
+# --- ROM identity_key persisted with a backup -------------------------------
+
+
+def test_backup_persists_identity_key_and_keeps_game_id(tmp_path: Path):
+    src, entry = _make_entry(tmp_path)
+    (src / "DATA.BIN").write_bytes(b"payload")
+    lib = tmp_path / "lib"
+
+    backup_save(entry, lib, datetime(2026, 1, 1, 10, 0, 0), identity_key="psp:ULJM05800")
+
+    game = load_catalog(lib).games[game_key(entry)]
+    assert game.identity_key == "psp:ULJM05800"
+    # The persisted identity never changes the catalog key the library groups by.
+    assert game.id == game_key(entry)
+
+
+def test_identity_key_survives_catalog_roundtrip(tmp_path: Path):
+    src, entry = _make_entry(tmp_path)
+    (src / "DATA.BIN").write_bytes(b"payload")
+    lib = tmp_path / "lib"
+
+    backup_save(entry, lib, datetime(2026, 1, 1, 10, 0, 0), identity_key="gba:sha1:" + "a" * 40)
+    # A second load proves the value went through catalog.json, not just memory.
+    reloaded = load_catalog(lib)
+    assert reloaded.games[game_key(entry)].identity_key == "gba:sha1:" + "a" * 40
+
+
+def test_legacy_catalog_without_identity_key_loads_as_none(tmp_path: Path):
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "catalog.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "games": [
+                    {
+                        "id": "psp:ULJM05800:default",
+                        "platform": "psp",
+                        "title_id": "ULJM05800",
+                        "display_name": "Legacy",
+                        "versions": [],
+                        "starred": False,
+                        "note": "",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    game = load_catalog(lib).games["psp:ULJM05800:default"]
+    assert game.identity_key is None
+    assert game.id == "psp:ULJM05800:default"
+
+
+def test_backup_without_identity_key_leaves_it_none(tmp_path: Path):
+    src, entry = _make_entry(tmp_path)
+    (src / "DATA.BIN").write_bytes(b"payload")
+    lib = tmp_path / "lib"
+
+    backup_save(entry, lib, datetime(2026, 1, 1, 10, 0, 0))
+
+    assert load_catalog(lib).games[game_key(entry)].identity_key is None
+
+
+def test_unchanged_rebackup_backfills_missing_identity_key(tmp_path: Path):
+    src, entry = _make_entry(tmp_path)
+    payload = src / "DATA.BIN"
+    lib = tmp_path / "lib"
+    payload.write_bytes(b"same")
+
+    first = backup_save(entry, lib, datetime(2026, 1, 1, 10, 0, 0))
+    assert load_catalog(lib).games[game_key(entry)].identity_key is None
+
+    # Identical content reuses the snapshot, but the missing key is still filled in.
+    second = backup_save(
+        entry, lib, datetime(2026, 1, 2, 10, 0, 0), identity_key="psp:ULJM05800"
+    )
+
+    game = load_catalog(lib).games[game_key(entry)]
+    assert second.is_new is False
+    assert second.snapshot.id == first.snapshot.id
+    assert len(game.versions) == 1
+    assert game.identity_key == "psp:ULJM05800"
+    assert game.id == game_key(entry)
+
+
+def test_unresolved_rebackup_never_overwrites_existing_identity_key(tmp_path: Path):
+    src, entry = _make_entry(tmp_path)
+    payload = src / "DATA.BIN"
+    lib = tmp_path / "lib"
+
+    payload.write_bytes(b"one")
+    backup_save(entry, lib, datetime(2026, 1, 1, 10, 0, 0), identity_key="psp:ULJM05800")
+    payload.write_bytes(b"two")
+    # An unresolved identity is passed as None: it must not erase the stored key.
+    backup_save(entry, lib, datetime(2026, 1, 2, 10, 0, 0), identity_key=None)
+
+    game = load_catalog(lib).games[game_key(entry)]
+    assert game.identity_key == "psp:ULJM05800"
+    assert game.id == game_key(entry)
+    assert len(game.versions) == 2

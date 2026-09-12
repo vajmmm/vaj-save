@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import zlib
 import hashlib
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 
@@ -371,3 +372,67 @@ def test_settings_dialog_apply_libretro_dir(tmp_path: Path):
     assert stub.status == "元数据目录已更新"
     VajSaveApp._apply_libretro_dir(stub, None)
     assert state.libretro_dir is None
+
+
+def test_library_mode_shows_cover_cached_under_rom_identity_key(tmp_path: Path):
+    """A backup persists the ROM identity_key, so browsing the local library hits
+    the identity-hash cover cache instead of falling back to a placeholder."""
+    from vajsave.library import game_key, load_catalog
+
+    lib = tmp_path / "lib"
+    save_dir = tmp_path / "PSP" / "SAVEDATA" / "ULJM05800"
+    save_dir.mkdir(parents=True)
+    (save_dir / "DATA.BIN").write_bytes(b"save-data")
+    entry = SaveEntry(
+        platform="psp",
+        source_id="psp_test",
+        display_name="PSP Game",
+        path=str(save_dir),
+        title_id="ULJM05800",
+    )
+
+    cache = CoverCache(lib / COVER_CACHE_DIR)
+    stored = cache.store("psp", "psp:ULJM05800", png_bytes())
+    assert stored is not None
+
+    state = AppState(library_root=lib)
+    assert state.import_save(entry) is not None
+    assert load_catalog(lib).games[game_key(entry)].identity_key == "psp:ULJM05800"
+
+    state.set_library_mode(True)
+    row = state.visible_saves()[0]
+    cover = state.resolve_save_cover(row)
+    assert cover.source == SOURCE_DOWNLOADED
+    assert Path(cover.path) == stored
+
+    # The image stays in covers/; the snapshot tree only holds the save payload.
+    snapshot_files = [p.name for p in Path(row.path).rglob("*") if p.is_file()]
+    assert snapshot_files == ["DATA.BIN"]
+
+
+def test_library_mode_without_identity_key_keeps_placeholder(tmp_path: Path):
+    """A legacy record with no stored identity must not guess a cached cover."""
+    from vajsave.library import backup_save
+
+    lib = tmp_path / "lib"
+    save_dir = tmp_path / "PSP" / "SAVEDATA" / "ULJM05800"
+    save_dir.mkdir(parents=True)
+    (save_dir / "DATA.BIN").write_bytes(b"save-data")
+    entry = SaveEntry(
+        platform="psp",
+        source_id="psp_test",
+        display_name="PSP Game",
+        path=str(save_dir),
+        title_id="ULJM05800",
+    )
+    # An older backup: no identity_key was recorded at backup time.
+    backup_save(entry, lib, when=datetime(2024, 1, 1, 10, 0, 0))
+
+    cache = CoverCache(lib / COVER_CACHE_DIR)
+    assert cache.store("psp", "psp:ULJM05800", png_bytes()) is not None
+
+    state = AppState(library_root=lib)
+    state.set_library_mode(True)
+    row = state.visible_saves()[0]
+    assert not row.extra.get("identity_key")
+    assert state.resolve_save_cover(row).source == SOURCE_PLACEHOLDER
