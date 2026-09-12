@@ -16,11 +16,19 @@ import json
 import urllib.error
 
 from vajsave.artwork.llm_choice import (
+    ANTHROPIC_API_VERSION,
+    DEFAULT_ANTHROPIC_BASE_URL,
+    DEFAULT_ANTHROPIC_MODEL,
     DEFAULT_LLM_BASE_URL,
     DEFAULT_LLM_MODEL,
+    DEFAULT_LLM_PROTOCOL,
+    LLM_PROTOCOLS,
     MAX_LLM_RESPONSE_BYTES,
+    PROTOCOL_ANTHROPIC,
+    PROTOCOL_OPENAI,
     LLMCoverChooser,
     choose_cover_filename,
+    normalize_protocol,
 )
 
 _CANDIDATES = ("Mario Kart 7 (USA).png", "Mario Party (USA).png")
@@ -175,3 +183,109 @@ def test_choose_rejects_an_oversized_response():
 def test_chooser_repr_never_leaks_the_api_key():
     chooser = LLMCoverChooser(api_key="sk-super-secret")
     assert "sk-super-secret" not in repr(chooser)
+
+
+# --- selectable OpenAI / Anthropic protocol ----------------------------------
+
+
+def test_default_protocol_is_openai_and_openai_request_is_unchanged():
+    assert DEFAULT_LLM_PROTOCOL == PROTOCOL_OPENAI
+    assert normalize_protocol(None) == PROTOCOL_OPENAI
+    assert normalize_protocol("") == PROTOCOL_OPENAI
+    assert normalize_protocol("gemini") == PROTOCOL_OPENAI  # unsupported -> default
+    assert "gemini" not in LLM_PROTOCOLS
+    assert LLM_PROTOCOLS == (PROTOCOL_OPENAI, PROTOCOL_ANTHROPIC)
+
+    captured = {}
+
+    def opener(request, timeout=None):
+        captured["request"] = request
+        return _chat_response("Mario Party (USA).png")
+
+    choice = choose_cover_filename(
+        _CANDIDATES, "Mario", api_key="sk-test", urlopen=opener
+    )
+    assert choice == "Mario Party (USA).png"
+    assert captured["request"].full_url == DEFAULT_LLM_BASE_URL + "/chat/completions"
+    assert captured["request"].get_header("Authorization") == "Bearer sk-test"
+
+
+def test_anthropic_choose_sends_messages_request():
+    captured = {}
+
+    def opener(request, timeout=None):
+        captured["request"] = request
+        return FakeResponse(
+            json.dumps(
+                {"content": [{"type": "text", "text": "Mario Party (USA).png"}]}
+            ).encode("utf-8")
+        )
+
+    choice = choose_cover_filename(
+        _CANDIDATES,
+        "Mario",
+        api_key="sk-ant",
+        protocol=PROTOCOL_ANTHROPIC,
+        urlopen=opener,
+    )
+
+    assert choice == "Mario Party (USA).png"
+    request = captured["request"]
+    assert request.method == "POST"
+    assert request.full_url == DEFAULT_ANTHROPIC_BASE_URL + "/messages"
+    # The Anthropic key travels in x-api-key, never as a Bearer token.
+    assert request.get_header("X-api-key") == "sk-ant"
+    assert request.get_header("Authorization") is None
+    assert request.get_header("Anthropic-version") == ANTHROPIC_API_VERSION
+    body = json.loads(request.data.decode("utf-8"))
+    assert body["model"] == DEFAULT_ANTHROPIC_MODEL
+    assert body["max_tokens"] > 0
+    assert body["temperature"] == 0
+    assert isinstance(body["system"], str) and body["system"]
+    assert len(body["messages"]) == 1
+    assert body["messages"][0]["role"] == "user"
+    assert "Mario Party (USA).png" in body["messages"][0]["content"]
+
+
+def test_anthropic_choose_parses_content_blocks_and_ignores_prose():
+    chooser = LLMCoverChooser(
+        api_key="sk-ant",
+        protocol=PROTOCOL_ANTHROPIC,
+        urlopen=lambda request, timeout=None: FakeResponse(
+            json.dumps(
+                {
+                    "content": [
+                        {"type": "text", "text": "Best match: Mario Kart 7 (USA).png"},
+                        {"type": "text", "text": ""},
+                    ]
+                }
+            ).encode("utf-8")
+        ),
+    )
+    assert chooser.choose(_CANDIDATES, "Mario") == "Mario Kart 7 (USA).png"
+    assert chooser.protocol == PROTOCOL_ANTHROPIC
+
+
+def test_anthropic_choose_degrades_on_malformed_content():
+    for body in (
+        {"content": []},
+        {"content": "nope"},
+        {"content": [{}]},
+        {"content": [{"type": "text"}]},
+        {},
+    ):
+        chooser = LLMCoverChooser(
+            api_key="sk-ant",
+            protocol=PROTOCOL_ANTHROPIC,
+            urlopen=lambda request, timeout=None, body=body: FakeResponse(
+                json.dumps(body).encode("utf-8")
+            ),
+        )
+        assert chooser.choose(_CANDIDATES, "Mario") is None
+
+
+def test_chooser_repr_includes_protocol_but_never_the_key():
+    chooser = LLMCoverChooser(api_key="sk-super-secret", protocol=PROTOCOL_ANTHROPIC)
+    text = repr(chooser)
+    assert "sk-super-secret" not in text
+    assert PROTOCOL_ANTHROPIC in text

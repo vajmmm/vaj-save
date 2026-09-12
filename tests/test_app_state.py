@@ -7,7 +7,15 @@ from pathlib import Path
 import pytest
 
 from vajsave.app_state import AppState
-from vajsave.artwork.llm_choice import DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL
+from vajsave.artwork.llm_choice import (
+    DEFAULT_ANTHROPIC_BASE_URL,
+    DEFAULT_ANTHROPIC_MODEL,
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MODEL,
+    DEFAULT_LLM_PROTOCOL,
+    PROTOCOL_ANTHROPIC,
+    PROTOCOL_OPENAI,
+)
 from vajsave.library import backup_save
 from vajsave.models import SaveEntry, ScanResult, VolumeInfo
 from vajsave.volume import FakeVolumeProvider
@@ -1660,3 +1668,105 @@ def test_set_llm_cover_clearing_base_url_and_model_restores_defaults(
     state.set_llm_cover(base_url="", model="   ")
     assert state.llm_base_url == DEFAULT_LLM_BASE_URL
     assert state.llm_model == DEFAULT_LLM_MODEL
+
+
+# --- selectable OpenAI / Anthropic protocol ----------------------------------
+
+
+def test_llm_protocol_defaults_to_openai(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
+    state = AppState(library_root=tmp_path / "lib")
+    assert state.llm_protocol == DEFAULT_LLM_PROTOCOL == PROTOCOL_OPENAI
+
+
+def test_set_llm_cover_persists_protocol_and_chooser_uses_it(
+    tmp_path: Path, monkeypatch
+):
+    from vajsave.library import load_app_config
+
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
+    state = AppState(library_root=tmp_path / "lib")
+
+    state.set_llm_cover(enabled=True, api_key="sk-ant", protocol=PROTOCOL_ANTHROPIC)
+
+    assert state.llm_protocol == PROTOCOL_ANTHROPIC
+    assert load_app_config()["llm_protocol"] == PROTOCOL_ANTHROPIC
+    chooser = state.artwork_service.llm_chooser
+    assert chooser is not None
+    assert chooser.protocol == PROTOCOL_ANTHROPIC
+
+
+def test_app_state_reads_llm_protocol_from_config(tmp_path: Path, monkeypatch):
+    from vajsave.library import save_app_config
+
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
+    save_app_config(
+        {
+            "llm_cover_enabled": True,
+            "llm_api_key": "sk-ant",
+            "llm_protocol": PROTOCOL_ANTHROPIC,
+        }
+    )
+    state = AppState(library_root=tmp_path / "lib")
+    assert state.llm_protocol == PROTOCOL_ANTHROPIC
+    assert state.llm_base_url == DEFAULT_ANTHROPIC_BASE_URL
+    assert state.llm_model == DEFAULT_ANTHROPIC_MODEL
+    chooser = state.artwork_service.llm_chooser
+    assert chooser is not None
+    assert chooser.protocol == PROTOCOL_ANTHROPIC
+    assert chooser.base_url == DEFAULT_ANTHROPIC_BASE_URL
+
+
+def test_unknown_llm_protocol_falls_back_to_openai(tmp_path: Path, monkeypatch):
+    from vajsave.library import save_app_config
+
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
+    save_app_config({"llm_protocol": "gemini"})
+    state = AppState(library_root=tmp_path / "lib")
+    assert state.llm_protocol == PROTOCOL_OPENAI
+    assert state.llm_base_url == DEFAULT_LLM_BASE_URL
+    assert state.llm_model == DEFAULT_LLM_MODEL
+
+
+def test_switching_protocol_swaps_the_default_base_url(tmp_path: Path, monkeypatch):
+    from vajsave.library import load_app_config
+
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
+    state = AppState(library_root=tmp_path / "lib")
+    assert state.llm_base_url == DEFAULT_LLM_BASE_URL
+
+    state.set_llm_cover(protocol=PROTOCOL_ANTHROPIC)
+    assert state.llm_protocol == PROTOCOL_ANTHROPIC
+    assert state.llm_base_url == DEFAULT_ANTHROPIC_BASE_URL
+    assert load_app_config()["llm_base_url"] == DEFAULT_ANTHROPIC_BASE_URL
+
+
+def test_switching_protocol_keeps_a_custom_base_url(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
+    state = AppState(library_root=tmp_path / "lib")
+    state.set_llm_cover(base_url="https://gateway.example/v1")
+
+    state.set_llm_cover(protocol=PROTOCOL_ANTHROPIC)
+
+    assert state.llm_protocol == PROTOCOL_ANTHROPIC
+    assert state.llm_base_url == "https://gateway.example/v1"
+
+
+def test_switching_protocol_from_a_custom_base_via_the_ui_field_is_preserved(
+    tmp_path: Path, monkeypatch
+):
+    # The settings dialog always sends the current field text, so a protocol
+    # switch must inspect the *incoming* value: only the old default is
+    # rewritten, a typed gateway endpoint is left as-is.
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
+    state = AppState(library_root=tmp_path / "lib")
+    state.set_llm_cover(base_url="https://gateway.example/v1")
+
+    state.set_llm_cover(
+        protocol=PROTOCOL_ANTHROPIC, base_url="https://gateway.example/v1"
+    )
+    assert state.llm_base_url == "https://gateway.example/v1"
+
+    state.set_llm_cover(protocol=PROTOCOL_OPENAI, base_url=DEFAULT_LLM_BASE_URL)
+    assert state.llm_protocol == PROTOCOL_OPENAI
+    assert state.llm_base_url == DEFAULT_LLM_BASE_URL

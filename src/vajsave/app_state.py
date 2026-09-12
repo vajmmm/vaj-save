@@ -37,13 +37,14 @@ from .library import (
 )
 from .artwork import (
     COVER_CACHE_DIR,
-    DEFAULT_LLM_BASE_URL,
-    DEFAULT_LLM_MODEL,
     PLACEHOLDER,
     ArtworkResolution,
     ArtworkService,
     CoverCache,
     LLMCoverChooser,
+    default_base_url,
+    default_model,
+    normalize_protocol,
 )
 from .metadata import (
     METADATA_CACHE_NAME,
@@ -216,12 +217,17 @@ class AppState:
         self.llm_api_key: str = self._coerce_text(ftp_config.get("llm_api_key"))
         # The OpenAI-compatible endpoint and model are persisted with the key so
         # a self-hosted gateway or a different model survives a restart. Blank or
-        # missing values fall back to the built-in defaults.
+        # missing values fall back to the built-in defaults. The protocol selects
+        # the wire shape (OpenAI chat-completions or Anthropic messages); it
+        # defaults to OpenAI and any unknown value (e.g. Gemini) collapses to it.
+        self.llm_protocol: str = normalize_protocol(ftp_config.get("llm_protocol"))
         self.llm_base_url: str = (
-            self._coerce_text(ftp_config.get("llm_base_url")) or DEFAULT_LLM_BASE_URL
+            self._coerce_text(ftp_config.get("llm_base_url"))
+            or default_base_url(self.llm_protocol)
         )
         self.llm_model: str = (
-            self._coerce_text(ftp_config.get("llm_model")) or DEFAULT_LLM_MODEL
+            self._coerce_text(ftp_config.get("llm_model"))
+            or default_model(self.llm_protocol)
         )
 
         self.volumes: List[VolumeInfo] = []
@@ -473,7 +479,22 @@ class AppState:
             api_key=self.llm_api_key,
             model=self.llm_model,
             base_url=self.llm_base_url,
+            protocol=self.llm_protocol,
         )
+
+    @staticmethod
+    def _follow_protocol_default(
+        value: object, old_default: str, new_default: str
+    ) -> str:
+        """The new protocol's default when ``value`` is blank/old-default.
+
+        A customised endpoint/model is preserved across a protocol switch; only
+        a value that is still the old protocol's built-in default follows along.
+        """
+        text = "" if value is None else str(value).strip()
+        if not text or text.rstrip("/") == old_default.rstrip("/"):
+            return new_default
+        return text
 
     def set_llm_cover(
         self,
@@ -481,31 +502,59 @@ class AppState:
         api_key: object = _UNSET,
         base_url: object = _UNSET,
         model: object = _UNSET,
+        protocol: object = _UNSET,
     ) -> None:
         """Persist the optional LLM cover-disambiguation settings.
 
         ``enabled`` toggles the feature, ``api_key`` (when passed) replaces the
         stored key, and ``base_url``/``model`` (when passed) replace the stored
-        endpoint/model. Blank values fall back to the built-in defaults rather
-        than persisting an unusable configuration. The key is written to
+        endpoint/model. ``protocol`` selects the wire shape (``openai`` or
+        ``anthropic``); switching it rewrites a still-default base URL (and
+        model) to the new protocol's default while leaving a customised value
+        untouched. Blank values fall back to the current protocol's defaults
+        rather than persisting an unusable configuration. The key is written to
         ``config.json`` so it survives a restart but is deliberately never copied
         into ``status_text`` or ``warnings``. The cached artwork service is
         dropped so the new chooser takes effect on the next cover lookup.
         """
+        if protocol is not _UNSET:
+            new_protocol = normalize_protocol(protocol)
+            if new_protocol != self.llm_protocol:
+                # The settings dialog always sends the current field text, so a
+                # protocol switch considers the *incoming* value when one was
+                # given, else the stored value. Only the old default follows.
+                current_base = self.llm_base_url if base_url is _UNSET else base_url
+                current_model = self.llm_model if model is _UNSET else model
+                base_url = self._follow_protocol_default(
+                    current_base,
+                    default_base_url(self.llm_protocol),
+                    default_base_url(new_protocol),
+                )
+                model = self._follow_protocol_default(
+                    current_model,
+                    default_model(self.llm_protocol),
+                    default_model(new_protocol),
+                )
+                self.llm_protocol = new_protocol
         if enabled is not None:
             self.llm_cover_enabled = bool(enabled)
         if api_key is not _UNSET:
             self.llm_api_key = self._coerce_text(api_key)
         if base_url is not _UNSET:
-            self.llm_base_url = self._coerce_text(base_url) or DEFAULT_LLM_BASE_URL
+            self.llm_base_url = (
+                self._coerce_text(base_url) or default_base_url(self.llm_protocol)
+            )
         if model is not _UNSET:
-            self.llm_model = self._coerce_text(model) or DEFAULT_LLM_MODEL
+            self.llm_model = self._coerce_text(model) or default_model(
+                self.llm_protocol
+            )
         config = load_app_config()
         config["llm_cover_enabled"] = self.llm_cover_enabled
         if self.llm_api_key:
             config["llm_api_key"] = self.llm_api_key
         else:
             config.pop("llm_api_key", None)
+        config["llm_protocol"] = self.llm_protocol
         config["llm_base_url"] = self.llm_base_url
         config["llm_model"] = self.llm_model
         save_app_config(config)

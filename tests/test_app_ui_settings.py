@@ -255,3 +255,47 @@ def test_settings_reads_current_llm_base_url_and_model(tk_root, tmp_path):
         assert dialog.llm_model_var.get() == "llama3"
     finally:
         _dispose(app, tk_root)
+
+
+def test_settings_dialog_exposes_llm_protocol_selector(tk_root, tmp_path):
+    from vajsave.artwork.llm_choice import DEFAULT_LLM_PROTOCOL, LLM_PROTOCOLS
+
+    app, state = _app(tk_root, tmp_path)
+    try:
+        dialog = _open_settings(app, tk_root)
+        assert hasattr(dialog, "llm_protocol_var")
+        assert dialog.llm_protocol_var.get() == DEFAULT_LLM_PROTOCOL
+        values = list(dialog.llm_protocol_combo.cget("values"))
+        assert values == list(LLM_PROTOCOLS)
+        assert "gemini" not in [str(v).lower() for v in values]
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_settings_save_persists_llm_protocol(tk_root, tmp_path):
+    from vajsave.artwork.llm_choice import PROTOCOL_ANTHROPIC
+    from vajsave.library import load_app_config
+
+    app, state = _app(tk_root, tmp_path)
+    try:
+        dialog = _open_settings(app, tk_root)
+        dialog.llm_protocol_var.set(PROTOCOL_ANTHROPIC)
+        _find_button(dialog, "保存").invoke()
+        assert load_app_config()["llm_protocol"] == PROTOCOL_ANTHROPIC
+        assert state.llm_protocol == PROTOCOL_ANTHROPIC
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_settings_reads_current_llm_protocol(tk_root, tmp_path):
+    from vajsave.artwork.llm_choice import PROTOCOL_ANTHROPIC
+    from vajsave.library import save_app_config
+
+    app, state = _app(tk_root, tmp_path)
+    try:
+        save_app_config({"llm_protocol": PROTOCOL_ANTHROPIC})
+        state.llm_protocol = PROTOCOL_ANTHROPIC
+        dialog = _open_settings(app, tk_root)
+        assert dialog.llm_protocol_var.get() == PROTOCOL_ANTHROPIC
+    finally:
+        _dispose(app, tk_root)

@@ -297,11 +297,18 @@ saturated accent fill.
   `settings.json` is left untouched. Changing the value never prunes existing
   versions — pruning still happens only when a new version is added.
 - **Optional LLM cover disambiguation** sits below `keep_last`: an 启用 toggle, a
-  masked API Key field and the endpoint/model fields (Base URL and 模型). The
-  toggle, the key, the base URL and the model are persisted to `config.json` (so
-  they survive a restart); a blank base URL or model falls back to the built-in
-  default rather than persisting an unusable configuration. The key is written to
-  disk but never echoed into status/warning text or any log line. When enabled,
+  协议 selector (`openai` / `anthropic`), a masked API Key field and the
+  endpoint/model fields (Base URL and 模型). Gemini is deliberately not offered
+  and any unknown protocol value falls back to `openai`. The toggle, the key,
+  the protocol, the base URL and the model are persisted to `config.json` (so
+  they survive a restart); a blank base URL or model falls back to the selected
+  protocol's built-in default rather than persisting an unusable configuration.
+  Switching protocol rewrites only a still-default base URL (and model) to the
+  new protocol's default — a customised gateway endpoint is left untouched. The
+  OpenAI shape posts to `<base>/chat/completions` with a `Bearer` token; the
+  Anthropic shape posts to `<base>/messages` with `x-api-key` and
+  `anthropic-version` headers. The key is written to disk but never echoed into
+  status/warning text or any log line or `repr`. When enabled,
   the LLM is consulted *only* for a genuinely ambiguous `Named_Boxarts` listing —
   several *different* titles matching one query — and must return one exact file
   name from the offered list. Region/language variants of a single title are
