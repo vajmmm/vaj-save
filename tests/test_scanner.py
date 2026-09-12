@@ -725,6 +725,11 @@ def test_guess_platform_nds_card_fingerprint(tmp_path: Path):
     assert guess_platform(tmp_path) == "nds"
 
 
+def test_guess_platform_nds_wood_rpg_fingerprint(tmp_path: Path):
+    (tmp_path / "__rpg").mkdir()
+    assert guess_platform(tmp_path) == "nds"
+
+
 def test_guess_platform_unknown_returns_none(tmp_path: Path):
     (tmp_path / "Documents").mkdir()
     (tmp_path / "Movies").mkdir()

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Set
+from typing import Dict, List, Set
 
 from ..models import SaveEntry, SaveSource
 from .common import (
@@ -14,7 +14,12 @@ from .common import (
     safe_iterdir,
 )
 
-_MAX_SIBLING_DEPTH = 3
+# Root is depth 0; a ROM/save pair sitting on the 4th nested directory below
+# root is still reachable, but the walk never recurses past this bound.
+_MAX_SIBLING_DEPTH = 4
+
+# Top-level folders that hold NDS saves apart from the ROMs themselves.
+_TOP_LEVEL_SAVE_DIR_NAMES = frozenset({"save", "saves"})
 
 
 def _has_nds_rom(directory: Path, root_resolved: Path, warnings: List[str]) -> bool:
@@ -116,6 +121,7 @@ def _scan_twilight_dir(
 def _card_has_nds_fingerprint(root: Path, root_resolved: Path) -> bool:
     markers = [
         root / "_nds",
+        root / "__rpg",
         root / "R4.dat",
         root / "TTMenu",
         root / "_system_",
@@ -225,6 +231,81 @@ def _walk_sibling_depth(
         )
 
 
+def _collect_rom_stems(
+    root: Path,
+    root_resolved: Path,
+    warnings: List[str],
+    max_depth: int = _MAX_SIBLING_DEPTH,
+) -> Dict[str, List[Path]]:
+    """Index ``.nds`` stems under ``root`` with a bounded, cycle-safe walk."""
+    stems: Dict[str, List[Path]] = {}
+    visited: Set[Path] = set()
+
+    def walk(directory: Path, depth: int) -> None:
+        key = resolved_key(directory)
+        if key is None or key in visited:
+            return
+        visited.add(key)
+        for child in safe_iterdir(directory, warnings):
+            if not is_safe_path(child, root_resolved):
+                continue
+            if child.is_file():
+                if child.suffix.lower() == ".nds":
+                    stems.setdefault(child.stem.casefold(), []).append(child)
+            elif child.is_dir() and depth < max_depth:
+                walk(child, depth + 1)
+
+    walk(root, 0)
+    return stems
+
+
+def _scan_top_level_save_dirs(
+    root: Path,
+    root_resolved: Path,
+    warnings: List[str],
+    sources: List[SaveSource],
+    saves: List[SaveEntry],
+    seen_source_roots: Set[Path],
+    seen_save_paths: Set[Path],
+) -> None:
+    """Pair a top-level SAVE/saves folder with ROMs by unique stem.
+
+    Wood/TWiLight cards sometimes keep the ROMs and the ``SAVE``/``saves`` folder
+    apart. A ``.sav`` is only accepted when exactly one ``.nds`` ROM below root
+    shares its stem, so an unrelated ``.sav`` is never claimed as an NDS save.
+    """
+    save_dirs = [
+        child
+        for child in safe_iterdir(root, warnings)
+        if child.is_dir()
+        and child.name.casefold() in _TOP_LEVEL_SAVE_DIR_NAMES
+        and is_safe_path(child, root_resolved)
+    ]
+    if not save_dirs:
+        return
+    rom_stems = _collect_rom_stems(root, root_resolved, warnings)
+    if not rom_stems:
+        return
+    for save_dir in save_dirs:
+        for item in safe_iterdir(save_dir, warnings):
+            if not item.is_file() or item.suffix.lower() != ".sav":
+                continue
+            if len(rom_stems.get(item.stem.casefold(), [])) != 1:
+                continue
+            _add_sav_file(
+                item,
+                source_id="nds_save_dir",
+                display_name=item.stem,
+                source_root=save_dir,
+                description="NDS top-level SAVE/saves directory paired by ROM stem",
+                root_resolved=root_resolved,
+                sources=sources,
+                saves=saves,
+                seen_source_roots=seen_source_roots,
+                seen_save_paths=seen_save_paths,
+            )
+
+
 def scan_nds(
     root: Path,
     root_resolved: Path,
@@ -291,3 +372,14 @@ def scan_nds(
             seen_save_paths=seen_save_paths,
             visited=visited,
         )
+
+    # Top-level SAVE/saves kept apart from the ROMs: pair by unique stem only.
+    _scan_top_level_save_dirs(
+        root,
+        root_resolved,
+        warnings,
+        sources,
+        saves,
+        seen_source_roots,
+        seen_save_paths,
+    )

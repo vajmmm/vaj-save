@@ -105,10 +105,11 @@ def guess_platform(root: Union[Path, str]) -> Optional[str]:
     ):
         return "gba"
 
-    # NDS flash carts / TWiLight Menu++.
+    # NDS flash carts / TWiLight Menu++ / Wood R4 (__rpg).
     if (
         has_dir("roms/nds")
         or has_dir("_nds")
+        or has_dir("__rpg")
         or has_dir("TTMenu")
         or has_file("R4.dat")
         or has_file("_system_")
