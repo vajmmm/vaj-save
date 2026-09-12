@@ -1634,11 +1634,17 @@ class VajSaveApp:
             command=lambda: llm_toggle.set_selected(not llm_toggle.selected),
         )
         llm_toggle.pack(side=tk.LEFT)
-        llm_key_var = tk.StringVar(value=self.state.llm_api_key)
-        llm_key_entry = ttk.Entry(llm_row, textvariable=llm_key_var, width=30)
-        llm_key_entry.configure(show="\u2022")
-        llm_key_entry.pack(side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True)
         dialog.llm_cover_button = llm_toggle
+
+        # The key needs its own labelled row: sharing the toggle's row left the
+        # masked entry unlabelled, so users could not tell where to paste it.
+        llm_key_var = tk.StringVar(value=self.state.llm_api_key)
+        tk.Label(dialog, text="API Key", bg=BG, fg=TEXT, font=ui_font(12)).pack(
+            anchor="w", padx=16, pady=(8, 2)
+        )
+        llm_key_entry = ttk.Entry(dialog, textvariable=llm_key_var)
+        llm_key_entry.configure(show="\u2022")
+        llm_key_entry.pack(fill=tk.X, padx=16)
         dialog.llm_api_key_var = llm_key_var
         dialog.llm_api_key_entry = llm_key_entry
 
