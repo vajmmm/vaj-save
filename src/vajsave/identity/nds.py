@@ -1,12 +1,12 @@
-"""NDS identity resolver: match the save name against ``.nds`` ROMs."""
+"""NDS identity resolver: match the save name against NDS ROMs."""
 
 from __future__ import annotations
 
 from .models import GameIdentityResult
-from .roms import resolve_rom_identity
+from .roms import ROM_EXTENSIONS, resolve_rom_identity
 
 PLATFORM = "nds"
-EXTENSIONS = (".nds",)
+EXTENSIONS = ROM_EXTENSIONS["nds"]
 
 
 def resolve(entry, ctx) -> GameIdentityResult:

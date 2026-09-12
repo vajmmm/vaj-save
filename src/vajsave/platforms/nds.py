@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, List, Set
 
 from ..models import SaveEntry, SaveSource
+from ..rom_formats import supported_extensions
 from .common import (
     collect_unique_dirs,
     find_pattern_dirs,
@@ -13,6 +14,11 @@ from .common import (
     resolved_key,
     safe_iterdir,
 )
+
+# The set of dumps recognised as an NDS ROM.  Sourced from the same canonical
+# definition the identity layer uses, so a save is only ever paired with a file
+# both layers agree is a ROM (see :mod:`vajsave.rom_formats`).
+_NDS_ROM_EXTENSIONS = frozenset(supported_extensions("nds"))
 
 # Root is depth 0; a ROM/save pair sitting on the 4th nested directory below
 # root is still reachable, but the walk never recurses past this bound.
@@ -24,7 +30,11 @@ _TOP_LEVEL_SAVE_DIR_NAMES = frozenset({"save", "saves"})
 
 def _has_nds_rom(directory: Path, root_resolved: Path, warnings: List[str]) -> bool:
     for child in safe_iterdir(directory, warnings):
-        if child.is_file() and child.suffix.lower() == ".nds" and is_safe_path(child, root_resolved):
+        if (
+            child.is_file()
+            and child.suffix.lower() in _NDS_ROM_EXTENSIONS
+            and is_safe_path(child, root_resolved)
+        ):
             return True
     return False
 
@@ -159,7 +169,11 @@ def _scan_sibling_sav_in_dir(
         return
     nds_stems: Set[str] = set()
     for child in safe_iterdir(directory, warnings):
-        if child.is_file() and child.suffix.lower() == ".nds" and is_safe_path(child, root_resolved):
+        if (
+            child.is_file()
+            and child.suffix.lower() in _NDS_ROM_EXTENSIONS
+            and is_safe_path(child, root_resolved)
+        ):
             nds_stems.add(child.stem)
     if not nds_stems:
         return
@@ -237,7 +251,7 @@ def _collect_rom_stems(
     warnings: List[str],
     max_depth: int = _MAX_SIBLING_DEPTH,
 ) -> Dict[str, List[Path]]:
-    """Index ``.nds`` stems under ``root`` with a bounded, cycle-safe walk."""
+    """Index NDS ROM stems under ``root`` with a bounded, cycle-safe walk."""
     stems: Dict[str, List[Path]] = {}
     visited: Set[Path] = set()
 
@@ -250,7 +264,7 @@ def _collect_rom_stems(
             if not is_safe_path(child, root_resolved):
                 continue
             if child.is_file():
-                if child.suffix.lower() == ".nds":
+                if child.suffix.lower() in _NDS_ROM_EXTENSIONS:
                     stems.setdefault(child.stem.casefold(), []).append(child)
             elif child.is_dir() and depth < max_depth:
                 walk(child, depth + 1)
@@ -271,7 +285,7 @@ def _scan_top_level_save_dirs(
     """Pair a top-level SAVE/saves folder with ROMs by unique stem.
 
     Wood/TWiLight cards sometimes keep the ROMs and the ``SAVE``/``saves`` folder
-    apart. A ``.sav`` is only accepted when exactly one ``.nds`` ROM below root
+    apart. A ``.sav`` is only accepted when exactly one NDS ROM below root
     shares its stem, so an unrelated ``.sav`` is never claimed as an NDS save.
     """
     save_dirs = [
@@ -315,15 +329,15 @@ def scan_nds(
     seen_source_roots: Set[Path],
     seen_save_paths: Set[Path],
 ) -> None:
-    # TWiLight: dirs with .nds + saves/*.sav
-    # Prefer known roms/nds layout via pattern, then shallow walk for saves/ next to .nds
+    # TWiLight: dirs with NDS ROM + saves/*.sav
+    # Prefer known roms/nds layout via pattern, then shallow walk for saves/ next to ROMs
     twilight_candidates = collect_unique_dirs(
         [
             *find_pattern_dirs(root, ("roms", "nds"), root_resolved, warnings),
             root,  # user may have selected the rom folder itself
         ]
     )
-    # Also discover shallow: root and children/grandchildren that contain saves/ + .nds
+    # Also discover shallow: root and children/grandchildren that contain saves/ + ROM
     # without full-disk rglob of *.sav
     extra: List[Path] = []
     for base in [root, *safe_iterdir(root, warnings)]:
@@ -349,11 +363,15 @@ def scan_nds(
             for p in find_pattern_dirs(root, ("roms", "nds"), root_resolved, warnings)
         )
     )
-    # User selected a directory that itself holds .nds + matching .sav
+    # User selected a directory that itself holds a ROM + matching .sav
     user_selected_pair = False
     if _has_nds_rom(root, root_resolved, warnings):
         for child in safe_iterdir(root, warnings):
-            if child.is_file() and child.suffix.lower() == ".sav" and (root / f"{child.stem}.nds").is_file():
+            if not child.is_file() or child.suffix.lower() != ".sav":
+                continue
+            if any(
+                (root / f"{child.stem}{ext}").is_file() for ext in _NDS_ROM_EXTENSIONS
+            ):
                 user_selected_pair = True
                 break
 

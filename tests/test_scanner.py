@@ -611,6 +611,24 @@ def test_nds_stray_sav_without_fingerprint_ignored(tmp_path: Path):
     assert not any(s.platform == "nds" for s in result.sources)
 
 
+def test_nds_ids_sibling_sav_with_card_fingerprint(tmp_path: Path):
+    """A Wood R4 card keeps some NDS dumps as ``.ids`` next to their ``.sav``."""
+    (tmp_path / "__rpg").mkdir()
+    series = tmp_path / "game" / "马里奥系列"
+    series.mkdir(parents=True)
+    (series / "摸摸耀西云中漫步.ids").write_bytes(b"rom")
+    sav = series / "摸摸耀西云中漫步.sav"
+    sav.write_bytes(b"sibling")
+
+    result = scan(tmp_path)
+    assert result.platform == "nds"
+    assert len(result.saves) == 1
+    entry = result.saves[0]
+    assert entry.display_name == "摸摸耀西云中漫步"
+    assert entry.source_id == "nds_r4"
+    assert Path(entry.path).resolve() == sav.resolve()
+
+
 def test_3ds_jksm_saves_not_switch(tmp_path: Path):
     slot = tmp_path / "JKSV" / "Saves" / "Pokemon Ultra Sun" / "Main"
     slot.mkdir(parents=True)

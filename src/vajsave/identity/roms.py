@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
+from ..rom_formats import ROM_EXTENSIONS, supported_extensions
 from .digest import digest_file
 from .models import (
     SOURCE_MANUAL,
@@ -32,12 +33,6 @@ from .naming import (
     strip_extension,
     title_tokens,
 )
-
-# Cartridge extensions per platform.  GBA dumps occasionally use ``.agb``.
-ROM_EXTENSIONS: Dict[str, Tuple[str, ...]] = {
-    "gba": (".gba", ".agb"),
-    "nds": (".nds",),
-}
 
 # Directories that must never be walked when a whole volume is used as a ROM root.
 _SKIP_DIR_NAMES = frozenset(
@@ -85,17 +80,13 @@ def make_rom_file(path, platform: str) -> RomFile:
     )
 
 
-def supported_extensions(platform: str) -> Tuple[str, ...]:
-    """Extensions accepted for ``platform``; empty when it is unconstrained."""
-    return ROM_EXTENSIONS.get((platform or "").strip().lower(), ())
-
-
 def is_supported_rom_path(path, platform: str) -> bool:
     """Whether ``path`` carries an extension accepted for ``platform``.
 
     Platforms without a declared constraint accept any path so the generic
     resolver keeps working for non-cartridge targets; cartridge platforms only
-    accept their declared dumps (e.g. GBA: ``.gba``/``.agb``, NDS: ``.nds``).
+    accept their declared dumps (e.g. GBA: ``.gba``/``.agb``,
+    NDS: ``.nds``/``.ids``).
     """
     exts = supported_extensions(platform)
     if not exts:

@@ -413,7 +413,10 @@ def test_resolver_bind_accepts_agb_for_gba(tmp_path: Path):
 
 def test_supported_extensions_and_path_helper():
     assert supported_extensions("GBA") == (".gba", ".agb")
-    assert supported_extensions("nds") == (".nds",)
+    # Wood R4 cards ship some NDS dumps as ``.ids`` (confirmed on a real card).
+    assert supported_extensions("nds") == (".nds", ".ids")
+    assert is_supported_rom_path("Game.ids", "nds")
+    assert not is_supported_rom_path("Game.nd5", "nds")
     assert is_supported_rom_path("Game.AGB", "gba")
     assert not is_supported_rom_path("Game.zip", "gba")
     assert not is_supported_rom_path("Game", "gba")

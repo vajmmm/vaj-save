@@ -330,6 +330,31 @@ def test_nds_missing_rom_is_unresolved(tmp_path: Path):
     assert result.status == "unresolved"
 
 
+def test_nds_ids_rom_is_discovered_and_header_read(tmp_path: Path):
+    """Wood R4 ``.ids`` dumps are real NDS ROMs and must be matched + parsed."""
+    rom_dir = _rom_dir(tmp_path)
+    (rom_dir / "Yoshi.ids").write_bytes(make_nds_rom(title="C!T!YOSHI!", code="AYIC"))
+    resolver = GameIdentityResolver(rom_dirs={"nds": [rom_dir]})
+
+    result = resolver.resolve(entry("nds", "Yoshi", tmp_path / "Yoshi.sav"))
+    assert result.is_resolved
+    assert result.identity.identity_key.startswith("nds:sha1:")
+    assert result.identity.title == "C!T!YOSHI!"
+    assert result.identity.game_code == "AYIC"
+    assert result.identity.source == "rom"
+
+
+def test_nds_supported_extensions_accept_only_confirmed_dumps(tmp_path: Path):
+    from vajsave.identity import is_supported_rom_path, supported_extensions
+
+    assert supported_extensions("nds") == (".nds", ".ids")
+    assert is_supported_rom_path(tmp_path / "Game.nds", "nds")
+    assert is_supported_rom_path(tmp_path / "Game.ids", "nds")
+    # Suffixes never confirmed against a real card stay rejected.
+    assert not is_supported_rom_path(tmp_path / "Game.nd5", "nds")
+    assert not is_supported_rom_path(tmp_path / "Game.bin", "nds")
+
+
 def test_missing_rom_dirs_are_harmless(tmp_path: Path):
     resolver = GameIdentityResolver(rom_dirs={"gba": [tmp_path / "does-not-exist"]})
     result = resolver.resolve(entry("gba", "Kirby", tmp_path / "Kirby.sav"))

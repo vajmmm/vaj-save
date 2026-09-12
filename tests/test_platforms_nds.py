@@ -188,3 +188,68 @@ def test_nds_rom_index_is_bounded_and_safe(tmp_path: Path):
     result = scan(vol)
     assert any(s.display_name == "Real" for s in result.saves)
     assert not any(s.display_name == "Outside" for s in result.saves)
+
+
+# --- Wood R4 ``.ids`` NDS dumps (confirmed on a real card) -----------------
+
+
+def test_nds_ids_sibling_rom_is_recognised(tmp_path: Path):
+    (tmp_path / "__rpg").mkdir()
+    series = tmp_path / "game" / "马里奥系列"
+    series.mkdir(parents=True)
+    (series / "摸摸耀西云中漫步.ids").write_bytes(b"rom")
+    (series / "摸摸耀西云中漫步.sav").write_bytes(b"sav")
+
+    result = scan(tmp_path)
+    assert result.platform == "nds"
+    names = {s.display_name for s in result.saves}
+    assert names == {"摸摸耀西云中漫步"}
+    assert result.saves[0].source_id == "nds_r4"
+
+
+def test_nds_ids_without_sibling_sav_adds_no_save(tmp_path: Path):
+    (tmp_path / "__rpg").mkdir()
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "摸摸瓦力欧制造.ids").write_bytes(b"rom")
+
+    result = scan(tmp_path)
+    assert not any(s.platform == "nds" for s in result.saves)
+
+
+def test_nds_ids_user_selected_dir_pair(tmp_path: Path):
+    folder = tmp_path / "cart"
+    folder.mkdir()
+    (folder / "Yoshi.ids").write_bytes(b"rom")
+    (folder / "Yoshi.sav").write_bytes(b"sav")
+    (folder / "orphan.sav").write_bytes(b"no_rom")
+
+    result = scan(folder)
+    assert result.platform == "nds"
+    assert [s.display_name for s in result.saves] == ["Yoshi"]
+    assert result.saves[0].source_id == "nds_r4"
+
+
+def test_nds_ids_top_level_save_dir_pairs_by_unique_stem(tmp_path: Path):
+    (tmp_path / "R4.dat").write_text("marker")
+    roms = tmp_path / "roms"
+    roms.mkdir()
+    (roms / "Yoshi.ids").write_bytes(b"rom")
+    save_dir = tmp_path / "SAVE"
+    save_dir.mkdir()
+    (save_dir / "Yoshi.sav").write_bytes(b"sav")
+
+    result = scan(tmp_path)
+    assert any(s.display_name == "Yoshi" for s in result.saves)
+
+
+def test_nds_unconfirmed_rom_extension_is_ignored(tmp_path: Path):
+    """Only extensions confirmed on real cards (.nds/.ids) count as NDS ROMs."""
+    (tmp_path / "R4.dat").write_text("marker")
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "Mystery.nd5").write_bytes(b"rom")
+    (game / "Mystery.sav").write_bytes(b"sav")
+
+    result = scan(tmp_path)
+    assert not any(s.display_name == "Mystery" for s in result.saves)
