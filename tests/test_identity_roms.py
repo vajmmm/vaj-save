@@ -59,6 +59,51 @@ def test_gba_exact_name_match_resolves_from_rom(tmp_path: Path):
     assert result.identity.source == "rom"
 
 
+def test_gba_cjk_save_and_rom_match_uniquely(tmp_path: Path):
+    """Chinese-named GBA save/ROM pairs must resolve, not collapse to an empty key."""
+    rom_dir = _rom_dir(tmp_path)
+    (rom_dir / "火焰纹章 - 圣魔之光石[狼组](简)(JP)(136Mb).gba").write_bytes(
+        make_gba_rom(title="FIREEMBLEM", code="FE8J")
+    )
+    (rom_dir / "三角力量.gba").write_bytes(make_gba_rom(title="TRIFORCE", code="ZLTP"))
+    resolver = GameIdentityResolver(rom_dirs={"gba": [rom_dir]})
+
+    fire = resolver.resolve(
+        entry("gba", "火焰纹章 - 圣魔之光石[狼组](简)(JP)(136Mb)", tmp_path / "火焰纹章.sav")
+    )
+    assert fire.is_resolved
+    assert fire.identity.game_code == "FE8J"
+
+    tri = resolver.resolve(entry("gba", "三角力量", tmp_path / "三角力量.sav"))
+    assert tri.is_resolved
+    assert tri.identity.game_code == "ZLTP"
+
+
+def test_gba_cjk_numeric_titles_do_not_collide(tmp_path: Path):
+    """Titles that used to normalise to the same ASCII-only token ("2") stay distinct."""
+    rom_dir = _rom_dir(tmp_path)
+    (rom_dir / "逆转裁判2[Eastred][Chapter 1].gba").write_bytes(
+        make_gba_rom(title="GYAKUTEN2", code="A02J")
+    )
+    (rom_dir / "世界传说 - 换装迷宫2.gba").write_bytes(
+        make_gba_rom(title="TALES2", code="A22J")
+    )
+    resolver = GameIdentityResolver(rom_dirs={"gba": [rom_dir]})
+
+    gyakuten = resolver.resolve(
+        entry("gba", "逆转裁判2[Eastred][Chapter 1]", tmp_path / "逆转裁判2.sav")
+    )
+    assert gyakuten.is_resolved
+    assert gyakuten.identity.game_code == "A02J"
+    assert gyakuten.identity.source == "rom"
+
+    tales = resolver.resolve(
+        entry("gba", "世界传说 - 换装迷宫2", tmp_path / "世界传说.sav")
+    )
+    assert tales.is_resolved
+    assert tales.identity.game_code == "A22J"
+
+
 def test_gba_region_tag_match(tmp_path: Path):
     rom_dir = _rom_dir(tmp_path)
     (rom_dir / "Pokemon Emerald (USA).gba").write_bytes(make_gba_rom())

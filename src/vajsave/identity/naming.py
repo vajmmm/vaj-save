@@ -13,6 +13,13 @@ from typing import Iterable, List, Optional
 
 _PAREN_RE = re.compile(r"[\(\[]([^\)\]]*)[\)\]]")
 _EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,5}$")
+# Word-splitting rule: everything that is not a Unicode letter/digit becomes a
+# separator, including ``_`` (which Python's ``\w`` would otherwise keep).
+# ``[0-9a-z]`` was ASCII-only and erased CJK titles to an empty key, so the
+# Unicode-aware class is required for Chinese/Japanese/Korean save names.
+_SPLIT_RE = re.compile(r"[\W_]+", re.UNICODE)
+# Legacy ASCII-only rule, kept solely so persisted bindings written before the
+# Unicode change can still be read (see :mod:`vajsave.identity.bindings`).
 _NON_ALNUM_RE = re.compile(r"[^0-9a-z]+")
 
 # Canonical region names keyed by every common abbreviation found in ROM names.
@@ -94,7 +101,25 @@ def extract_region(name: str) -> Optional[str]:
 
 
 def normalize_title(name: str) -> str:
-    """Reduce ``name`` to a lowercase, punctuation- and region-free match key."""
+    """Reduce ``name`` to a lowercase, punctuation- and region-free match key.
+
+    Unicode letters and digits (e.g. Chinese titles) are preserved so a CJK save
+    and its same-named ROM produce the same non-empty key; punctuation, brackets
+    and underscores still act as word separators.
+    """
+    base = strip_extension(name)
+    base = _PAREN_RE.sub(" ", base)
+    base = base.lower()
+    base = _SPLIT_RE.sub(" ", base)
+    return " ".join(base.split())
+
+
+def legacy_normalize_title(name: str) -> str:
+    """The pre-Unicode ``normalize_title`` used by old persisted binding keys.
+
+    Only kept for backward-compatible reads of ``identity_bindings.json`` written
+    before CJK titles were preserved.
+    """
     base = strip_extension(name)
     base = _PAREN_RE.sub(" ", base)
     base = base.lower()

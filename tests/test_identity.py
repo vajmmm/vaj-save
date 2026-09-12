@@ -3,6 +3,8 @@ digests, bindings, resolver dispatch and AppState integration."""
 
 from pathlib import Path
 
+import json
+
 import pytest
 
 from vajsave.app_state import AppState
@@ -118,6 +120,39 @@ def test_normalize_title_strips_region_and_punctuation():
     assert normalize_title("") == ""
 
 
+def test_normalize_title_ascii_results_unchanged():
+    """Preserving Unicode must not alter the historical ASCII-only results."""
+    cases = {
+        "Pokemon Emerald (USA) (Rev 1) [!].gba": "pokemon emerald",
+        "Kirby_-_Nightmare.sav": "kirby nightmare",
+        "Mario Kart DS (Europe).nds": "mario kart ds",
+        "Sonic Advance 3 [M6] (THQ).gba": "sonic advance 3",
+        "Game. Name.v1.2.gba": "game name v1 2",
+        "Fire Emblem (U) (V1.0) [!]": "fire emblem",
+    }
+    for raw, expected in cases.items():
+        assert normalize_title(raw) == expected
+
+
+def test_normalize_title_preserves_cjk_letters():
+    # Pure CJK titles must stay non-empty; punctuation/tags still act as separators.
+    assert normalize_title("火焰纹章 - 圣魔之光石[狼组](简)(JP)(136Mb).sav") == "火焰纹章 圣魔之光石"
+    assert normalize_title("三角力量.gba") == "三角力量"
+    # Mixed CJK + ASCII keeps both halves while normalising the ASCII case.
+    assert normalize_title("洛克人Zero 3[零组](简)(JP)(128Mb).gba") == "洛克人zero 3"
+    # Underscore and other punctuation remain word separators, not word characters.
+    assert normalize_title("赛博_朋克.sav") == "赛博 朋克"
+
+
+def test_normalize_title_cjk_numeric_titles_do_not_collide():
+    # Before CJK preservation both of these collapsed to "2"; now they stay distinct.
+    gyakuten = normalize_title("逆转裁判2[Eastred][Chapter 1](简)(JP)(96Mb).sav")
+    tales = normalize_title("世界传说 - 换装迷宫2[啪嗒啪嗒](v3.0)(简)(JP)(140Mb).sav")
+    assert gyakuten == "逆转裁判2"
+    assert tales == "世界传说 换装迷宫2"
+    assert gyakuten and tales and gyakuten != tales
+
+
 def test_extract_region_variants():
     assert extract_region("Game (USA).gba") == "USA"
     assert extract_region("Game (E).gba") == "Europe"
@@ -219,6 +254,56 @@ def test_binding_store_persists_across_instances(tmp_path: Path):
     assert loaded is not None
     assert loaded.identity_key == "gba:sha1:aa"
     assert loaded.source == "manual"
+
+
+def test_binding_store_reads_legacy_ascii_only_key(tmp_path: Path):
+    """Bindings persisted before CJK preservation used an ASCII-only key."""
+    path = tmp_path / "bindings.json"
+    name = "火焰纹章 - 圣魔之光石"
+    identity = GameIdentity(identity_key="gba:sha1:aa", platform="gba", title=name, rom_sha1="aa")
+    legacy = {
+        "version": 1,
+        "bindings": {
+            # The old normalize_title() stripped every CJK character, so this is
+            # exactly the key a pure-CJK save was written under.
+            "gba:": {"identity": identity.to_dict(), "kind": "manual", "hint": name}
+        },
+    }
+    path.write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
+    store = BindingStore(path)
+
+    entry = make_entry(platform="gba", name=name, path=str(tmp_path / f"{name}.sav"))
+    loaded = store.get(entry)
+    assert loaded is not None
+    assert loaded.identity_key == "gba:sha1:aa"
+    assert loaded.source == "manual"
+
+    # A different CJK save shares the legacy key but must not inherit the binding.
+    other = make_entry(platform="gba", name="三角力量", path=str(tmp_path / "三角力量.sav"))
+    assert store.get(other) is None
+
+
+def test_binding_store_migrates_legacy_key_on_set_and_remove(tmp_path: Path):
+    path = tmp_path / "bindings.json"
+    name = "火焰纹章 - 圣魔之光石"
+    identity = GameIdentity(identity_key="gba:sha1:aa", platform="gba", title=name, rom_sha1="aa")
+    legacy = {
+        "version": 1,
+        "bindings": {
+            "gba:": {"identity": identity.to_dict(), "kind": "manual", "hint": name}
+        },
+    }
+    path.write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
+    store = BindingStore(path)
+    entry = make_entry(platform="gba", name=name, path=str(tmp_path / f"{name}.sav"))
+
+    new = GameIdentity(identity_key="gba:sha1:bb", platform="gba", title=name, rom_sha1="bb")
+    store.set(entry, new, manual=True)
+    assert "gba:" not in store.all()
+    assert store.get(entry).identity_key == "gba:sha1:bb"
+
+    assert store.remove(entry) is True
+    assert store.get(entry) is None
 
 
 def test_binding_store_remove_and_corrupt_file(tmp_path: Path):
