@@ -10,6 +10,7 @@ from .backend import StorageBackend
 from .library import (
     BackupResult,
     Catalog,
+    GameDeletion,
     SaveBackupStatus,
     Snapshot,
     catalog_entries,
@@ -17,6 +18,7 @@ from .library import (
     collection_stats,
     default_library_root,
     backup_save,
+    delete_game,
     export_snapshot_zip,
     game_key,
     hash_tree,
@@ -715,6 +717,28 @@ class AppState:
     def set_note(self, entry: SaveEntry, note: str) -> None:
         set_game_meta(self.library_root, entry, note=note)
         self.status_text = "已保存备注"
+
+    def delete_library_game(self, entry: SaveEntry) -> GameDeletion:
+        """Delete one game's local snapshots and covers from the library.
+
+        ``entry`` may be a library row or a device save; either way only the
+        catalog game it maps to is removed, never the device save itself. The
+        caller is responsible for confirming intent first (a cancelled delete
+        must never reach this method).
+        """
+        game_id = self._game_id(entry)
+        result = delete_game(self.library_root, game_id)
+        self._backup_statuses = {}
+        name = entry.display_name or game_id
+        if result.ok:
+            self.status_text = f"已删除备份 · {name}"
+        elif not result.found:
+            self.status_text = "未找到要删除的备份"
+        else:
+            self.status_text = (
+                f"删除未完成 · {name}（保留 {result.snapshots_retained} 个版本）"
+            )
+        return result
 
     def collection_stats(self) -> Dict[str, int]:
         return collection_stats(self.library_root)

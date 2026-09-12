@@ -235,6 +235,45 @@ def test_cover_cache_prune_drops_vanished_entries(tmp_path: Path):
     assert cache.manifest() == {}
 
 
+def test_cover_cache_remove_deletes_file_and_manifest_entry(tmp_path: Path):
+    root = tmp_path / "covers"
+    cache = CoverCache(root)
+    key = "gba:sha1:" + "a" * 40
+    other = "gba:sha1:" + "b" * 40
+    cover = cache.store("gba", key, png_bytes(), canonical_title="Apotris")
+    other_cover = cache.store("gba", other, png_bytes(), canonical_title="Other")
+
+    removed = cache.remove("gba", key)
+
+    assert removed == [cover]
+    assert not cover.exists()
+    reloaded = CoverCache(root)
+    assert key not in reloaded.manifest()
+    assert reloaded.lookup("gba", key) is None
+    assert other_cover.exists()
+    assert other in reloaded.manifest()
+
+
+def test_cover_cache_remove_platform_mismatch_keeps_cover(tmp_path: Path):
+    root = tmp_path / "covers"
+    cache = CoverCache(root)
+    key = "gba:sha1:" + "a" * 40
+    cover = cache.store("gba", key, png_bytes())
+
+    assert cache.remove("nds", key) == []
+    assert cover.exists()
+    assert key in CoverCache(root).manifest()
+
+
+def test_cover_cache_remove_unknown_key_is_noop(tmp_path: Path):
+    cache = CoverCache(tmp_path / "covers")
+    assert cache.remove("gba", "gba:sha1:" + "a" * 40) == []
+
+
+def test_cover_cache_remove_without_root_is_inert():
+    assert CoverCache(None).remove("gba", "k") == []
+
+
 # --- downloader --------------------------------------------------------------
 
 

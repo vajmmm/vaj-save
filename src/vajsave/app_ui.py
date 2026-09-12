@@ -2,7 +2,7 @@ import subprocess
 import sys
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Dict, List, Optional, Union
 
 from .app_state import PLATFORM_LABELS, PLATFORM_ORDER, AppState
@@ -581,8 +581,9 @@ class VajSaveApp:
         action_area = tk.Frame(right, bg=PANEL_BG)
         action_area.grid(row=2, column=0, sticky="ew", padx=20, pady=(14, 10))
         action_area.grid_columnconfigure(0, weight=1)
-        primary = CanvasButton(action_area, text="备份存档", command=self.on_backup_clicked, variant="accent", height=40, padding=12)
+        primary = CanvasButton(action_area, text="备份存档", command=self.on_primary_clicked, variant="accent", height=40, padding=12)
         primary.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self._primary_button = primary
         self._action_buttons.append(primary)
         secondary = tk.Frame(action_area, bg=PANEL_BG)
         secondary.grid(row=1, column=0, sticky="ew")
@@ -1119,6 +1120,68 @@ class VajSaveApp:
                 selected.append(self._saves_index[index])
         return selected
 
+    def on_primary_clicked(self) -> None:
+        """Run the inspector's primary action for the current browse source."""
+        if self.state.library_mode:
+            self.on_delete_backup_clicked()
+        else:
+            self.on_backup_clicked()
+
+    def _sync_primary_action(self) -> None:
+        """Keep the primary button's label/variant in step with the source.
+
+        Browsing a device offers the blue 「备份存档」 action; browsing the local
+        library offers a neutral 「删除备份」 that never copies the catalog into
+        its own tree. The neutral face keeps the saturated accent reserved for
+        the backup action, per the design spec.
+        """
+        button = getattr(self, "_primary_button", None)
+        if button is None:
+            return
+        library_mode = bool(self.state.library_mode)
+        button.variant = "neutral" if library_mode else "accent"
+        button.accent = not library_mode
+        button.set_text("删除备份" if library_mode else "备份存档")
+
+    def _confirm_delete_backup(self, entries: List[SaveEntry]) -> bool:
+        """Ask before deleting; a cancel returns False so nothing is touched."""
+        names = "、".join(
+            (entry.display_name or entry.title_id or entry.path) for entry in entries[:3]
+        )
+        if len(entries) > 3:
+            names += f" 等 {len(entries)} 款"
+        return bool(
+            messagebox.askyesno(
+                "删除本地备份",
+                f"确定删除「{names}」的全部本地备份及其封面吗？\n此操作不会影响设备上的存档。",
+                parent=self.root,
+            )
+        )
+
+    def on_delete_backup_clicked(self) -> None:
+        """Delete the selected library games after an explicit confirmation."""
+        if not self.state.library_mode:
+            return
+        chosen = self._selected_saves()
+        if not chosen:
+            self.update_warning("先选择要删除的备份")
+            return
+        if not self._confirm_delete_backup(chosen):
+            return
+        results = [self.state.delete_library_game(entry) for entry in chosen]
+        removed = sum(1 for result in results if result.ok)
+        failed = len(results) - removed
+        self.refresh_saves_ui()
+        self.refresh_versions_ui()
+        self.refresh_stats()
+        if failed:
+            # A partial failure must never read as a full success.
+            self.update_status(f"删除完成 {removed} 款，{failed} 款未完成")
+            self.update_warning("部分备份未能删除，请重试")
+        else:
+            self.update_status(f"已删除 {removed} 款游戏的本地备份")
+            self.update_warning("")
+
     def on_backup_clicked(self) -> None:
         """Back up exactly the rows that are currently selected."""
         if self.state.library_mode:
@@ -1395,6 +1458,9 @@ class VajSaveApp:
     def refresh_saves_ui(self) -> None:
         self._list_generation += 1
         generation = self._list_generation
+        # The inspector's primary action depends on the browse source. Device ->
+        # 「备份存档」, local library -> 「删除备份」.
+        self._sync_primary_action()
         self._rows_by_path = {}
         self._row_index_by_path = {}
         previous = self._selected_save

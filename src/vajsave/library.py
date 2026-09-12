@@ -260,6 +260,28 @@ class BackupResult:
 
 
 @dataclass
+class GameDeletion:
+    """Outcome of deleting one catalog game from the local library.
+
+    ``ok`` is only true when the catalog entry was fully removed and nothing
+    failed; a partial failure keeps the affected snapshots (and the catalog
+    entry) so the delete is never reported as a full success.
+    """
+
+    game_id: str
+    found: bool = False
+    removed: bool = False
+    snapshots_removed: int = 0
+    snapshots_retained: int = 0
+    covers_removed: List[str] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return self.found and self.removed and not self.errors
+
+
+@dataclass
 class SaveBackupStatus:
     """Compare a live save against the latest library snapshot only."""
 
@@ -536,6 +558,143 @@ def prune_game_versions(game: GameRecord, library_root: Path, keep_last: int) ->
             candidates_end -= 1
         else:
             i += 1
+
+
+def _delete_cover_file(path: Path, covers_root: Path) -> bool:
+    """Delete a cover file only when it resolves strictly inside ``covers_root``."""
+    try:
+        if path.is_symlink() or not path.is_file():
+            return False
+        root_resolved = Path(covers_root).resolve()
+        resolved = path.resolve()
+    except OSError:
+        return False
+    if resolved == root_resolved:
+        return False
+    try:
+        resolved.relative_to(root_resolved)
+    except ValueError:
+        return False
+    try:
+        resolved.unlink()
+    except OSError:
+        return False
+    return True
+
+
+def _cover_stems(game: GameRecord) -> List[str]:
+    """User-cover file-name stems for a game (title id, then display name)."""
+    stems: List[str] = []
+    for raw in (game.title_id, game.display_name):
+        cleaned = sanitize_name(raw or "", "").strip(" .")
+        if cleaned and cleaned.lower() not in {stem.lower() for stem in stems}:
+            stems.append(cleaned)
+    return stems
+
+
+def _downloaded_cover_keys(game: GameRecord, cache: Any) -> List[str]:
+    """Identity keys whose downloaded cover belongs to ``game``.
+
+    A persisted ``identity_key`` is authoritative. A legacy record without one is
+    only matched when the manifest names exactly one cover for this platform and
+    title; anything ambiguous is left alone (the app never guesses a hash cover).
+    """
+    if game.identity_key:
+        return [game.identity_key]
+    title = str(game.display_name or "").strip().lower()
+    platform = str(game.platform or "").strip()
+    if not title:
+        return []
+    matches = set()
+    for key, record in cache.manifest().items():
+        if str(record.get("platform", "")).strip() != platform:
+            continue
+        canonical = str(record.get("canonical_title", "")).strip().lower()
+        if canonical and canonical == title:
+            matches.add(str(key))
+    return list(matches) if len(matches) == 1 else []
+
+
+def _delete_game_covers(library_root: Path, game: GameRecord) -> Tuple[List[str], List[str]]:
+    """Remove this game's downloaded + user covers; return (removed, errors)."""
+    from .artwork.cache import CoverCache
+    from .covers import DOWNLOADED_COVER_DIR, IMAGE_EXTENSIONS
+
+    removed: List[str] = []
+    errors: List[str] = []
+    covers_root = Path(library_root) / DOWNLOADED_COVER_DIR
+    try:
+        cache = CoverCache(covers_root)
+        for key in _downloaded_cover_keys(game, cache):
+            for path in cache.remove(game.platform, key):
+                removed.append(str(path))
+    except Exception as exc:  # noqa: BLE001 - a cover failure must not abort the delete
+        errors.append(f"封面删除失败: {exc}")
+    directory = covers_root / sanitize_name(game.platform or "unknown", "unknown")
+    targets = {
+        f"{stem}.{ext}".lower()
+        for stem in _cover_stems(game)
+        for ext in IMAGE_EXTENSIONS
+    }
+    if targets:
+        try:
+            entries = list(directory.iterdir())
+        except OSError:
+            entries = []
+        for entry in entries:
+            # Match like ``user_cover_path`` does: case-insensitively.
+            if entry.name.lower() not in targets:
+                continue
+            try:
+                if _delete_cover_file(entry, covers_root):
+                    removed.append(str(entry))
+            except OSError as exc:
+                errors.append(f"封面删除失败: {exc}")
+    return removed, errors
+
+
+def delete_game(library_root: Path, game_id: str) -> GameDeletion:
+    """Delete every local snapshot and cover for one catalog game.
+
+    Device saves are never touched: only payloads that resolve inside
+    ``library_root`` are removed. A snapshot that cannot be safely deleted keeps
+    its catalog entry, so a partial failure is reported (``removed`` stays false)
+    instead of silently claiming success.
+    """
+    root = Path(library_root)
+    game_id = str(game_id or "")
+    catalog = load_catalog(root)
+    game = catalog.games.get(game_id)
+    result = GameDeletion(game_id=game_id)
+    if game is None:
+        return result
+    result.found = True
+
+    retained: List[Snapshot] = []
+    for snapshot in list(game.versions):
+        if _delete_snapshot_payload(snapshot, root):
+            result.snapshots_removed += 1
+        else:
+            retained.append(snapshot)
+            result.snapshots_retained += 1
+            result.errors.append(f"版本未删除: {snapshot.id}")
+
+    if retained:
+        game.versions = retained
+    else:
+        catalog.games.pop(game_id, None)
+    try:
+        save_catalog(root, catalog)
+    except OSError as exc:
+        result.errors.append(f"更新目录失败: {exc}")
+        return result
+    if not retained:
+        result.removed = True
+
+    covers_removed, cover_errors = _delete_game_covers(root, game)
+    result.covers_removed = covers_removed
+    result.errors.extend(cover_errors)
+    return result
 
 
 def backup_save(

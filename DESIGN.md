@@ -161,7 +161,7 @@ literal.
 - **Muted ink (`#687383`)** — metadata, subtitles, timestamps and captions.
 
 ### Interaction
-- **Accent (`#0a84ff`)** — the primary 备份 button and the selected platform mark. The 备份 button is the only saturated accent fill used as a large surface.
+- **Accent (`#0a84ff`)** — the primary 备份 button and the selected platform mark. The 备份 button is the only saturated accent fill used as a large surface. In local-library browse mode the same primary slot renders as a neutral 删除备份 button, so the app never paints two saturated action surfaces at once.
 - **Accent hover (`#409cff`)** — the 备份 button while hovered.
 - **Selected list row (`#eaf3ff`, a tint of the accent)** — the default selection background for navigation, Listbox rows and save rows.
 
@@ -267,7 +267,10 @@ Right panel, top to bottom:
   subtitle.
 - **Metadata grid**: platform, Title ID, version, size, latest backup, status and
   path use stable label/value columns so a long path cannot cover another field.
-- **Primary action**: a full-width blue 备份 button.
+- **Primary action**: a full-width blue 备份 button. While browsing the local
+  library it becomes a neutral 「删除备份」 button instead: the saturated accent
+  stays reserved for backing a device save up, and the action deletes the
+  selected games' local snapshots and covers after a confirmation.
 - **Secondary actions**: 恢复, 导出 ZIP and 打开位置 in one measured row.
 - **Game-identity binding (contextual)**: shown only when the selected save still
   needs help. An `ambiguous` save lists its candidate ROMs and offers a measured

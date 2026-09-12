@@ -1286,3 +1286,40 @@ def test_library_row_without_identity_key_falls_back_to_catalog_id(tmp_path):
     assert result.status == "resolved"
     # A legacy record keeps its catalog id; no ROM identity is fabricated.
     assert result.identity_key == entry.extra["library_game_id"]
+
+
+def test_delete_library_game_removes_catalog_game(tmp_path):
+    from vajsave.library import load_catalog
+
+    lib = tmp_path / "lib"
+    _library_backup(tmp_path, lib, "psp", "ULJM05800", "PSP Game", datetime(2024, 1, 1, 10, 0, 0))
+    _library_backup(tmp_path, lib, "gba", "AGBE01", "GBA Game", datetime(2024, 2, 1, 10, 0, 0))
+
+    state = AppState(provider=FakeVolumeProvider([]), library_root=lib)
+    state.set_library_mode(True)
+    entry = next(s for s in state.visible_saves() if s.platform == "psp")
+    game_id = entry.extra["library_game_id"]
+
+    result = state.delete_library_game(entry)
+
+    assert result.ok is True
+    assert game_id not in load_catalog(lib).games
+    assert all(s.extra["library_game_id"] != game_id for s in state.visible_saves())
+    assert "删除" in state.status_text
+
+
+def test_delete_library_game_partial_failure_updates_status(tmp_path, monkeypatch):
+    import vajsave.library as library_module
+
+    lib = tmp_path / "lib"
+    _library_backup(tmp_path, lib, "psp", "ULJM05800", "PSP Game", datetime(2024, 1, 1, 10, 0, 0))
+    state = AppState(provider=FakeVolumeProvider([]), library_root=lib)
+    state.set_library_mode(True)
+    entry = state.visible_saves()[0]
+
+    monkeypatch.setattr(library_module, "_delete_snapshot_payload", lambda snap, root: False)
+
+    result = state.delete_library_game(entry)
+
+    assert result.ok is False
+    assert "删除" in state.status_text

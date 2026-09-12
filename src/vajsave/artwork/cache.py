@@ -28,7 +28,7 @@ import threading
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from ..covers import DOWNLOADED_COVER_DIR, identity_hash
 from ..persistence import atomic_write_bytes, atomic_write_json
@@ -177,6 +177,63 @@ class CoverCache:
             payload = {"version": _VERSION, "entries": dict(self._entries)}
             atomic_write_json(self.root / MANIFEST_NAME, payload)
         return path
+
+    # -- remove --------------------------------------------------------------
+
+    def remove(self, platform: str, identity_key: str) -> List[Path]:
+        """Delete the cached cover for ``identity_key`` plus its manifest entry.
+
+        Returns the files actually removed, or ``[]`` when the key is unknown or
+        was cached under a different platform. Only files that resolve strictly
+        inside the ``covers/`` root are ever unlinked.
+        """
+        if self.root is None or not identity_key:
+            return []
+        key = str(identity_key)
+        with self._lock:
+            record = self._entries.get(key)
+            if not isinstance(record, dict):
+                return []
+            if str(record.get("platform", "")) != str(platform or "").strip():
+                return []
+            candidates: List[Path] = []
+            relative = record.get("local_path")
+            if relative:
+                candidates.append(self.root / str(relative))
+            canonical = self.path_for(platform, identity_key)
+            if canonical is not None:
+                candidates.append(canonical)
+            removed: List[Path] = []
+            for candidate in candidates:
+                if self._delete_within_root(candidate):
+                    removed.append(candidate)
+            self._entries.pop(key, None)
+            payload = {"version": _VERSION, "entries": dict(self._entries)}
+            atomic_write_json(self.root / MANIFEST_NAME, payload)
+            return removed
+
+    def _delete_within_root(self, path: Path) -> bool:
+        """Unlink ``path`` only when it resolves strictly inside the covers root."""
+        if self.root is None:
+            return False
+        try:
+            if path.is_symlink():
+                return False
+            root_resolved = self.root.resolve()
+            resolved = path.resolve()
+        except OSError:
+            return False
+        if resolved == root_resolved:
+            return False
+        try:
+            resolved.relative_to(root_resolved)
+        except ValueError:
+            return False
+        try:
+            resolved.unlink()
+        except OSError:
+            return False
+        return True
 
     # -- manifest ------------------------------------------------------------
 
