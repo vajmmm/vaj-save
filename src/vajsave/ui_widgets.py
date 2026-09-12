@@ -289,6 +289,9 @@ class SaveList(tk.Canvas):
     COVER_RADIUS = ROW_COVER_RADIUS
     PIP = ROW_PIP_WIDTH
     COVER_CACHE_MAX = 256
+    # Canvas "units" for one wheel notch (~1/10 of the viewport), so a Windows
+    # 120-delta notch and a macOS notch move the same distance.
+    WHEEL_UNITS = 1
 
     def __init__(
         self,
@@ -523,14 +526,28 @@ class SaveList(tk.Canvas):
         return "break"
 
     def _on_wheel(self, event) -> str:
-        num = getattr(event, "num", None)
-        if num:
-            delta = -1 if num == 4 else 1
-        elif sys.platform == "darwin":
-            delta = -1 * int(event.delta)
+        """Scroll one notch in the direction the wheel really turned.
+
+        Tk reports ``event.num == '??'`` for ``<MouseWheel>`` on Windows/macOS
+        and only uses 4/5 for the X11 buttons, so the button test must be an
+        exact match: truth-testing ``num`` made ``'??'`` look like a button and
+        every notch scrolled *down*. Only the sign of ``delta`` is used -- a
+        fixed step keeps a Windows notch (120) and a macOS notch from jumping
+        wildly different distances.
+        """
+        num = getattr(event, "num", 0)
+        if num == 4:
+            up = True
+        elif num == 5:
+            up = False
         else:
-            delta = -1 * int(event.delta / 120)
-        self.yview_scroll(delta, "units")
+            raw = int(getattr(event, "delta", 0) or 0)
+            if raw == 0:
+                return "break"
+            # Both Windows (+120 per notch) and macOS (+1..) use a positive
+            # delta for "scroll up".
+            up = raw > 0
+        self.yview_scroll(-self.WHEEL_UNITS if up else self.WHEEL_UNITS, "units")
         return "break"
 
     def _index_at(self, x: float, y: float) -> Optional[int]:

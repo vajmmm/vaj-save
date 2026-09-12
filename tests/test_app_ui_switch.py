@@ -901,3 +901,53 @@ def test_app_window_geometry_fits_a_768_screen(tk_root, tmp_path, monkeypatch):
         assert width <= 1366
     finally:
         _dispose(app, tk_root)
+
+
+class _WheelEvent:
+    def __init__(self, *, num=0, delta=0):
+        self.num = num
+        self.delta = delta
+
+
+def test_save_list_wheel_direction_follows_the_wheel(tk_root):
+    """Regression: Tk reports ``num == '??'`` for <MouseWheel>, so a truthy
+    check made every notch scroll down regardless of direction."""
+    from vajsave.ui_widgets import SaveList
+
+    widget = SaveList(tk_root)
+    try:
+        calls = []
+        widget.yview_scroll = lambda delta, what: calls.append((delta, what))
+
+        # Windows/macOS: num is the string '??', direction lives in delta.
+        widget._on_wheel(_WheelEvent(num="??", delta=120))   # wheel up
+        widget._on_wheel(_WheelEvent(num="??", delta=-120))  # wheel down
+        assert calls == [(-1, "units"), (1, "units")]
+
+        # X11 buttons carry 4/5 in num.
+        calls.clear()
+        widget._on_wheel(_WheelEvent(num=4))
+        widget._on_wheel(_WheelEvent(num=5))
+        assert calls == [(-1, "units"), (1, "units")]
+
+        # A no-op notch must not scroll.
+        calls.clear()
+        widget._on_wheel(_WheelEvent(num="??", delta=0))
+        assert calls == []
+    finally:
+        widget.destroy()
+
+
+def test_save_list_high_resolution_wheel_still_scrolls(tk_root):
+    from vajsave.ui_widgets import SaveList
+
+    widget = SaveList(tk_root)
+    try:
+        calls = []
+        widget.yview_scroll = lambda delta, what: calls.append(delta)
+        # |delta| < 120 would floor to 0 on the old integer division.
+        widget._on_wheel(_WheelEvent(num="??", delta=1))
+        widget._on_wheel(_WheelEvent(num="??", delta=-1))
+        assert calls == [-1, 1]
+    finally:
+        widget.destroy()
