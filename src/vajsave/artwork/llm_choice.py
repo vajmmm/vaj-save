@@ -42,6 +42,11 @@ MAX_LLM_RESPONSE_BYTES = 256 * 1024
 # what was sent and what came back. The API key is never written.
 LLM_LOG_NAME = "llm-cover.log"
 
+# Explicit User-Agent for the HTTP request. urllib's default
+# (``Python-urllib/3.x``) is banned by the Cloudflare fronting some gateways
+# (error 1010 / 403), so a normal token is sent instead.
+LLM_USER_AGENT = "vaj-save/0.1.0"
+
 # Selectable wire protocols. Gemini is deliberately not implemented: only the
 # OpenAI chat-completions shape and the Anthropic messages shape are supported.
 PROTOCOL_OPENAI = "openai-completions"
@@ -66,6 +71,12 @@ _SYSTEM_PROMPT = (
     "You choose the single best box-art file for a video game from a candidate "
     "list. Reply with exactly one file name copied verbatim from the list, or "
     "NONE when none of them fit. Never explain or add text."
+)
+
+# Used by :meth:`LLMCoverChooser.probe` so the connectivity test returns a
+# short, readable acknowledgement instead of the chooser's "NONE".
+_PROBE_SYSTEM_PROMPT = (
+    "You are a connectivity check. Reply with the single word OK and nothing else."
 )
 
 
@@ -259,9 +270,9 @@ class LLMCoverChooser:
             return False, "请先填写模型 ID"
         prompt = "ping"
         if self.protocol == PROTOCOL_ANTHROPIC:
-            request = self._build_anthropic_request(prompt)
+            request = self._build_anthropic_request(prompt, system=_PROBE_SYSTEM_PROMPT)
         else:
-            request = self._build_openai_request(prompt)
+            request = self._build_openai_request(prompt, system=_PROBE_SYSTEM_PROMPT)
         endpoint = getattr(request, "full_url", "") or ""
         self._log(f"probe protocol={self.protocol} model={self.model} endpoint={endpoint}")
         try:
@@ -300,13 +311,13 @@ class LLMCoverChooser:
             return self._build_anthropic_request(prompt)
         return self._build_openai_request(prompt)
 
-    def _build_openai_request(self, prompt: str):
+    def _build_openai_request(self, prompt: str, system: str = _SYSTEM_PROMPT):
         body = json.dumps(
             {
                 "model": self.model,
                 "temperature": 0,
                 "messages": [
-                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "system", "content": system},
                     {"role": "user", "content": prompt},
                 ],
             }
@@ -317,17 +328,18 @@ class LLMCoverChooser:
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self._api_key}",
+                "User-Agent": LLM_USER_AGENT,
             },
             method="POST",
         )
 
-    def _build_anthropic_request(self, prompt: str):
+    def _build_anthropic_request(self, prompt: str, system: str = _SYSTEM_PROMPT):
         body = json.dumps(
             {
                 "model": self.model,
                 "max_tokens": ANTHROPIC_MAX_TOKENS,
                 "temperature": 0,
-                "system": _SYSTEM_PROMPT,
+                "system": system,
                 "messages": [{"role": "user", "content": prompt}],
             }
         ).encode("utf-8")
@@ -338,6 +350,7 @@ class LLMCoverChooser:
                 "Content-Type": "application/json",
                 "x-api-key": self._api_key,
                 "anthropic-version": ANTHROPIC_API_VERSION,
+                "User-Agent": LLM_USER_AGENT,
             },
             method="POST",
         )
@@ -400,6 +413,7 @@ __all__ = [
     "DEFAULT_LLM_TIMEOUT",
     "LLM_PROTOCOLS",
     "LLM_LOG_NAME",
+    "LLM_USER_AGENT",
     "LLMCoverChooser",
     "PROTOCOL_ANTHROPIC",
     "PROTOCOL_OPENAI",

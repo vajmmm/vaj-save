@@ -326,7 +326,9 @@ saturated accent fill.
 - **LLM debug log + connectivity test.** Every chooser request and result is
   appended to `<library_root>/llm-cover.log` (protocol, model, endpoint, query,
   candidate names, outcome) so the exchange can be inspected after the fact;
-  the API key is never written. The field carries no payload beyond file names,
+  the API key is never written. Requests send an explicit `User-Agent`
+  (`vaj-save/…`): the default `Python-urllib` token is banned by the
+  Cloudflare fronting some gateways (403 / error 1010). The field carries no payload beyond file names,
   so the request body itself is not logged. A **测试连接** button below the 模型 ID
   field sends one tiny message with the values currently typed (saved or not)
   and shows the model's reply inline plus the status bar, so the endpoint / model

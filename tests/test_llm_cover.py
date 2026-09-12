@@ -424,3 +424,53 @@ def test_debug_log_is_optional(tmp_path):
         urlopen=lambda request, timeout=None: _chat_response("OK"),
     ).probe()
     assert list(tmp_path.iterdir()) == []
+
+
+# --- User-Agent (Cloudflare-fronted gateways ban Python-urllib, cf. error 1010) --
+
+
+def test_openai_request_sends_a_real_user_agent():
+    from vajsave.artwork.llm_choice import LLM_USER_AGENT
+
+    captured = {}
+
+    def opener(request, timeout=None):
+        captured["ua"] = request.get_header("User-agent")
+        return _chat_response("OK")
+
+    choose_cover_filename(_CANDIDATES, "Mario", api_key="sk", urlopen=opener)
+    assert captured["ua"] == LLM_USER_AGENT
+    assert "urllib" not in captured["ua"].lower()
+
+
+def test_anthropic_request_sends_a_real_user_agent():
+    from vajsave.artwork.llm_choice import LLM_USER_AGENT
+
+    captured = {}
+
+    def opener(request, timeout=None):
+        captured["ua"] = request.get_header("User-agent")
+        return FakeResponse(
+            json.dumps({"content": [{"type": "text", "text": "OK"}]}).encode(),
+            status=200,
+        )
+
+    chooser = LLMCoverChooser(
+        api_key="sk", protocol=PROTOCOL_ANTHROPIC, urlopen=opener
+    )
+    chooser.probe()
+    assert captured["ua"] == LLM_USER_AGENT
+    assert "urllib" not in captured["ua"].lower()
+
+
+def test_probe_uses_a_neutral_system_prompt_not_the_chooser_one():
+    captured = {}
+
+    def opener(request, timeout=None):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return _chat_response("OK")
+
+    LLMCoverChooser(api_key="sk", urlopen=opener).probe()
+    system = captured["body"]["messages"][0]["content"]
+    assert "connectivity check" in system.lower()
+    assert "box-art" not in system.lower()
