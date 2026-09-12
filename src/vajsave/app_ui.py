@@ -1504,13 +1504,18 @@ class VajSaveApp:
         self.update_status(self.state.status_text)
         self.update_warning("")
 
-    def _apply_llm_cover(self, enabled: bool, api_key: str) -> None:
+    def _apply_llm_cover(
+        self, enabled: bool, api_key: str, base_url: str = "", model: str = ""
+    ) -> None:
         """Apply the optional LLM cover-disambiguation settings.
 
         The key is handed to the state, which persists it; it is never echoed
-        into the status/warning text shown here.
+        into the status/warning text shown here. Blank base URL/model fall back
+        to the built-in defaults.
         """
-        self.state.set_llm_cover(enabled=enabled, api_key=api_key)
+        self.state.set_llm_cover(
+            enabled=enabled, api_key=api_key, base_url=base_url, model=model
+        )
         if enabled and not api_key:
             self.update_status("已开启 LLM 封面消歧（未填 API Key，暂不生效）")
         else:
@@ -1617,6 +1622,21 @@ class VajSaveApp:
         dialog.llm_api_key_var = llm_key_var
         dialog.llm_api_key_entry = llm_key_entry
 
+        # Persistent endpoint/model for the chooser; blank input falls back to
+        # the built-in defaults.
+        llm_base_var = tk.StringVar(value=self.state.llm_base_url)
+        tk.Label(dialog, text="Base URL", bg=BG, fg=TEXT, font=ui_font(12)).pack(
+            anchor="w", padx=16, pady=(8, 2)
+        )
+        ttk.Entry(dialog, textvariable=llm_base_var).pack(fill=tk.X, padx=16)
+        llm_model_var = tk.StringVar(value=self.state.llm_model)
+        tk.Label(dialog, text="模型", bg=BG, fg=TEXT, font=ui_font(12)).pack(
+            anchor="w", padx=16, pady=(8, 2)
+        )
+        ttk.Entry(dialog, textvariable=llm_model_var).pack(fill=tk.X, padx=16)
+        dialog.llm_base_url_var = llm_base_var
+        dialog.llm_model_var = llm_model_var
+
         def save() -> None:
             chosen = path_var.get().strip()
             if not chosen:
@@ -1634,7 +1654,10 @@ class VajSaveApp:
             self._apply_libretro_dir(meta or None)
             self._apply_keep_last(keep_value)
             self._apply_llm_cover(
-                dialog.llm_cover_button.selected, llm_key_var.get().strip()
+                dialog.llm_cover_button.selected,
+                llm_key_var.get().strip(),
+                llm_base_var.get().strip(),
+                llm_model_var.get().strip(),
             )
 
         def cancel() -> None:

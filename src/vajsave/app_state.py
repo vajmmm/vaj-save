@@ -37,6 +37,8 @@ from .library import (
 )
 from .artwork import (
     COVER_CACHE_DIR,
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MODEL,
     PLACEHOLDER,
     ArtworkResolution,
     ArtworkService,
@@ -212,6 +214,15 @@ class AppState:
             ftp_config.get("llm_cover_enabled")
         )
         self.llm_api_key: str = self._coerce_text(ftp_config.get("llm_api_key"))
+        # The OpenAI-compatible endpoint and model are persisted with the key so
+        # a self-hosted gateway or a different model survives a restart. Blank or
+        # missing values fall back to the built-in defaults.
+        self.llm_base_url: str = (
+            self._coerce_text(ftp_config.get("llm_base_url")) or DEFAULT_LLM_BASE_URL
+        )
+        self.llm_model: str = (
+            self._coerce_text(ftp_config.get("llm_model")) or DEFAULT_LLM_MODEL
+        )
 
         self.volumes: List[VolumeInfo] = []
         self.current_mount: Optional[Path] = None
@@ -458,31 +469,45 @@ class AppState:
         """The optional cover chooser, or ``None`` when disabled/unconfigured."""
         if not self.llm_cover_enabled or not self.llm_api_key:
             return None
-        return LLMCoverChooser(api_key=self.llm_api_key)
+        return LLMCoverChooser(
+            api_key=self.llm_api_key,
+            model=self.llm_model,
+            base_url=self.llm_base_url,
+        )
 
     def set_llm_cover(
         self,
         enabled: Optional[bool] = None,
         api_key: object = _UNSET,
+        base_url: object = _UNSET,
+        model: object = _UNSET,
     ) -> None:
         """Persist the optional LLM cover-disambiguation settings.
 
-        ``enabled`` toggles the feature and ``api_key`` (when passed) replaces
-        the stored key; the key is written to ``config.json`` so it survives a
-        restart but is deliberately never copied into ``status_text`` or
-        ``warnings``. The cached artwork service is dropped so the new chooser
-        takes effect on the next cover lookup.
+        ``enabled`` toggles the feature, ``api_key`` (when passed) replaces the
+        stored key, and ``base_url``/``model`` (when passed) replace the stored
+        endpoint/model. Blank values fall back to the built-in defaults rather
+        than persisting an unusable configuration. The key is written to
+        ``config.json`` so it survives a restart but is deliberately never copied
+        into ``status_text`` or ``warnings``. The cached artwork service is
+        dropped so the new chooser takes effect on the next cover lookup.
         """
         if enabled is not None:
             self.llm_cover_enabled = bool(enabled)
         if api_key is not _UNSET:
             self.llm_api_key = self._coerce_text(api_key)
+        if base_url is not _UNSET:
+            self.llm_base_url = self._coerce_text(base_url) or DEFAULT_LLM_BASE_URL
+        if model is not _UNSET:
+            self.llm_model = self._coerce_text(model) or DEFAULT_LLM_MODEL
         config = load_app_config()
         config["llm_cover_enabled"] = self.llm_cover_enabled
         if self.llm_api_key:
             config["llm_api_key"] = self.llm_api_key
         else:
             config.pop("llm_api_key", None)
+        config["llm_base_url"] = self.llm_base_url
+        config["llm_model"] = self.llm_model
         save_app_config(config)
         self._artwork_service = None
 

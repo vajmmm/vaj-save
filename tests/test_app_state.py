@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from vajsave.app_state import AppState
+from vajsave.artwork.llm_choice import DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL
 from vajsave.library import backup_save
 from vajsave.models import SaveEntry, ScanResult, VolumeInfo
 from vajsave.volume import FakeVolumeProvider
@@ -1565,3 +1566,97 @@ def test_llm_cover_enabled_config_values_are_coerced(tmp_path: Path, monkeypatch
         save_app_config({"llm_cover_enabled": raw})
         state = AppState(library_root=tmp_path / "lib")
         assert state.llm_cover_enabled is expected
+
+
+def test_llm_base_url_and_model_default_when_unset(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
+    state = AppState(library_root=tmp_path / "lib")
+    assert state.llm_base_url == DEFAULT_LLM_BASE_URL
+    assert state.llm_model == DEFAULT_LLM_MODEL
+
+
+def test_set_llm_cover_persists_base_url_and_model_and_uses_them(
+    tmp_path: Path, monkeypatch
+):
+    from vajsave.library import load_app_config
+
+    cfg = tmp_path / "config.json"
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(cfg))
+    state = AppState(library_root=tmp_path / "lib")
+
+    state.set_llm_cover(
+        enabled=True,
+        api_key="sk-key",
+        base_url="https://gateway.example/v1/",
+        model="my-model",
+    )
+
+    assert state.llm_base_url == "https://gateway.example/v1/"
+    assert state.llm_model == "my-model"
+    config = load_app_config()
+    assert config["llm_base_url"] == "https://gateway.example/v1/"
+    assert config["llm_model"] == "my-model"
+
+    chooser = state.artwork_service.llm_chooser
+    assert chooser is not None
+    assert chooser.base_url == "https://gateway.example/v1"  # trailing slash trimmed
+    assert chooser.model == "my-model"
+
+
+def test_app_state_reads_llm_base_url_and_model_from_config(tmp_path: Path, monkeypatch):
+    from vajsave.library import save_app_config
+
+    cfg = tmp_path / "config.json"
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(cfg))
+    save_app_config(
+        {
+            "llm_cover_enabled": True,
+            "llm_api_key": "sk-from-config",
+            "llm_base_url": "http://localhost:11434/v1",
+            "llm_model": "llama3",
+        }
+    )
+    state = AppState(library_root=tmp_path / "lib")
+    assert state.llm_base_url == "http://localhost:11434/v1"
+    assert state.llm_model == "llama3"
+    chooser = state.artwork_service.llm_chooser
+    assert chooser is not None
+    assert chooser.base_url == "http://localhost:11434/v1"
+    assert chooser.model == "llama3"
+
+
+def test_llm_cover_blank_base_url_and_model_fall_back_to_defaults(
+    tmp_path: Path, monkeypatch
+):
+    from vajsave.library import save_app_config
+
+    cfg = tmp_path / "config.json"
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(cfg))
+    save_app_config(
+        {
+            "llm_cover_enabled": True,
+            "llm_api_key": "sk-key",
+            "llm_base_url": "   ",
+            "llm_model": "",
+        }
+    )
+    state = AppState(library_root=tmp_path / "lib")
+    assert state.llm_base_url == DEFAULT_LLM_BASE_URL
+    assert state.llm_model == DEFAULT_LLM_MODEL
+    chooser = state.artwork_service.llm_chooser
+    assert chooser is not None
+    assert chooser.base_url == DEFAULT_LLM_BASE_URL
+    assert chooser.model == DEFAULT_LLM_MODEL
+
+
+def test_set_llm_cover_clearing_base_url_and_model_restores_defaults(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
+    state = AppState(library_root=tmp_path / "lib")
+    state.set_llm_cover(
+        enabled=True, api_key="sk", base_url="https://x.example/v1", model="m"
+    )
+    state.set_llm_cover(base_url="", model="   ")
+    assert state.llm_base_url == DEFAULT_LLM_BASE_URL
+    assert state.llm_model == DEFAULT_LLM_MODEL

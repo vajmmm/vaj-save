@@ -199,3 +199,59 @@ def test_settings_reads_current_llm_cover_settings(tk_root, tmp_path):
         assert dialog.llm_api_key_var.get() == "sk-existing"
     finally:
         _dispose(app, tk_root)
+
+
+def test_settings_dialog_exposes_llm_base_url_and_model(tk_root, tmp_path):
+    from vajsave.artwork.llm_choice import DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL
+
+    app, state = _app(tk_root, tmp_path)
+    try:
+        dialog = _open_settings(app, tk_root)
+        assert hasattr(dialog, "llm_base_url_var")
+        assert hasattr(dialog, "llm_model_var")
+        # Unset settings show the effective defaults rather than a blank field.
+        assert dialog.llm_base_url_var.get() == DEFAULT_LLM_BASE_URL
+        assert dialog.llm_model_var.get() == DEFAULT_LLM_MODEL
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_settings_save_persists_llm_base_url_and_model(tk_root, tmp_path):
+    from vajsave.library import load_app_config
+
+    app, state = _app(tk_root, tmp_path)
+    try:
+        dialog = _open_settings(app, tk_root)
+        dialog.llm_base_url_var.set("https://gateway.example/v1")
+        dialog.llm_model_var.set("my-model")
+        _find_button(dialog, "保存").invoke()
+
+        config = load_app_config()
+        assert config["llm_base_url"] == "https://gateway.example/v1"
+        assert config["llm_model"] == "my-model"
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_settings_reads_current_llm_base_url_and_model(tk_root, tmp_path):
+    from vajsave.library import save_app_config
+
+    app, state = _app(tk_root, tmp_path)
+    try:
+        save_app_config(
+            {
+                "llm_cover_enabled": True,
+                "llm_api_key": "sk-existing",
+                "llm_base_url": "http://localhost:11434/v1",
+                "llm_model": "llama3",
+            }
+        )
+        state.llm_cover_enabled = True
+        state.llm_api_key = "sk-existing"
+        state.llm_base_url = "http://localhost:11434/v1"
+        state.llm_model = "llama3"
+        dialog = _open_settings(app, tk_root)
+        assert dialog.llm_base_url_var.get() == "http://localhost:11434/v1"
+        assert dialog.llm_model_var.get() == "llama3"
+    finally:
+        _dispose(app, tk_root)

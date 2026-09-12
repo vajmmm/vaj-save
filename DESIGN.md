@@ -296,9 +296,11 @@ saturated accent fill.
   entry is rejected with a status warning, the dialog stays open, and
   `settings.json` is left untouched. Changing the value never prunes existing
   versions — pruning still happens only when a new version is added.
-- **Optional LLM cover disambiguation** sits below `keep_last`: an 启用 toggle and
-  a masked API Key field (both off/blank by default). The toggle and the key are
-  persisted to `config.json` (so they survive a restart); the key is written to
+- **Optional LLM cover disambiguation** sits below `keep_last`: an 启用 toggle, a
+  masked API Key field and the endpoint/model fields (Base URL and 模型). The
+  toggle, the key, the base URL and the model are persisted to `config.json` (so
+  they survive a restart); a blank base URL or model falls back to the built-in
+  default rather than persisting an unusable configuration. The key is written to
   disk but never echoed into status/warning text or any log line. When enabled,
   the LLM is consulted *only* for a genuinely ambiguous `Named_Boxarts` listing —
   several *different* titles matching one query — and must return one exact file
