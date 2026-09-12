@@ -81,6 +81,19 @@ def _format_ui_timestamp(value: Optional[str]) -> str:
     return str(value).replace("T", " ")[:16]
 
 
+def _initial_window_size(screen_width: int, screen_height: int) -> tuple[int, int]:
+    """Choose a default window size that fits the screen.
+
+    The inspector needs roughly 900px to lay out without crowding, but a fixed
+    ``1480x900`` can exceed the usable height of a common 768px display. The
+    height is therefore capped to the reported screen height (minus room for the
+    OS menu bar / taskbar), while the width keeps the three-column design.
+    """
+    width = min(1480, max(1180, int(screen_width or 1480) - 80))
+    height = min(900, max(560, int(screen_height or 900) - 140))
+    return width, height
+
+
 def _rom_filetypes(platform: str) -> List[tuple[str, str]]:
     """File-dialog filters derived from the canonical ROM extension registry."""
     extensions = supported_extensions(platform)
@@ -261,11 +274,14 @@ class VajSaveApp:
 
     def _init_window(self) -> None:
         self.root.title("vaj-save")
-        # The archive desk needs enough room for its three semantic columns. A
-        # smaller window is still usable because the center table hides optional
-        # columns, but the columns themselves must never collapse into each other.
-        self.root.minsize(1320, 780)
-        self.root.geometry("1480x900")
+        # The archive desk needs enough room for its three semantic columns, but
+        # the initial height must stay inside the usable screen area (a 768px
+        # display is common) so the bottom status bar is never off-screen.
+        width, height = _initial_window_size(
+            self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        )
+        self.root.minsize(min(1320, width), min(700, height))
+        self.root.geometry(f"{width}x{height}")
         self.root.configure(bg=APP_BG)
 
     def _apply_theme(self) -> None:
@@ -308,6 +324,10 @@ class VajSaveApp:
         topbar.pack(fill=tk.X)
         topbar.pack_propagate(False)
         self.topbar = topbar
+
+        # Reserve the bottom status bar before the expanding body so a short
+        # window can never clip it: pack order here guarantees its space.
+        self._build_bottombar()
 
         brand = tk.Frame(topbar, bg=APP_BG)
         brand.pack(side=tk.LEFT, padx=24, pady=12)
@@ -367,6 +387,12 @@ class VajSaveApp:
         device_head.grid(row=2, column=0, sticky="ew", padx=18, pady=(18, 8))
         tk.Label(device_head, text="已连接设备", bg=PANEL_BG, fg=INK, font=ui_font(12, "bold")).pack(side=tk.LEFT)
         CanvasButton(device_head, text="刷新", command=self.on_refresh_clicked, height=28, padding=8).pack(side=tk.RIGHT)
+        # Entry point for every other attached drive (fixed disks included); the
+        # list itself only ever shows the active device by default.
+        self._other_devices_button = CanvasButton(
+            device_head, text="其他设备", command=self.on_other_devices_clicked, height=28, padding=8
+        )
+        self._other_devices_button.pack(side=tk.RIGHT, padx=(0, 6))
         volume_shell = tk.Frame(left, bg=CARD, highlightbackground=BORDER_SOFT, highlightthickness=1, height=96)
         volume_shell.grid(row=3, column=0, sticky="ew", padx=12)
         volume_shell.grid_propagate(False)
@@ -385,9 +411,10 @@ class VajSaveApp:
             height=4,
         )
         self.vol_list.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
-        tk.Label(left, text="＋ 添加设备", bg=PANEL_BG, fg=BLUE, font=ui_font(11, "bold")).grid(
-            row=4, column=0, sticky="w", padx=18, pady=(8, 12)
+        self._add_device_button = CanvasButton(
+            left, text="＋ 添加设备", command=self.on_open_folder_clicked, height=28, padding=8
         )
+        self._add_device_button.grid(row=4, column=0, sticky="w", padx=12, pady=(8, 12))
 
         library_frame = tk.Frame(left, bg=PANEL_ALT, highlightbackground=BORDER_SOFT, highlightthickness=1)
         library_frame.grid(row=6, column=0, sticky="ew", padx=12, pady=16)
@@ -395,6 +422,12 @@ class VajSaveApp:
         library_head.pack(fill=tk.X, padx=12, pady=(12, 4))
         tk.Label(library_head, text="本地存档库", bg=PANEL_ALT, fg=INK, font=ui_font(11, "bold")).pack(side=tk.LEFT)
         CanvasButton(library_head, text="打开", command=self.on_open_library_clicked, height=28, padding=8).pack(side=tk.RIGHT)
+        # Independent library browse mode: the middle table shows one row per
+        # catalog game instead of the current device's saves.
+        self._library_browse_button = CanvasButton(
+            library_head, text="浏览", command=self.on_browse_library_clicked, height=28, padding=8
+        )
+        self._library_browse_button.pack(side=tk.RIGHT, padx=(0, 6))
         self.library_path_var = tk.StringVar(value=str(self.state.library_root))
         tk.Label(
             library_frame,
@@ -654,8 +687,20 @@ class VajSaveApp:
         note.bind("<FocusOut>", self.on_note_commit)
         note.bind("<Return>", self.on_note_commit)
 
+        self.vol_tree = self.vol_list
+        self.save_tree = self.save_list
+        self.version_tree = self.version_list
+        self._build_platform_rows()
+
+    def _build_bottombar(self) -> None:
+        """Create the bottom status bar and pack it against the bottom edge.
+
+        Called before the body is packed so the bar always reserves its 42px
+        regardless of how short the window is (and whether the identity frame is
+        showing), instead of being pushed off-screen by the expanding body.
+        """
         bottombar = tk.Frame(self.root, bg=APP_BG, height=42, highlightbackground=BORDER_SOFT, highlightthickness=1)
-        bottombar.pack(fill=tk.X)
+        bottombar.pack(side=tk.BOTTOM, fill=tk.X)
         bottombar.pack_propagate(False)
         self._bottombar = bottombar
         self._bottom_buttons: List[CanvasButton] = []
@@ -676,11 +721,6 @@ class VajSaveApp:
         self._hide_unchanged_button.pack(side=tk.RIGHT, padx=(0, 6))
         self._hide_unchanged_button.set_selected(bool(self._hide_unchanged_var.get()))
         self._bottom_buttons.append(self._hide_unchanged_button)
-
-        self.vol_tree = self.vol_list
-        self.save_tree = self.save_list
-        self.version_tree = self.version_list
-        self._build_platform_rows()
 
     def _build_platform_rows(self) -> None:
         """Create the platform filter rows exactly once, then keep updating them.
@@ -770,6 +810,8 @@ class VajSaveApp:
         chosen_dir = filedialog.askdirectory(title="选择要扫描的文件夹")
         if chosen_dir:
             self.state.select_custom_path(chosen_dir)
+            self._collapse_device_list()
+            self._sync_library_browse_button()
             self.refresh_volumes_ui(select_path=Path(chosen_dir))
             self.refresh_platform_ui()
             self.refresh_saves_ui()
@@ -805,8 +847,49 @@ class VajSaveApp:
             # Re-selecting the active device keeps its scan; "刷新" forces a rescan.
             return
         self.state.select_mount(volume.mount_point)
+        # Picking a device collapses the list back to just that device and leaves
+        # library browse mode if it was active.
+        self._collapse_device_list()
+        self.refresh_volumes_ui(select_path=volume.mount_point)
         self.refresh_platform_ui()
         self.refresh_saves_ui()
+        self.refresh_stats()
+
+    def on_other_devices_clicked(self) -> None:
+        """Toggle the device list between the active device and every volume."""
+        self._show_all_devices = not getattr(self, "_show_all_devices", False)
+        button = getattr(self, "_other_devices_button", None)
+        if button is not None:
+            button.set_selected(bool(self._show_all_devices))
+        self.refresh_volumes_ui(select_path=self.state.current_mount)
+        if self._show_all_devices and not self.state.volumes:
+            self.update_warning("没有检测到可选择的设备")
+        else:
+            self.update_warning("")
+
+    def _collapse_device_list(self) -> None:
+        self._show_all_devices = False
+        button = getattr(self, "_other_devices_button", None)
+        if button is not None:
+            button.set_selected(False)
+
+    def on_browse_library_clicked(self) -> None:
+        """Enter/leave the independent local library browse mode."""
+        self.state.set_library_mode(not self.state.library_mode)
+        self._collapse_device_list()
+        self._sync_library_browse_button()
+        self.refresh_volumes_ui(select_path=self.state.current_mount)
+        self.refresh_platform_ui()
+        self.refresh_saves_ui()
+        self.refresh_stats()
+        self.update_warning("")
+
+    def _sync_library_browse_button(self) -> None:
+        button = getattr(self, "_library_browse_button", None)
+        if button is None:
+            return
+        button.set_text("返回设备" if self.state.library_mode else "浏览")
+        button.set_selected(bool(self.state.library_mode))
 
     def _clear_detail(self) -> None:
         # Invalidate any in-flight enrichment so its result cannot repaint a
@@ -936,7 +1019,7 @@ class VajSaveApp:
         """
         self._enrich_token += 1
         token = self._enrich_token
-        if result is None or result.identity is None:
+        if self.state.library_mode or result is None or result.identity is None:
             return
 
         def callback(payload) -> None:
@@ -972,6 +1055,8 @@ class VajSaveApp:
         newer list.  Unresolved/ambiguous saves are skipped so the app never
         guesses a cover name (and never downloads) for an unknown game.
         """
+        if self.state.library_mode:
+            return
         for save in saves:
             result = result_by_path.get(save.path)
             if result is None or not result.is_resolved or result.identity is None:
@@ -1036,6 +1121,11 @@ class VajSaveApp:
 
     def on_backup_clicked(self) -> None:
         """Back up exactly the rows that are currently selected."""
+        if self.state.library_mode:
+            # The listed source is the library itself; backing it up would copy
+            # the catalog into its own tree.
+            self.update_warning("本地存档库无需备份")
+            return
         chosen = self._selected_saves()
         if not chosen:
             self.update_warning("先选择要备份的存档")
@@ -1281,8 +1371,18 @@ class VajSaveApp:
         self.vol_list.delete(0, tk.END)
         self._volumes_index = []
         target = select_path or self.state.current_mount
+        if getattr(self, "_show_all_devices", False):
+            # Explicit "other devices" view: every attached volume is choosable.
+            display = list(self.state.volumes)
+        elif target is not None:
+            # Default view: only the active device is presented.
+            display = [
+                vol for vol in self.state.volumes if Path(vol.mount_point) == Path(target)
+            ]
+        else:
+            display = []
         selected = None
-        for index, vol in enumerate(self.state.volumes):
+        for index, vol in enumerate(display):
             mount_name = Path(vol.mount_point).name or str(vol.mount_point)
             self.vol_list.insert(tk.END, f"●  {vol.name}   {mount_name}")
             self._volumes_index.append(vol)
@@ -1341,7 +1441,10 @@ class VajSaveApp:
         self.update_status(self.state.status_text)
         # After the first paint, enrich *every* resolved row in the background so
         # the whole list fills its covers, not just the selected inspector row.
-        self._schedule_list_enrichment(visible, result_by_path, generation)
+        # Library rows already carry their identity and metadata, so browsing the
+        # catalog must not trigger ROM lookups or network cover downloads.
+        if not self.state.library_mode:
+            self._schedule_list_enrichment(visible, result_by_path, generation)
 
     def refresh_versions_ui(self) -> None:
         self.version_list.delete(0, tk.END)
@@ -1364,7 +1467,10 @@ class VajSaveApp:
         stats = self.state.collection_stats()
         self.stats_var.set(f"已备份 {stats['games']} 款游戏 · {stats['versions']} 个版本")
         if hasattr(self, "archive_hint_var"):
-            self.archive_hint_var.set(f"共 {len(self.state.visible_saves())} 个可见存档 · 按最近备份时间排序")
+            source = "本地存档库" if self.state.library_mode else "设备"
+            self.archive_hint_var.set(
+                f"{source} · 共 {len(self.state.visible_saves())} 个可见存档 · 按最近备份时间排序"
+            )
         if hasattr(self, "library_path_var"):
             self.library_path_var.set(str(self.state.library_root))
 

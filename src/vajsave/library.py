@@ -461,6 +461,18 @@ def _is_safe_library_path(target: Path, library_root: Path) -> bool:
     return True
 
 
+def is_inside_library(path: Union[Path, str], library_root: Union[Path, str]) -> bool:
+    """True when ``path`` resolves strictly inside ``library_root``.
+
+    Used to stop a backup from copying a snapshot (or any other library
+    payload) back into the library tree.
+    """
+    try:
+        return _is_safe_library_path(Path(path), Path(library_root))
+    except (TypeError, ValueError):
+        return False
+
+
 def _delete_snapshot_payload(snapshot: Snapshot, library_root: Path) -> bool:
     """Remove on-disk files for a snapshot; never touches paths outside library_root.
 
@@ -587,6 +599,66 @@ def versions_for(catalog: Catalog, entry: SaveEntry) -> List[Snapshot]:
     if game is None:
         return []
     return list(game.versions)
+
+
+# --- local library browsing -------------------------------------------------
+
+# ``source_id`` stamped on synthetic rows that represent a catalog game rather
+# than a live device save.
+LIBRARY_SOURCE_ID = "library"
+
+
+def latest_snapshot(game: GameRecord) -> Optional[Snapshot]:
+    """Newest snapshot of ``game`` (catalog order is oldest -> newest)."""
+    return game.versions[-1] if game.versions else None
+
+
+def game_recency(game: GameRecord) -> str:
+    """Sort key: ISO timestamp of the newest backup (empty when never backed up)."""
+    latest = latest_snapshot(game)
+    return latest.created_at if latest is not None else ""
+
+
+def library_game_slot(game_id: str) -> Optional[str]:
+    """Recover the slot component from a catalog id ``platform:title:slot``.
+
+    ``game_key`` sanitizes every component (colons are stripped), so a catalog id
+    always splits into exactly three parts.
+    """
+    parts = str(game_id or "").split(":")
+    if len(parts) == 3:
+        return parts[2]
+    return None
+
+
+def game_entry(game: GameRecord, library_root: Union[Path, str]) -> SaveEntry:
+    """A synthetic save row representing one catalog game for library browsing.
+
+    The row points at the newest snapshot (so versions/export/restore operate on
+    real library payload) and carries the catalog id in ``extra`` so every
+    lookup keeps resolving against the same :class:`GameRecord`.
+    """
+    root = Path(library_root)
+    latest = latest_snapshot(game)
+    if latest is not None:
+        path = str(latest.absolute_path(root))
+    else:
+        path = str(root / game.id)
+    return SaveEntry(
+        platform=game.platform or "unknown",
+        source_id=LIBRARY_SOURCE_ID,
+        display_name=game.display_name or game.title_id or game.id,
+        path=path,
+        title_id=game.title_id or None,
+        slot=library_game_slot(game.id),
+        extra={"library_game_id": game.id},
+    )
+
+
+def catalog_entries(catalog: Catalog, library_root: Union[Path, str]) -> List[SaveEntry]:
+    """One row per catalog game, most recently backed up first."""
+    games = sorted(catalog.games.values(), key=game_recency, reverse=True)
+    return [game_entry(game, library_root) for game in games]
 
 
 def ensure_game(catalog: Catalog, entry: SaveEntry) -> GameRecord:

@@ -12,6 +12,7 @@ from .library import (
     Catalog,
     SaveBackupStatus,
     Snapshot,
+    catalog_entries,
     classify_save_status,
     collection_stats,
     default_library_root,
@@ -19,8 +20,11 @@ from .library import (
     export_snapshot_zip,
     game_key,
     hash_tree,
+    is_inside_library,
     load_app_config,
     load_catalog,
+    latest_snapshot,
+    path_mtime_iso,
     restore_snapshot,
     save_app_config,
     set_game_meta,
@@ -48,6 +52,7 @@ from .identity import (
     GameIdentity,
     GameIdentityResolver,
     GameIdentityResult,
+    resolved,
 )
 from .models import SaveEntry, ScanResult, VolumeInfo
 from .scanner import scan
@@ -116,12 +121,13 @@ def _build_status_text(result: ScanResult, counts: Optional[Dict[str, int]] = No
 
 
 def _mount_sort_key(volume: VolumeInfo) -> Tuple[int, int]:
-    """Ranking key for auto-selecting a device.
+    """Ranking key for auto-selecting a removable device.
 
     Removable volumes (USB sticks, handhelds exposing themselves as UMS drives)
-    come before fixed disks, and inside a group the highest Windows drive letter
-    wins, because a freshly attached device is normally handed the next free
-    letter. Volumes without a drive letter keep their provider order.
+    are the only auto-select candidates, and inside that group the highest
+    Windows drive letter wins, because a freshly attached device is normally
+    handed the next free letter. Volumes without a drive letter keep their
+    provider order.
     """
     text = str(volume.mount_point)
     letter = -1
@@ -160,6 +166,9 @@ class AppState:
         self._auto_selected_mount: bool = False
         self.status_text: str = "就绪"
         self.warnings: List[str] = []
+        # Browse source: False = the selected device, True = the local library
+        # catalog (cross-platform, one row per game).
+        self.library_mode: bool = False
         self.selected_platform: str = "all"
         self.search_query: str = ""
         self.starred_only: bool = False
@@ -443,12 +452,25 @@ class AppState:
             return PLACEHOLDER
 
     def resolve_save_identity(self, entry: SaveEntry) -> GameIdentityResult:
+        game_id = self._library_game_id(entry)
+        if game_id is not None:
+            # A catalog row already knows which game it is; never re-resolve it
+            # against a device or trigger a ROM lookup.
+            identity = GameIdentity(
+                identity_key=game_id,
+                platform=getattr(entry, "platform", "") or "unknown",
+                title=entry.display_name or game_id,
+                title_id=entry.title_id or None,
+            )
+            return resolved(identity, reason="library", save_path=entry.path)
         return self.identity_resolver.resolve(entry)
 
     def resolve_identities(
         self, entries: Optional[List[SaveEntry]] = None
     ) -> List[GameIdentityResult]:
         target = list(entries) if entries is not None else self.all_saves()
+        if self.library_mode:
+            return [self.resolve_save_identity(entry) for entry in target]
         return self.identity_resolver.resolve_many(target)
 
     def bind_save_identity(
@@ -459,7 +481,71 @@ class AppState:
     ) -> GameIdentity:
         return self.identity_resolver.bind(entry, identity=identity, rom_path=rom_path)
 
+    # -- local library browse mode ------------------------------------------
+
+    @staticmethod
+    def _library_game_id(entry: SaveEntry) -> Optional[str]:
+        """Catalog id stamped on a synthetic library row, else ``None``."""
+        extra = getattr(entry, "extra", None) or {}
+        game_id = extra.get("library_game_id")
+        return game_id or None
+
+    def _game_id(self, entry: SaveEntry) -> str:
+        """Catalog/device game key for an entry, preferring the library marker."""
+        return self._library_game_id(entry) or game_key(entry)
+
+    def library_entries(self) -> List[SaveEntry]:
+        """One row per catalog game (newest first), with statuses pre-computed.
+
+        A library row is by definition already backed up, so its status is
+        ``unchanged`` and no hashing (or scanning of a device) is needed.
+        """
+        catalog = load_catalog(self.library_root)
+        entries = catalog_entries(catalog, self.library_root)
+        self._backup_statuses = {}
+        for entry in entries:
+            game = catalog.games.get(entry.extra.get("library_game_id"))
+            self._backup_statuses[entry.path] = self._library_status(game)
+        return entries
+
+    def _library_status(self, game: Optional[object]) -> SaveBackupStatus:
+        latest = latest_snapshot(game) if game is not None else None
+        if latest is None:
+            return SaveBackupStatus(status="new")
+        return SaveBackupStatus(
+            status="unchanged",
+            source_mtime=path_mtime_iso(latest.absolute_path(self.library_root)),
+            last_backup_at=latest.created_at,
+            sha256=latest.sha256,
+        )
+
+    def set_library_mode(self, enabled: bool) -> bool:
+        """Switch the browse source between the device and the local library.
+
+        Switching source clears the platform filter so a stale selection can
+        never leave a newly-selected source looking empty.
+        """
+        enabled = bool(enabled)
+        if enabled != self.library_mode:
+            self.library_mode = enabled
+            self.selected_platform = "all"
+            self._backup_statuses = {}
+        self._refresh_source_status()
+        return self.library_mode
+
+    def _refresh_source_status(self) -> None:
+        if self.library_mode:
+            self.status_text = f"本地存档库 · {len(self.visible_saves())} 款游戏 | [只读]"
+        elif self.current_result is not None:
+            self.status_text = _build_status_text(
+                self.current_result, counts=self.backup_status_counts()
+            )
+        else:
+            self.status_text = "就绪"
+
     def all_saves(self) -> List[SaveEntry]:
+        if self.library_mode:
+            return self.library_entries()
         if not self.current_result:
             return []
         return list(self.current_result.saves)
@@ -489,11 +575,14 @@ class AppState:
             saves = [
                 save
                 for save in saves
-                if (catalog.games.get(game_key(save)) and catalog.games[game_key(save)].starred)
+                if catalog.games.get(self._game_id(save))
+                and catalog.games[self._game_id(save)].starred
             ]
         # Filter combination is unchanged: new + changed stay visible, only
-        # unchanged rows are dropped when "仅显示有更新" is active.
-        if self.hide_unchanged:
+        # unchanged rows are dropped when "仅显示有更新" is active. Every library
+        # row is already backed up, so the filter is not applied in library mode
+        # (otherwise it would blank the whole browser).
+        if self.hide_unchanged and not self.library_mode:
             saves = [save for save in saves if self.save_status(save).status != "unchanged"]
         return saves
 
@@ -501,7 +590,11 @@ class AppState:
         cached = self._backup_statuses.get(entry.path)
         if cached is not None:
             return cached
-        status = classify_save_status(entry, load_catalog(self.library_root))
+        if self._library_game_id(entry) is not None:
+            game = load_catalog(self.library_root).games.get(self._library_game_id(entry))
+            status = self._library_status(game)
+        else:
+            status = classify_save_status(entry, load_catalog(self.library_root))
         self._backup_statuses[entry.path] = status
         return status
 
@@ -541,6 +634,9 @@ class AppState:
 
     def refresh_backup_statuses(self) -> Dict[str, int]:
         """Recompute and cache status for every scanned save."""
+        if self.library_mode:
+            self.library_entries()  # populates statuses without hashing device files
+            return self.backup_status_counts()
         self._backup_statuses = {}
         catalog = load_catalog(self.library_root)
         pending: List[SaveEntry] = []
@@ -585,18 +681,18 @@ class AppState:
 
     def toggle_star(self, entry: SaveEntry) -> bool:
         catalog = load_catalog(self.library_root)
-        current = catalog.games.get(game_key(entry))
+        current = catalog.games.get(self._game_id(entry))
         starred = not bool(current and current.starred)
         game = set_game_meta(self.library_root, entry, starred=starred)
         self.status_text = "已加入收藏" if game.starred else "已取消收藏"
         return game.starred
 
     def is_starred(self, entry: SaveEntry) -> bool:
-        game = load_catalog(self.library_root).games.get(game_key(entry))
+        game = load_catalog(self.library_root).games.get(self._game_id(entry))
         return bool(game and game.starred)
 
     def game_note(self, entry: SaveEntry) -> str:
-        game = load_catalog(self.library_root).games.get(game_key(entry))
+        game = load_catalog(self.library_root).games.get(self._game_id(entry))
         return game.note if game else ""
 
     def set_note(self, entry: SaveEntry, note: str) -> None:
@@ -620,6 +716,10 @@ class AppState:
         saves = self.visible_saves()
         if not saves:
             return []
+        if self.library_mode:
+            # Library browsing is a single cross-platform list ordered by the
+            # most recent backup; platform grouping would scramble that order.
+            return [("all", saves)]
         known = [key for key in PLATFORM_ORDER if key != "all"]
         buckets: Dict[str, List[SaveEntry]] = {key: [] for key in known}
         extras: Dict[str, List[SaveEntry]] = {}
@@ -640,11 +740,22 @@ class AppState:
         self.selected_platform = platform or "all"
         label = PLATFORM_LABELS.get(self.selected_platform, self.selected_platform)
         count = len(self.visible_saves())
-        if self.current_result:
+        if self.library_mode:
+            self.status_text = f"本地存档库 · {label} · {count} 款游戏 | [只读]"
+        elif self.current_result:
             self.status_text = f"{label} · {count} 个存档 | [只读]"
 
     def import_save(self, entry: SaveEntry) -> Optional[Path]:
         """Backup one save into the versioned local library. Never writes to the source volume."""
+        if (
+            self._library_game_id(entry) is not None
+            or self.library_mode
+            or is_inside_library(entry.path, self.library_root)
+        ):
+            # The source would be a snapshot inside the library itself; copying it
+            # back in would duplicate the library into its own tree.
+            self.status_text = "本地存档库无需备份"
+            return None
         try:
             result = backup_save(entry, self.library_root)
         except Exception as e:
@@ -683,7 +794,12 @@ class AppState:
         return self.import_selected_saves(targets)
 
     def versions_for_entry(self, entry: SaveEntry) -> List[Snapshot]:
-        return versions_for(load_catalog(self.library_root), entry)
+        catalog = load_catalog(self.library_root)
+        game_id = self._library_game_id(entry)
+        if game_id is not None:
+            game = catalog.games.get(game_id)
+            return list(game.versions) if game is not None else []
+        return versions_for(catalog, entry)
 
     def restore_version(self, snapshot: Snapshot, destination: Union[Path, str]) -> Optional[Path]:
         try:
@@ -711,6 +827,11 @@ class AppState:
         may later be replaced by a better device (see ``ensure_mount_selected``).
         """
         path = Path(mount_point)
+        # Leaving library mode or picking a different device is a source change:
+        # drop any platform filter so the new source cannot look falsely empty.
+        if self.library_mode or self.current_mount != path:
+            self.selected_platform = "all"
+        self.library_mode = False
         self.current_mount = path
         self._auto_selected_mount = auto
         self._identity_resolver = None
@@ -746,18 +867,28 @@ class AppState:
         return self.select_mount(custom_path)
 
     def preferred_volume(self) -> Optional[VolumeInfo]:
-        """The device the app should default to, or None when nothing is mounted."""
-        if not self.volumes:
+        """The removable device the app should default to, else ``None``.
+
+        Fixed disks (C:/D:/E:) are deliberately never auto-selected: a built-in
+        drive is not a handheld card, and scanning it on startup is both slow and
+        surprising. The user can still open one explicitly through the
+        "其他设备" entry.
+        """
+        removable = [volume for volume in self.volumes if volume.is_removable]
+        if not removable:
             return None
-        return min(self.volumes, key=_mount_sort_key)
+        return min(removable, key=_mount_sort_key)
 
     def ensure_mount_selected(self) -> Optional[VolumeInfo]:
         """Pick a default device when none is chosen, or upgrade an automatic choice.
 
         Called after enumerating volumes so a just-attached USB stick or handheld
         on a high drive letter (F:) is preferred over built-in C:/D:/E: drives.
-        A device the user picked themselves is never replaced.
+        A device the user picked themselves is never replaced, and while the user
+        is browsing the local library the source is left alone entirely.
         """
+        if self.library_mode:
+            return None
         preferred = self.preferred_volume()
         if preferred is None:
             return None
