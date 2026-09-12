@@ -189,18 +189,65 @@ class ArtworkService:
         artwork = self.cover_for(metadata)
         if artwork is None:
             return None
+        return self._store_artwork(artwork, identity_key=identity_key, platform=plat)
+
+    def _store_artwork(
+        self,
+        artwork: Artwork,
+        *,
+        identity_key: Optional[str],
+        platform: Optional[str] = None,
+    ) -> Optional[Path]:
+        """Fetch ``artwork`` and commit it to the cache; ``None`` on any failure."""
+        if self.cache is None or not identity_key:
+            return None
         data = self.downloader.fetch(artwork.url)
         if not data:
             return None
         return self.cache.store(
-            plat or artwork.platform,
+            platform or artwork.platform,
             identity_key,
             data,
             provider=artwork.provider,
-            canonical_title=artwork.canonical_title
-            or getattr(metadata, "canonical_title", ""),
+            canonical_title=artwork.canonical_title,
             remote_url=artwork.url,
         )
+
+    def ensure_cover_for_title(
+        self,
+        entry,
+        *,
+        platform: str,
+        title: str,
+        identity_key: Optional[str],
+        library_root: Union[Path, str, None],
+    ) -> ArtworkResolution:
+        """Cover for a platform whose provider key is the save's own title.
+
+        PSP/Vita have no ROM index, so the caller passes the PARAM.SFO / display
+        title explicitly.  Unlike :meth:`ensure_cover`, an embedded icon
+        (``ICON0.PNG`` / ``sce_sys/icon0.png``) is preferred over a download: a
+        save that already ships artwork is never looked up online.
+        """
+        if entry is None:
+            return PLACEHOLDER
+        plat = (platform or getattr(entry, "platform", "") or "").strip().lower()
+        user = _user_path(entry, library_root)
+        if user is not None:
+            return ArtworkResolution(str(user), SOURCE_USER)
+        cached = _downloaded_path(self.cache, plat, identity_key)
+        if cached is not None:
+            return ArtworkResolution(str(cached), SOURCE_DOWNLOADED)
+        embedded = _embedded_path(entry)
+        if embedded is not None:
+            return ArtworkResolution(str(embedded), SOURCE_EMBEDDED)
+        artwork = self.ref_for(plat, title)
+        if artwork is None:
+            return PLACEHOLDER
+        stored = self._store_artwork(artwork, identity_key=identity_key, platform=plat)
+        if stored is None:
+            return PLACEHOLDER
+        return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
 
     def ensure_cover(
         self,

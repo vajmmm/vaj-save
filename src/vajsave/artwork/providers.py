@@ -25,10 +25,14 @@ from urllib.parse import quote
 
 LIBRETRO_THUMBNAIL_BASE = "https://thumbnails.libretro.com"
 
-# libretro system folder names for the two digest-identified platforms.
+# libretro system folder names for the platforms the app resolves a title for.
+# GBA/NDS titles come from the ROM-digest index; PSP/Vita titles come from the
+# save's PARAM.SFO (see :meth:`vajsave.artwork.ArtworkService.ensure_cover_for_title`).
 LIBRETRO_SYSTEM_NAMES = {
     "gba": "Nintendo - Game Boy Advance",
     "nds": "Nintendo - Nintendo DS",
+    "psp": "Sony - PlayStation Portable",
+    "vita": "Sony - PlayStation Vita",
 }
 
 # libretro's canonical thumbnail sub-directories.

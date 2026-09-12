@@ -74,6 +74,10 @@ from .volume import MountedVolumeProvider, VolumeProvider, watch_volumes
 
 PLATFORM_ORDER = ["all", "psp", "vita", "switch", "3ds", "nds", "gba"]
 
+# Platforms whose libretro provider name is the save's own SFO / display title
+# rather than a ROM-digest index canonical title.
+_TITLE_PROVIDER_PLATFORMS = ("psp", "vita")
+
 # Sentinel distinguishing "leave this setting untouched" from an explicit None
 # (which clears a persisted ROM directory) in ``set_rom_dirs``.
 _UNSET = object()
@@ -608,10 +612,26 @@ class AppState:
 
         The official libretro filename rule needs the index's canonical title, so
         without metadata this stays a local-only resolution: the app never guesses
-        a name (and never touches the network) for an unknown ROM.
+        a name (and never touches the network) for an unknown ROM.  PSP/Vita are
+        the exception: they have no ROM index, so their PARAM.SFO / display title
+        is used directly -- but only when the save ships no embedded icon.
         """
         try:
             if metadata is None or not metadata.canonical_title:
+                identity = result.identity if result is not None else None
+                if (
+                    identity is not None
+                    and (identity.platform or "").strip().lower()
+                    in _TITLE_PROVIDER_PLATFORMS
+                    and (identity.title or "").strip()
+                ):
+                    return self.artwork_service.ensure_cover_for_title(
+                        entry,
+                        platform=identity.platform,
+                        title=identity.title,
+                        identity_key=identity.identity_key,
+                        library_root=self.library_root,
+                    )
                 return self.resolve_save_cover(entry, result=result)
             if result is None:
                 result = self.resolve_save_identity(entry)

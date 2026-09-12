@@ -325,6 +325,131 @@ def test_appstate_ensure_cover_without_metadata_is_local_only(tmp_path: Path):
     assert calls == []
 
 
+def _psp_entry(tmp_path: Path, *, with_icon: bool, title_id: str = "ULJM05800") -> SaveEntry:
+    save_dir = tmp_path / "PSP" / "SAVEDATA" / title_id
+    save_dir.mkdir(parents=True, exist_ok=True)
+    (save_dir / "DATA.BIN").write_bytes(b"save")
+    if with_icon:
+        (save_dir / "ICON0.PNG").write_bytes(png_bytes())
+    return SaveEntry(
+        platform="psp",
+        source_id="psp_test",
+        display_name=title_id,
+        path=str(save_dir),
+        title_id=title_id,
+    )
+
+
+def _vita_entry(tmp_path: Path, *, title_id: str = "PCSE00120") -> SaveEntry:
+    save_dir = tmp_path / "VITA" / title_id
+    (save_dir / "sce_sys").mkdir(parents=True, exist_ok=True)
+    (save_dir / "data.bin").write_bytes(b"save")
+    return SaveEntry(
+        platform="vita",
+        source_id="vita_test",
+        display_name=title_id,
+        path=str(save_dir),
+        title_id=title_id,
+    )
+
+
+def test_appstate_psp_cover_uses_sfo_title_without_icon(tmp_path: Path, psp_sfo_bytes: bytes):
+    """A PSP save with no embedded ICON0 falls back to the PARAM.SFO title and
+    downloads the libretro boxart under ``Sony - PlayStation Portable``."""
+    entry = _psp_entry(tmp_path, with_icon=False)
+    (Path(entry.path) / "PARAM.SFO").write_bytes(psp_sfo_bytes)
+
+    state = AppState(library_root=tmp_path / "lib")
+    result = state.resolve_save_identity(entry)
+    assert result.is_resolved
+    assert result.identity.title == "Monster Hunter Portable 3rd"
+
+    urls = []
+
+    def opener(url, timeout=None):
+        urls.append(url)
+        return _FakeResponse(png_bytes())
+
+    state._artwork_service = ArtworkService(
+        cache=CoverCache(state.library_root / COVER_CACHE_DIR),
+        downloader=ArtworkDownloader(urlopen=opener),
+    )
+    cover = state.ensure_save_cover(entry, result)
+    assert cover.source == SOURCE_DOWNLOADED
+    assert urls and "Sony%20-%20PlayStation%20Portable" in urls[0]
+    assert "Monster%20Hunter%20Portable%203rd" in urls[0]
+
+
+def test_appstate_psp_icon0_skips_network(tmp_path: Path, psp_sfo_bytes: bytes):
+    """When the save folder already ships an ICON0.PNG, the PSP path must not
+    go online:"""
+    entry = _psp_entry(tmp_path, with_icon=True)
+    (Path(entry.path) / "PARAM.SFO").write_bytes(psp_sfo_bytes)
+
+    state = AppState(library_root=tmp_path / "lib")
+    result = state.resolve_save_identity(entry)
+    calls = []
+
+    state._artwork_service = ArtworkService(
+        cache=CoverCache(state.library_root / COVER_CACHE_DIR),
+        downloader=ArtworkDownloader(
+            urlopen=lambda url, timeout=None: calls.append(url) or _FakeResponse(png_bytes())
+        ),
+    )
+    cover = state.ensure_save_cover(entry, result)
+    assert cover.source == SOURCE_EMBEDDED
+    assert calls == []
+
+
+def test_appstate_vita_cover_uses_sfo_title(tmp_path: Path, vita_sfo_bytes: bytes):
+    entry = _vita_entry(tmp_path)
+    (Path(entry.path) / "sce_sys" / "param.sfo").write_bytes(vita_sfo_bytes)
+
+    state = AppState(library_root=tmp_path / "lib")
+    result = state.resolve_save_identity(entry)
+    assert result.is_resolved
+    assert result.identity.title == "Persona 4 Golden"
+
+    urls = []
+
+    state._artwork_service = ArtworkService(
+        cache=CoverCache(state.library_root / COVER_CACHE_DIR),
+        downloader=ArtworkDownloader(
+            urlopen=lambda url, timeout=None: urls.append(url) or _FakeResponse(png_bytes())
+        ),
+    )
+    cover = state.ensure_save_cover(entry, result)
+    assert cover.source == SOURCE_DOWNLOADED
+    assert urls and "Sony%20-%20PlayStation%20Vita" in urls[0]
+    assert "Persona%204%20Golden" in urls[0]
+
+
+def test_appstate_gba_identity_without_canonical_metadata_never_network(tmp_path: Path):
+    """GBA/NDS titles come from the canonical index only; without it the app
+    must never guess a provider name (criterion: no network)."""
+    rom_dir = tmp_path / "roms"
+    rom_dir.mkdir()
+    rom = rom_dir / "Apotris (Chinese).gba"
+    rom.write_bytes(make_gba_rom(title="APOTRIS", code="Z9ZQ"))
+
+    state = AppState(library_root=tmp_path / "lib")
+    state.set_rom_dirs(rom_dir, None)
+    entry = _entry(tmp_path)
+    result = state.resolve_save_identity(entry)
+    assert result.is_resolved
+
+    calls = []
+    state._artwork_service = ArtworkService(
+        cache=CoverCache(state.library_root / COVER_CACHE_DIR),
+        downloader=ArtworkDownloader(
+            urlopen=lambda url, timeout=None: calls.append(url) or _FakeResponse(png_bytes())
+        ),
+    )
+    cover = state.ensure_save_cover(entry, result, metadata=None)
+    assert cover.source == SOURCE_PLACEHOLDER
+    assert calls == []
+
+
 def test_set_library_root_resets_metadata_and_artwork_services(tmp_path: Path):
     state = AppState(library_root=tmp_path / "lib")
     _ = state.metadata_service

@@ -106,7 +106,7 @@ def test_sanitize_libretro_filename_rules():
 def test_libretro_provider_find_cover_and_url_rules():
     provider = LibretroThumbnailProvider()
     assert provider.supports("gba") and provider.supports("NDS")
-    assert not provider.supports("psp")
+    assert provider.supports("psp") and provider.supports("VITA")
 
     artwork = provider.find_cover(make_metadata("gba", "Pokemon - FireRed Version (USA)"))
     assert isinstance(artwork, Artwork)
@@ -121,9 +121,30 @@ def test_libretro_provider_find_cover_and_url_rules():
     # A double quote is replaced, never percent-encoded into the URL.
     quoted = provider.find_cover(make_metadata("gba", 'Game "X" (USA)'))
     assert quoted is not None and '"' not in quoted.url and "%22" not in quoted.url
-    assert provider.find_cover(make_metadata("psp", "Anything")) is None
+    assert provider.find_cover(make_metadata("switch", "Anything")) is None
     assert provider.find_cover(make_metadata("gba", "")) is None
     assert provider.find_cover(None) is None
+
+
+def test_libretro_system_names_include_psp_and_vita():
+    assert LIBRETRO_SYSTEM_NAMES["psp"] == "Sony - PlayStation Portable"
+    assert LIBRETRO_SYSTEM_NAMES["vita"] == "Sony - PlayStation Vita"
+
+
+def test_libretro_provider_psp_and_vita_boxart_urls():
+    provider = LibretroThumbnailProvider()
+    psp = provider.ref_for("psp", "Monster Hunter Portable 3rd")
+    assert psp is not None
+    assert psp.url == (
+        "https://thumbnails.libretro.com/Sony%20-%20PlayStation%20Portable/"
+        "Named_Boxarts/Monster%20Hunter%20Portable%203rd.png"
+    )
+    vita = provider.ref_for("vita", "Persona 4 Golden")
+    assert vita is not None
+    assert vita.url == (
+        "https://thumbnails.libretro.com/Sony%20-%20PlayStation%20Vita/"
+        "Named_Boxarts/Persona%204%20Golden.png"
+    )
 
 
 def test_base_provider_is_inert():
@@ -373,7 +394,7 @@ def test_ensure_downloaded_cache_hit_is_zero_network(tmp_path: Path):
 
 def test_ensure_downloaded_unsupported_platform_and_missing_key(tmp_path: Path):
     service = ArtworkService(cache=CoverCache(tmp_path / "covers"))
-    assert service.ensure_downloaded(make_metadata("psp", "Game"), identity_key="psp:x") is None
+    assert service.ensure_downloaded(make_metadata("switch", "Game"), identity_key="switch:x") is None
     assert service.ensure_downloaded(make_metadata(), identity_key=None) is None
     assert service.ensure_downloaded(None, identity_key="gba:x") is None
 
@@ -451,6 +472,153 @@ def test_ensure_cover_user_local_skips_network(tmp_path: Path):
     assert calls == []
 
 
+def test_ensure_cover_for_title_downloads_psp_boxart(tmp_path: Path):
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="psp", name="Monster Hunter")
+    calls = []
+
+    def opener(url, timeout=None):
+        calls.append(url)
+        return FakeResponse(png_bytes())
+
+    service = ArtworkService(cache=cache, downloader=ArtworkDownloader(urlopen=opener))
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="psp",
+        title="Monster Hunter Portable 3rd",
+        identity_key="psp:ULJM05800",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_DOWNLOADED
+    assert calls and "Sony%20-%20PlayStation%20Portable" in calls[0]
+    assert "Monster%20Hunter%20Portable%203rd" in calls[0]
+    assert cache.manifest()["psp:ULJM05800"]["remote_url"] == calls[0]
+
+
+def test_ensure_cover_for_title_embedded_icon_skips_network(tmp_path: Path):
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="psp")
+    icon = tmp_path / "ICON0.PNG"
+    icon.write_bytes(png_bytes())
+    entry.cover_path = str(icon)
+    calls = []
+
+    service = ArtworkService(
+        cache=cache,
+        downloader=ArtworkDownloader(
+            urlopen=lambda url, timeout=None: calls.append(url) or FakeResponse(png_bytes())
+        ),
+    )
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="psp",
+        title="Monster Hunter Portable 3rd",
+        identity_key="psp:ULJM05800",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_EMBEDDED
+    assert Path(resolution.path) == icon
+    assert calls == []
+
+
+def test_ensure_cover_for_title_cache_hit_is_zero_network(tmp_path: Path):
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    key = "vita:PCSE00120"
+    stored = cache.store("vita", key, png_bytes())
+    entry = make_entry(tmp_path, platform="vita")
+    calls = []
+
+    service = ArtworkService(
+        cache=cache,
+        downloader=ArtworkDownloader(
+            urlopen=lambda url, timeout=None: calls.append(url) or FakeResponse(png_bytes())
+        ),
+    )
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="vita",
+        title="Persona 4 Golden",
+        identity_key=key,
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_DOWNLOADED
+    assert Path(resolution.path) == stored
+    assert calls == []
+
+
+def test_ensure_cover_for_title_user_local_skips_network(tmp_path: Path):
+    library = tmp_path / "lib"
+    user_dir = library / "covers" / "psp"
+    user_dir.mkdir(parents=True)
+    (user_dir / "Monster Hunter.png").write_bytes(png_bytes())
+    entry = make_entry(tmp_path, platform="psp", name="Monster Hunter")
+    calls = []
+
+    service = ArtworkService(
+        cache=CoverCache(library / COVER_CACHE_DIR),
+        downloader=ArtworkDownloader(
+            urlopen=lambda url, timeout=None: calls.append(url) or FakeResponse(png_bytes())
+        ),
+    )
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="psp",
+        title="Monster Hunter Portable 3rd",
+        identity_key="psp:ULJM05800",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_USER
+    assert calls == []
+
+
+def test_ensure_cover_for_title_offline_failure_does_not_pollute_cache(tmp_path: Path):
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="vita")
+    key = "vita:PCSE00120"
+
+    service = ArtworkService(
+        cache=cache,
+        downloader=ArtworkDownloader(
+            urlopen=lambda url, timeout=None: (_ for _ in ()).throw(
+                urllib.error.URLError("offline")
+            )
+        ),
+    )
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="vita",
+        title="Persona 4 Golden",
+        identity_key=key,
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_PLACEHOLDER
+    assert cache.lookup("vita", key) is None
+
+
+def test_ensure_cover_for_title_unsupported_platform_and_no_title(tmp_path: Path):
+    library = tmp_path / "lib"
+    service = ArtworkService(
+        cache=CoverCache(library / COVER_CACHE_DIR),
+        downloader=ArtworkDownloader(
+            urlopen=lambda url, timeout=None: (_ for _ in ()).throw(AssertionError("no network"))
+        ),
+    )
+    entry = make_entry(tmp_path, platform="switch")
+    assert service.ensure_cover_for_title(
+        entry, platform="switch", title="Anything", identity_key="switch:X", library_root=library
+    ).source == SOURCE_PLACEHOLDER
+    assert service.ensure_cover_for_title(
+        entry, platform="psp", title="", identity_key="psp:X", library_root=library
+    ).source == SOURCE_PLACEHOLDER
+    assert service.ensure_cover_for_title(
+        None, platform="psp", title="Anything", identity_key="psp:X", library_root=library
+    ).source == SOURCE_PLACEHOLDER
+
+
 def test_service_cover_for_falls_through_bad_provider():
     class Exploding(ArtworkProvider):
         name = "boom"
@@ -464,7 +632,7 @@ def test_service_cover_for_falls_through_bad_provider():
     assert artwork is not None and artwork.provider == "libretro"
     # ``ref_for`` is the platform+title compatibility entry point.
     assert service.ref_for("gba", "Apotris").provider == "libretro"
-    assert service.ref_for("psp", "Anything") is None
+    assert service.ref_for("switch", "Anything") is None
     assert service.ref_for("gba", "") is None
 
 
