@@ -115,3 +115,16 @@ def test_help_guide_mentions_ftp_pull_and_presets(tk_root, tmp_path):
         assert "ftpd" in text
     finally:
         _dispose(app, tk_root)
+
+
+def test_help_guide_points_to_the_llm_cover_settings(tk_root, tmp_path):
+    app = _app(tk_root, tmp_path)
+    try:
+        dialog = _open_help(app, tk_root)
+        text = _collect_text(dialog)
+        # The guide points at the dedicated dialog instead of the old inline
+        # fields, which no longer live in the main settings window.
+        assert "LLM 封面消歧" in text
+        assert "设置" in text
+    finally:
+        _dispose(app, tk_root)

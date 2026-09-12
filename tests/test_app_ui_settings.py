@@ -150,13 +150,69 @@ def test_settings_negative_keep_last_is_rejected(tk_root, tmp_path):
         _dispose(app, tk_root)
 
 
-# --- optional LLM cover disambiguation ---------------------------------------
+# --- optional LLM cover disambiguation (persisted from its own dialog) -------
+
+
+def _open_llm_settings(app, tk_root):
+    """Open the main settings dialog, then follow its LLM entry button.
+
+    The LLM cover-disambiguation fields used to live inside the main settings
+    dialog; they now sit in their own dialog reached from the entry button, so
+    the main window stops growing. These tests drive that nested dialog.
+    """
+    settings = _open_settings(app, tk_root)
+
+    def toplevels():
+        return {c for c in _descendants(tk_root) if isinstance(c, tk.Toplevel)}
+
+    before = toplevels()
+    _find_button(settings, "打开设置…").invoke()
+    dialogs = [c for c in toplevels() if c not in before]
+    assert dialogs, "LLM dialog did not open"
+    return dialogs[-1]
+
+
+def test_settings_dialog_has_llm_entry_but_no_llm_fields(tk_root, tmp_path):
+    app, state = _app(tk_root, tmp_path)
+    try:
+        dialog = _open_settings(app, tk_root)
+        # The main dialog keeps only an entry point; the fields moved out.
+        assert hasattr(dialog, "llm_cover_entry_button")
+        assert not hasattr(dialog, "llm_cover_button")
+        assert not hasattr(dialog, "llm_api_key_var")
+        assert not hasattr(dialog, "llm_protocol_var")
+        assert not hasattr(dialog, "llm_base_url_var")
+        assert not hasattr(dialog, "llm_model_var")
+        assert not hasattr(dialog, "llm_test_button")
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_settings_llm_entry_opens_dedicated_dialog(tk_root, tmp_path):
+    app, state = _app(tk_root, tmp_path)
+    try:
+        dialog = _open_llm_settings(app, tk_root)
+        assert dialog.title() == "LLM 封面消歧"
+        for attr in (
+            "llm_cover_button",
+            "llm_api_key_var",
+            "llm_api_key_entry",
+            "llm_protocol_var",
+            "llm_protocol_combo",
+            "llm_base_url_var",
+            "llm_model_var",
+            "llm_test_button",
+            "llm_test_result_var",
+        ):
+            assert hasattr(dialog, attr), attr
+    finally:
+        _dispose(app, tk_root)
 
 
 def test_settings_dialog_exposes_llm_cover_controls(tk_root, tmp_path):
     app, state = _app(tk_root, tmp_path)
     try:
-        dialog = _open_settings(app, tk_root)
+        dialog = _open_llm_settings(app, tk_root)
         assert hasattr(dialog, "llm_cover_button")
         assert hasattr(dialog, "llm_api_key_var")
         assert dialog.llm_cover_button.selected is False
@@ -172,7 +228,7 @@ def test_settings_save_persists_llm_cover_and_key(tk_root, tmp_path):
 
     app, state = _app(tk_root, tmp_path)
     try:
-        dialog = _open_settings(app, tk_root)
+        dialog = _open_llm_settings(app, tk_root)
         dialog.llm_cover_button.invoke()  # toggle the feature on
         assert dialog.llm_cover_button.selected is True
         dialog.llm_api_key_var.set("sk-ui-secret")
@@ -194,7 +250,7 @@ def test_settings_reads_current_llm_cover_settings(tk_root, tmp_path):
         save_app_config({"llm_cover_enabled": True, "llm_api_key": "sk-existing"})
         state.llm_cover_enabled = True
         state.llm_api_key = "sk-existing"
-        dialog = _open_settings(app, tk_root)
+        dialog = _open_llm_settings(app, tk_root)
         assert dialog.llm_cover_button.selected is True
         assert dialog.llm_api_key_var.get() == "sk-existing"
     finally:
@@ -206,7 +262,7 @@ def test_settings_dialog_exposes_llm_base_url_and_model(tk_root, tmp_path):
 
     app, state = _app(tk_root, tmp_path)
     try:
-        dialog = _open_settings(app, tk_root)
+        dialog = _open_llm_settings(app, tk_root)
         assert hasattr(dialog, "llm_base_url_var")
         assert hasattr(dialog, "llm_model_var")
         # Unset settings show the effective defaults rather than a blank field.
@@ -221,7 +277,7 @@ def test_settings_save_persists_llm_base_url_and_model(tk_root, tmp_path):
 
     app, state = _app(tk_root, tmp_path)
     try:
-        dialog = _open_settings(app, tk_root)
+        dialog = _open_llm_settings(app, tk_root)
         dialog.llm_base_url_var.set("https://gateway.example/v1")
         dialog.llm_model_var.set("my-model")
         _find_button(dialog, "保存").invoke()
@@ -250,7 +306,7 @@ def test_settings_reads_current_llm_base_url_and_model(tk_root, tmp_path):
         state.llm_api_key = "sk-existing"
         state.llm_base_url = "http://localhost:11434/v1"
         state.llm_model = "llama3"
-        dialog = _open_settings(app, tk_root)
+        dialog = _open_llm_settings(app, tk_root)
         assert dialog.llm_base_url_var.get() == "http://localhost:11434/v1"
         assert dialog.llm_model_var.get() == "llama3"
     finally:
@@ -262,7 +318,7 @@ def test_settings_dialog_exposes_llm_protocol_selector(tk_root, tmp_path):
 
     app, state = _app(tk_root, tmp_path)
     try:
-        dialog = _open_settings(app, tk_root)
+        dialog = _open_llm_settings(app, tk_root)
         assert hasattr(dialog, "llm_protocol_var")
         assert dialog.llm_protocol_var.get() == DEFAULT_LLM_PROTOCOL
         values = list(dialog.llm_protocol_combo.cget("values"))
@@ -278,7 +334,7 @@ def test_settings_save_persists_llm_protocol(tk_root, tmp_path):
 
     app, state = _app(tk_root, tmp_path)
     try:
-        dialog = _open_settings(app, tk_root)
+        dialog = _open_llm_settings(app, tk_root)
         dialog.llm_protocol_var.set(PROTOCOL_ANTHROPIC)
         _find_button(dialog, "保存").invoke()
         assert load_app_config()["llm_protocol"] == PROTOCOL_ANTHROPIC
@@ -295,7 +351,7 @@ def test_settings_reads_current_llm_protocol(tk_root, tmp_path):
     try:
         save_app_config({"llm_protocol": PROTOCOL_ANTHROPIC})
         state.llm_protocol = PROTOCOL_ANTHROPIC
-        dialog = _open_settings(app, tk_root)
+        dialog = _open_llm_settings(app, tk_root)
         assert dialog.llm_protocol_var.get() == PROTOCOL_ANTHROPIC
     finally:
         _dispose(app, tk_root)
@@ -307,7 +363,7 @@ def test_settings_reads_current_llm_protocol(tk_root, tmp_path):
 def test_settings_dialog_has_no_llm_preset_controls(tk_root, tmp_path):
     app, state = _app(tk_root, tmp_path)
     try:
-        dialog = _open_settings(app, tk_root)
+        dialog = _open_llm_settings(app, tk_root)
         # The preset selector is gone; only protocol/base/key/model remain.
         assert not hasattr(dialog, "llm_preset_var")
         assert not hasattr(dialog, "llm_preset_combo")
@@ -321,7 +377,7 @@ def test_settings_save_completes_a_base_url_without_v1(tk_root, tmp_path):
 
     app, state = _app(tk_root, tmp_path)
     try:
-        dialog = _open_settings(app, tk_root)
+        dialog = _open_llm_settings(app, tk_root)
         dialog.llm_base_url_var.set("https://api.deepseek.com")
         _find_button(dialog, "保存").invoke()
         assert load_app_config()["llm_base_url"] == "https://api.deepseek.com/v1"
@@ -336,7 +392,7 @@ def test_settings_save_persists_the_new_protocol_value(tk_root, tmp_path):
 
     app, state = _app(tk_root, tmp_path)
     try:
-        dialog = _open_settings(app, tk_root)
+        dialog = _open_llm_settings(app, tk_root)
         assert dialog.llm_protocol_var.get() == "openai-completions"
         dialog.llm_protocol_var.set(PROTOCOL_ANTHROPIC)
         dialog.llm_base_url_var.set("https://api.anthropic.com")
@@ -352,7 +408,7 @@ def test_settings_save_persists_the_new_protocol_value(tk_root, tmp_path):
 def test_settings_exposes_llm_connectivity_test(tk_root, tmp_path):
     app, state = _app(tk_root, tmp_path)
     try:
-        dialog = _open_settings(app, tk_root)
+        dialog = _open_llm_settings(app, tk_root)
         assert hasattr(dialog, "llm_test_button")
         assert hasattr(dialog, "llm_test_result_var")
 
@@ -383,7 +439,7 @@ def test_settings_exposes_llm_connectivity_test(tk_root, tmp_path):
 def test_settings_test_button_shows_failure(tk_root, tmp_path):
     app, state = _app(tk_root, tmp_path)
     try:
-        dialog = _open_settings(app, tk_root)
+        dialog = _open_llm_settings(app, tk_root)
         state.test_llm_cover = lambda **kwargs: (False, "请求失败")  # type: ignore[assignment]
         _find_button(dialog, "测试连接").invoke()
         assert "请求失败" in dialog.llm_test_result_var.get()

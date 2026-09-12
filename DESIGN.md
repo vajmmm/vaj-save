@@ -295,11 +295,15 @@ saturated accent fill.
   the library's `settings.json`; `0` means unlimited. A blank/negative/non-numeric
   entry is rejected with a status warning, the dialog stays open, and
   `settings.json` is left untouched. Changing the value never prunes existing
-  versions — pruning still happens only when a new version is added.
-- **Optional LLM cover disambiguation** sits below `keep_last` and exposes four
-  fields: a 启用 toggle, a 协议 selector (`openai-completions` /
+  versions — pruning still happens only when a new version is added. A
+  「打开设置…」 entry button at the bottom of the dialog opens the LLM settings;
+  no LLM field remains inline, so the main dialog stays short.
+- **Optional LLM cover disambiguation** lives in its own non-resizable
+  「LLM 封面消歧」 dialog reached from that entry button, and exposes the same
+  fields it used to: a 启用 toggle, a 协议 selector (`openai-completions` /
   `anthropic-messages`), a Base URL field, a masked API 密钥 field and a 模型 ID
-  field. Gemini is deliberately not offered; the pre-rename `openai` /
+  field, with its own 测试连接 / 保存 actions. Gemini is deliberately not
+  offered; the pre-rename `openai` /
   `anthropic` protocol values are still accepted and any unknown value falls back
   to `openai-completions`. The toggle, the key, the protocol, the base URL and the
   model are persisted to `config.json` (so they survive a restart); a blank base

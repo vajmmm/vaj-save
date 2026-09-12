@@ -73,7 +73,7 @@ HELP_TEXT = (
     "默认预设为 Checkpoint，连不上可切换回退预设 ftpd；全程只读，不会写入掌机。\n"
     "· 设置：可修改本地备份库路径、可选 ROM 目录与保留版本数"
     "（0 表示不限制）。\n"
-    "· 封面消歧：设置里选填协议 / Base URL / API 密钥 / 模型 ID 后，"
+    "· 封面消歧：在设置里点「LLM 封面消歧」进入单独设置页，选填协议 / Base URL / API 密钥 / 模型 ID 后，"
     "点「测试连接」会发一条简单消息验证能否正常返回；"
     "请求与结果记录在备份库根目录的 llm-cover.log（不含 API 密钥）。"
 )
@@ -1539,90 +1539,27 @@ class VajSaveApp:
         else:
             self.update_status("LLM 封面消歧设置已更新")
 
-    def on_help_clicked(self) -> None:
-        """Open the short guide; the archive direction is the point."""
-        dialog = tk.Toplevel(self.root)
-        dialog.title("帮助")
-        dialog.configure(bg=BG)
-        dialog.transient(self.root)
-        dialog.resizable(False, False)
-        tk.Label(dialog, text="使用说明", bg=BG, fg=INK, font=ui_font(15, "bold")).pack(
-            anchor="w", padx=16, pady=(16, 6)
-        )
-        tk.Label(
-            dialog,
-            text=HELP_TEXT,
-            bg=BG,
-            fg=TEXT,
-            font=ui_font(12),
-            justify=tk.LEFT,
-            anchor="w",
-            wraplength=380,
-        ).pack(anchor="w", padx=16)
-        CanvasButton(dialog, text="关闭", command=dialog.destroy).pack(
-            side=tk.RIGHT, padx=16, pady=16
-        )
-        dialog.grab_set()
+    def on_llm_cover_clicked(self, parent=None) -> None:
+        """Open the dedicated LLM cover-disambiguation dialog.
 
-    def on_settings_clicked(self) -> None:
-        dialog = tk.Toplevel(self.root)
-        dialog.title("设置")
+        The enable toggle, key, protocol, base URL, model and connectivity test
+        used to live at the bottom of the main settings dialog; they are split
+        out here so that dialog never grows into a long scroll. The fields,
+        defaults and persistence are unchanged.
+        """
+        owner = parent or self.root
+        dialog = tk.Toplevel(owner)
+        dialog.title("LLM 封面消歧")
         dialog.configure(bg=BG)
-        dialog.transient(self.root)
+        dialog.transient(owner)
         dialog.resizable(False, False)
 
-        def add_dir_row(label: str, value: str, browse_title: str) -> tk.StringVar:
-            """A labelled directory entry with its own 浏览… button."""
-            tk.Label(dialog, text=label, bg=BG, fg=TEXT, font=ui_font(13, "bold")).pack(anchor="w", padx=16, pady=(12, 6))
-            row = tk.Frame(dialog, bg=BG)
-            row.pack(fill=tk.X, padx=16)
-            var = tk.StringVar(value=value)
-            ttk.Entry(row, textvariable=var, width=42).pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-            def browse() -> None:
-                chosen = filedialog.askdirectory(
-                    title=browse_title,
-                    parent=dialog,
-                    initialdir=var.get() or None,
-                )
-                if chosen:
-                    var.set(chosen)
-
-            CanvasButton(row, text="浏览…", command=browse).pack(side=tk.LEFT, padx=(8, 0))
-            return var
-
-        path_var = add_dir_row("本地备份库路径", str(self.state.library_root), "选择备份库目录")
-        gba_var = add_dir_row("GBA ROM 目录（可选）", str(self.state.gba_rom_dir or ""), "选择 GBA ROM 目录")
-        nds_var = add_dir_row("NDS ROM 目录（可选）", str(self.state.nds_rom_dir or ""), "选择 NDS ROM 目录")
-        meta_var = add_dir_row(
-            "Libretro 元数据目录（可选）",
-            str(self.state.libretro_dir or ""),
-            "选择包含 libretro/No-Intro .dat 的目录",
-        )
-
-        keep_var = tk.StringVar(value=str(load_keep_last(self.state.library_root)))
         tk.Label(
-            dialog,
-            text="保留版本数（0 表示不限制）",
-            bg=BG,
-            fg=TEXT,
-            font=ui_font(13, "bold"),
-        ).pack(anchor="w", padx=16, pady=(12, 6))
-        keep_row = tk.Frame(dialog, bg=BG)
-        keep_row.pack(fill=tk.X, padx=16)
-        ttk.Entry(keep_row, textvariable=keep_var, width=12).pack(side=tk.LEFT)
-        # Exposed so the dialog's bound value is reachable from tests.
-        dialog.keep_last_var = keep_var
+            dialog, text="LLM 封面消歧", bg=BG, fg=INK, font=ui_font(15, "bold")
+        ).pack(anchor="w", padx=16, pady=(16, 6))
 
         # Optional LLM cover disambiguation: off by default, only consulted for
         # a genuinely ambiguous listing, and inert without a key.
-        tk.Label(
-            dialog,
-            text="LLM 封面消歧（可选，仅多候选歧义时）",
-            bg=BG,
-            fg=TEXT,
-            font=ui_font(13, "bold"),
-        ).pack(anchor="w", padx=16, pady=(12, 6))
         llm_row = tk.Frame(dialog, bg=BG)
         llm_row.pack(fill=tk.X, padx=16)
         llm_toggle = CanvasButton(
@@ -1709,6 +1646,136 @@ class VajSaveApp:
         dialog.llm_model_var = llm_model_var
 
         def save() -> None:
+            # Persist immediately; this dialog owns its own 保存 so the main
+            # settings dialog no longer has to carry the LLM fields.
+            self._apply_llm_cover(
+                dialog.llm_cover_button.selected,
+                llm_key_var.get().strip(),
+                llm_base_var.get().strip(),
+                llm_model_var.get().strip(),
+                llm_protocol_var.get().strip(),
+            )
+            dialog.destroy()
+
+        def cancel() -> None:
+            dialog.destroy()
+
+        btn_row = tk.Frame(dialog, bg=BG)
+        btn_row.pack(fill=tk.X, padx=16, pady=16)
+        CanvasButton(btn_row, text="取消", command=cancel).pack(side=tk.RIGHT)
+        CanvasButton(btn_row, text="保存", variant="accent", command=save).pack(
+            side=tk.RIGHT, padx=(0, 8)
+        )
+
+        dialog.grab_set()
+
+        # Taking the grab from the settings dialog releases its modality; hand
+        # it back once this dialog closes so the settings window stays modal.
+        def _restore_parent_grab(event) -> None:
+            if event.widget is not dialog or parent is None:
+                return
+            try:
+                parent.grab_set()
+            except tk.TclError:
+                pass
+
+        dialog.bind("<Destroy>", _restore_parent_grab)
+
+    def on_help_clicked(self) -> None:
+        """Open the short guide; the archive direction is the point."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("帮助")
+        dialog.configure(bg=BG)
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        tk.Label(dialog, text="使用说明", bg=BG, fg=INK, font=ui_font(15, "bold")).pack(
+            anchor="w", padx=16, pady=(16, 6)
+        )
+        tk.Label(
+            dialog,
+            text=HELP_TEXT,
+            bg=BG,
+            fg=TEXT,
+            font=ui_font(12),
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=380,
+        ).pack(anchor="w", padx=16)
+        CanvasButton(dialog, text="关闭", command=dialog.destroy).pack(
+            side=tk.RIGHT, padx=16, pady=16
+        )
+        dialog.grab_set()
+
+    def on_settings_clicked(self) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("设置")
+        dialog.configure(bg=BG)
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+
+        def add_dir_row(label: str, value: str, browse_title: str) -> tk.StringVar:
+            """A labelled directory entry with its own 浏览… button."""
+            tk.Label(dialog, text=label, bg=BG, fg=TEXT, font=ui_font(13, "bold")).pack(anchor="w", padx=16, pady=(12, 6))
+            row = tk.Frame(dialog, bg=BG)
+            row.pack(fill=tk.X, padx=16)
+            var = tk.StringVar(value=value)
+            ttk.Entry(row, textvariable=var, width=42).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            def browse() -> None:
+                chosen = filedialog.askdirectory(
+                    title=browse_title,
+                    parent=dialog,
+                    initialdir=var.get() or None,
+                )
+                if chosen:
+                    var.set(chosen)
+
+            CanvasButton(row, text="浏览…", command=browse).pack(side=tk.LEFT, padx=(8, 0))
+            return var
+
+        path_var = add_dir_row("本地备份库路径", str(self.state.library_root), "选择备份库目录")
+        gba_var = add_dir_row("GBA ROM 目录（可选）", str(self.state.gba_rom_dir or ""), "选择 GBA ROM 目录")
+        nds_var = add_dir_row("NDS ROM 目录（可选）", str(self.state.nds_rom_dir or ""), "选择 NDS ROM 目录")
+        meta_var = add_dir_row(
+            "Libretro 元数据目录（可选）",
+            str(self.state.libretro_dir or ""),
+            "选择包含 libretro/No-Intro .dat 的目录",
+        )
+
+        keep_var = tk.StringVar(value=str(load_keep_last(self.state.library_root)))
+        tk.Label(
+            dialog,
+            text="保留版本数（0 表示不限制）",
+            bg=BG,
+            fg=TEXT,
+            font=ui_font(13, "bold"),
+        ).pack(anchor="w", padx=16, pady=(12, 6))
+        keep_row = tk.Frame(dialog, bg=BG)
+        keep_row.pack(fill=tk.X, padx=16)
+        ttk.Entry(keep_row, textvariable=keep_var, width=12).pack(side=tk.LEFT)
+        # Exposed so the dialog's bound value is reachable from tests.
+        dialog.keep_last_var = keep_var
+
+        # Optional LLM cover disambiguation lives in its own dialog so the main
+        # settings window stays short; this section is only the entry point.
+        tk.Label(
+            dialog,
+            text="LLM 封面消歧（可选，仅多候选歧义时）",
+            bg=BG,
+            fg=TEXT,
+            font=ui_font(13, "bold"),
+        ).pack(anchor="w", padx=16, pady=(12, 6))
+        llm_entry_row = tk.Frame(dialog, bg=BG)
+        llm_entry_row.pack(fill=tk.X, padx=16)
+        llm_entry_button = CanvasButton(
+            llm_entry_row,
+            text="打开设置…",
+            command=lambda: self.on_llm_cover_clicked(dialog),
+        )
+        llm_entry_button.pack(side=tk.LEFT)
+        dialog.llm_cover_entry_button = llm_entry_button
+
+        def save() -> None:
             chosen = path_var.get().strip()
             if not chosen:
                 return
@@ -1724,13 +1791,6 @@ class VajSaveApp:
             self._apply_rom_dirs(gba or None, nds or None)
             self._apply_libretro_dir(meta or None)
             self._apply_keep_last(keep_value)
-            self._apply_llm_cover(
-                dialog.llm_cover_button.selected,
-                llm_key_var.get().strip(),
-                llm_base_var.get().strip(),
-                llm_model_var.get().strip(),
-                llm_protocol_var.get().strip(),
-            )
 
         def cancel() -> None:
             dialog.destroy()
