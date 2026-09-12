@@ -510,7 +510,7 @@ def test_scan_marks_never_backed_up_as_new(tmp_path: Path, psp_sfo_bytes: bytes)
     status = state.save_status(entry)
     assert status.status == "new"
     assert status.mtime_stale is False
-    assert state.hide_unchanged is True
+    assert state.hide_unchanged is False
     assert entry in state.visible_saves()
     assert "新 1" in state.status_text
     assert "有变化 0" in state.status_text
@@ -520,7 +520,7 @@ def test_scan_marks_never_backed_up_as_new(tmp_path: Path, psp_sfo_bytes: bytes)
     assert "进度" not in state.status_text
 
 
-def test_identical_to_latest_is_unchanged_and_hidden(tmp_path: Path, psp_sfo_bytes: bytes):
+def test_identical_to_latest_is_unchanged_shown_by_default(tmp_path: Path, psp_sfo_bytes: bytes):
     root = tmp_path / "PSP_VOL"
     save_dir = _psp_save_tree(root, "ULJM05800", b"same", psp_sfo_bytes)
     lib = tmp_path / "lib"
@@ -534,7 +534,7 @@ def test_identical_to_latest_is_unchanged_and_hidden(tmp_path: Path, psp_sfo_byt
     backup_save(entry, lib, datetime(2026, 1, 1, 10, 0, 0))
 
     state = AppState(library_root=lib)
-    assert state.hide_unchanged is True
+    assert state.hide_unchanged is False
     state.select_mount(root)
 
     scanned = state.all_saves()[0]
@@ -542,8 +542,12 @@ def test_identical_to_latest_is_unchanged_and_hidden(tmp_path: Path, psp_sfo_byt
     assert status.status == "unchanged"
     assert status.mtime_stale is False
     assert status.last_backup_at
-    assert state.visible_saves() == []
+    # Default lists every save, unchanged included.
+    assert scanned in state.visible_saves()
     assert "已备份 1" in state.status_text
+    # The "仅显示有更新" filter then hides the backed-up row.
+    state.toggle_hide_unchanged()
+    assert state.visible_saves() == []
 
 
 def test_content_change_marks_changed(tmp_path: Path, psp_sfo_bytes: bytes):
@@ -594,7 +598,7 @@ def test_matches_older_snapshot_but_not_latest_is_changed(tmp_path: Path, psp_sf
     assert scanned in state.visible_saves()
 
 
-def test_toggle_hide_unchanged_shows_backed_up(tmp_path: Path, psp_sfo_bytes: bytes):
+def test_toggle_updated_only_filter_hides_backed_up(tmp_path: Path, psp_sfo_bytes: bytes):
     root = tmp_path / "PSP_VOL"
     save_dir = _psp_save_tree(root, "ULJM05800", b"same", psp_sfo_bytes)
     lib = tmp_path / "lib"
@@ -609,14 +613,13 @@ def test_toggle_hide_unchanged_shows_backed_up(tmp_path: Path, psp_sfo_bytes: by
 
     state = AppState(library_root=lib)
     state.select_mount(root)
-    assert state.visible_saves() == []
+    # Default shows the unchanged save.
+    assert len(state.visible_saves()) == 1
 
-    shown = state.toggle_hide_unchanged()
-    assert shown is False  # hide_unchanged now False
-    assert state.hide_unchanged is False
-    visible = state.visible_saves()
-    assert len(visible) == 1
-    assert state.save_status(visible[0]).status == "unchanged"
+    toggled = state.toggle_hide_unchanged()
+    assert toggled is True  # hide_unchanged now True
+    assert state.hide_unchanged is True
+    assert state.visible_saves() == []
 
 
 def test_hash_failure_does_not_break_select_mount(tmp_path: Path, psp_sfo_bytes: bytes, monkeypatch):
@@ -696,6 +699,9 @@ def test_import_visible_skips_hidden_unchanged(tmp_path: Path, psp_sfo_bytes: by
 
     state = AppState(library_root=lib)
     state.select_mount(root)
+    assert state.hide_unchanged is False
+    # Enable "仅显示有更新" so unchanged rows drop out of the visible list.
+    state.toggle_hide_unchanged()
     assert state.hide_unchanged is True
     visible = state.visible_saves()
     assert len(visible) == 1
@@ -762,7 +768,10 @@ def test_identical_hash_ignores_mtime_jitter(tmp_path: Path, psp_sfo_bytes: byte
     status = state.save_status(state.all_saves()[0])
     assert status.status == "unchanged"
     assert status.mtime_stale is False
-    # still hidden by default — mtime must not override list filtering
+    # shown by default — mtime must not override list filtering
+    assert state.all_saves()[0] in state.visible_saves()
+    # "仅显示有更新" still hides it despite the mtime jitter
+    state.toggle_hide_unchanged()
     assert state.visible_saves() == []
 
 
@@ -778,6 +787,9 @@ def test_backup_refreshes_status_to_unchanged(tmp_path: Path, psp_sfo_bytes: byt
     dest = state.import_save(entry)
     assert dest is not None
     assert state.save_status(entry).status == "unchanged"
+    # Default keeps the backed-up row visible; the filter hides it.
+    assert entry in state.visible_saves()
+    state.toggle_hide_unchanged()
     assert state.visible_saves() == []
 
 
@@ -803,6 +815,8 @@ def test_import_selected_saves(tmp_path: Path, psp_sfo_bytes: bytes):
     lib = tmp_path / "lib"
     state = AppState(library_root=lib)
     state.select_mount(root)
+    # Focus on updated saves so the backup-hidden transition is observable.
+    state.toggle_hide_unchanged()
     all_visible = state.visible_saves()
     assert len(all_visible) == 2
     chosen = [all_visible[0]]
