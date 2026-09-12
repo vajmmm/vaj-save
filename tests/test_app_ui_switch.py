@@ -635,6 +635,28 @@ def test_toggle_buttons_invoke_and_sync_selected(tk_root, tmp_path):
         _dispose(app, tk_root)
 
 
+def test_updated_only_filter_label_default_and_status(tk_root, tmp_path):
+    """The filter reads "仅显示有更新", is off by default, and mirrors state in status."""
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    app = build_app(state=state, root=tk_root)
+    try:
+        assert app._hide_unchanged_button._text == "仅显示有更新"
+        assert state.hide_unchanged is False
+        assert app._hide_unchanged_button.selected is False
+
+        app._hide_unchanged_button.invoke()
+        assert state.hide_unchanged is True
+        assert app._hide_unchanged_button.selected is True
+        assert app.status_label_var.get() == "仅显示有更新"
+
+        app._hide_unchanged_button.invoke()
+        assert state.hide_unchanged is False
+        assert app._hide_unchanged_button.selected is False
+        assert app.status_label_var.get() == "显示全部存档"
+    finally:
+        _dispose(app, tk_root)
+
+
 def test_refresh_platform_ui_reuses_rows(tk_root, tmp_path):
     state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
     app = build_app(state=state, root=tk_root)

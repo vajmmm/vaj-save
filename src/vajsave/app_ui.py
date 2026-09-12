@@ -212,7 +212,8 @@ class VajSaveApp:
         self._rows_by_path: Dict[str, dict] = {}
         self._row_index_by_path: Dict[str, int] = {}
         self._watch_var = tk.BooleanVar(value=True)
-        self._hide_unchanged_var = tk.BooleanVar(value=True)
+        # "仅显示有更新" starts off so every save is listed by default.
+        self._hide_unchanged_var = tk.BooleanVar(value=False)
         self._poll_interval_ms = 200
         # Enough for the first paint to land before the opening scan starts.
         self._initial_select_delay_ms = 60
@@ -661,7 +662,7 @@ class VajSaveApp:
         self._watch_button.set_selected(bool(self._watch_var.get()))
         self._bottom_buttons.append(self._watch_button)
         self._hide_unchanged_var.set(bool(self.state.hide_unchanged))
-        self._hide_unchanged_button = CanvasButton(self.statusrow, text="隐藏已备份", command=self.on_hide_unchanged_button_clicked, height=30, padding=9)
+        self._hide_unchanged_button = CanvasButton(self.statusrow, text="仅显示有更新", command=self.on_hide_unchanged_button_clicked, height=30, padding=9)
         self._hide_unchanged_button.pack(side=tk.RIGHT, padx=(0, 6))
         self._hide_unchanged_button.set_selected(bool(self._hide_unchanged_var.get()))
         self._bottom_buttons.append(self._hide_unchanged_button)
@@ -732,7 +733,7 @@ class VajSaveApp:
         self.refresh_saves_ui()
 
     def on_hide_unchanged_button_clicked(self) -> None:
-        """CanvasButton for "隐藏已备份": flip the flag, then run the shared handler."""
+        """CanvasButton for "仅显示有更新": flip the filter, then run the shared handler."""
         self._hide_unchanged_var.set(not self._hide_unchanged_var.get())
         self.on_hide_unchanged_toggle()
 
@@ -745,7 +746,7 @@ class VajSaveApp:
         if button is not None:
             button.set_selected(bool(self._hide_unchanged_var.get()))
         self.refresh_saves_ui()
-        self.update_status("已隐藏已备份" if self.state.hide_unchanged else "显示已备份")
+        self.update_status("仅显示有更新" if self.state.hide_unchanged else "显示全部存档")
 
     def on_refresh_clicked(self) -> None:
         self.state.refresh_volumes()

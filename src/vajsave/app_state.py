@@ -163,7 +163,9 @@ class AppState:
         self.selected_platform: str = "all"
         self.search_query: str = ""
         self.starred_only: bool = False
-        self.hide_unchanged: bool = True
+        # Backwards-compatible filter flag: False shows every save (new/changed/
+        # unchanged); True is the "仅显示有更新" filter and hides unchanged rows.
+        self.hide_unchanged: bool = False
         self._backup_statuses: Dict[str, SaveBackupStatus] = {}
 
         self.event_queue: "queue.Queue[tuple[str, VolumeInfo]]" = queue.Queue()
@@ -489,6 +491,8 @@ class AppState:
                 for save in saves
                 if (catalog.games.get(game_key(save)) and catalog.games[game_key(save)].starred)
             ]
+        # Filter combination is unchanged: new + changed stay visible, only
+        # unchanged rows are dropped when "仅显示有更新" is active.
         if self.hide_unchanged:
             saves = [save for save in saves if self.save_status(save).status != "unchanged"]
         return saves

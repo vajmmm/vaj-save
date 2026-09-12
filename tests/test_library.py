@@ -131,11 +131,13 @@ def test_app_state_import_selected_and_visible(tmp_path: Path, psp_sfo_bytes: by
     assert "已保存到本地" in state.status_text
     assert (library / "psp" / "ULJM05800").exists()
     assert (save_dir / "DATA.BIN").read_bytes() == b"DATA"
-    # Backed-up identical content is unchanged and hidden by default.
+    # Backed-up identical content is unchanged; default lists every save.
     assert state.save_status(entry).status == "unchanged"
-    assert state.visible_saves() == []
+    assert len(state.visible_saves()) == 1
 
-    # backup-visible skips hidden unchanged
+    # backup-visible with "仅显示有更新" skips hidden unchanged
+    state.toggle_hide_unchanged()
+    assert state.visible_saves() == []
     copied = state.import_visible_saves()
     assert copied == []
 
