@@ -331,9 +331,9 @@ class ArtworkService:
             if matched:
                 break
         if not matched:
-            # Deterministic matching is exhausted. Only a genuine multi-title
-            # ambiguity is eligible for the optional LLM; region variants were
-            # already resolved above, and a no-match query has no candidates.
+            # Deterministic matching is exhausted. The optional LLM is offered
+            # the strict ambiguous pools first, then the looser word-overlap
+            # pools; region variants were already resolved above.
             matched = self._choose_listing_with_llm(filenames, names)
         if not matched:
             return None
@@ -363,28 +363,26 @@ class ArtworkService:
     ) -> Optional[str]:
         """Offer the optional chooser a candidate pool from the listing.
 
-        The strict pool (full token containment, conflicting titles) is
-        authoritative: whenever any query yields strict candidates they are the
-        only ones offered. Only when *no* query does is a looser word-overlap
-        pool offered, so the old strict hand-off and the deterministic path are
-        unchanged. No chooser, a chooser error, or a name outside the offered
-        list all resolve to ``None`` so the caller keeps the placeholder and
-        never writes the cache.
+        The strict pool (full token containment, conflicting titles) is tried
+        first. When it yields no valid answer -- either because no query has
+        strict candidates or because the chooser returned nothing for every
+        strict pool -- the looser word-overlap pool is offered so a real file
+        name the strict matcher cannot line up can still resolve. A pool already
+        offered is never repeated. No chooser, a chooser error, or a name
+        outside the offered list all resolve to ``None`` so the caller keeps the
+        placeholder and never writes the cache.
         """
         if self.llm_chooser is None:
             return None
-        strict_seen = False
+        seen_pools = set()
         for query in names:
             candidates = ambiguous_boxart_matches(filenames, query)
-            if not candidates:
+            if not candidates or candidates in seen_pools:
                 continue
-            strict_seen = True
+            seen_pools.add(candidates)
             choice = self._ask_listing_chooser(candidates, query)
             if choice is not None:
                 return choice
-        if strict_seen:
-            return None
-        seen_pools = set()
         for query in names:
             candidates = loose_boxart_candidates(filenames, query)
             if not candidates or candidates in seen_pools:

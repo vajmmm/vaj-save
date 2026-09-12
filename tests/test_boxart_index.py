@@ -188,6 +188,31 @@ def test_loose_boxart_candidates_match_on_a_single_shared_word():
     )
 
 
+def test_loose_boxart_candidates_rank_concatenated_words_first():
+    """A listing word written as one token outranks a neighbour that merely
+    shares words with the query: ``Heart Gold`` vs ``HeartGold`` and
+    ``3 G`` vs ``3G``. A parenthetical gloss in the query (``(Try)``) is
+    ignored so the concatenation still lines up."""
+    heart_gold = (
+        "Pokemon - SoulSilver Version (USA).png",
+        "Pokemon - HeartGold Version (USA).png",
+    )
+    assert loose_boxart_candidates(heart_gold, "Pokemon Heart Gold") == (
+        "Pokemon - HeartGold Version (USA).png",
+        "Pokemon - SoulSilver Version (USA).png",
+    )
+    monster = (
+        "Monster Hunter 3 Ultimate (USA).png",
+        "Monster Hunter 3G (Japan).png",
+    )
+    assert loose_boxart_candidates(monster, "Monster Hunter 3 G")[0] == (
+        "Monster Hunter 3G (Japan).png"
+    )
+    assert loose_boxart_candidates(monster, "Monster Hunter 3 (Try) G")[0] == (
+        "Monster Hunter 3G (Japan).png"
+    )
+
+
 def test_loose_boxart_candidates_rank_more_shared_words_first():
     names = (
         "Star Fox Adventures (USA).png",

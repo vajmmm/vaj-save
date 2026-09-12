@@ -550,6 +550,24 @@ def test_expand_3ds_checkpoint_id_and_eshop_name_cleanup():
     assert "The Legend of Zelda: A Link Between Worlds (USA)" in names
 
 
+def test_clean_eshop_name_keeps_ascii_parentheticals():
+    """Only a Japanese parenthetical is dropped; ASCII parentheses (a
+    pronunciation gloss or a region tag) survive it."""
+    from vajsave.artwork.title_ids import clean_eshop_name
+
+    assert (
+        clean_eshop_name("Monster Hunter 3 (Try) G(モンスターハンター3(トライ)G)")
+        == "Monster Hunter 3 (Try) G"
+    )
+    assert clean_eshop_name("Game Name (USA) (日本)") == "Game Name (USA)"
+    assert clean_eshop_name("モンスターハンター3(トライ)G") == "モンスターハンター3G"
+    # The existing TM/HTML cleanup is unchanged for a name without parens.
+    assert (
+        clean_eshop_name("The Legend of Zelda™: <br>A Link Between Worlds")
+        == "The Legend of Zelda: A Link Between Worlds"
+    )
+
+
 def test_ensure_cover_for_title_uses_3ds_title_id_when_folder_name_misses(tmp_path: Path):
     library = tmp_path / "lib"
     cache = CoverCache(library / COVER_CACHE_DIR)
@@ -1016,6 +1034,66 @@ def test_ensure_cover_for_title_llm_does_not_widen_beyond_strict_pool(
         (("Mario Kart 7 (USA).png", "Mario Party (USA).png"), "Mario")
     ]
     assert cache.lookup("3ds", "3ds:name:mario") is None
+
+
+def test_ensure_cover_for_title_llm_falls_back_to_loose_pool_after_strict_none(
+    tmp_path: Path,
+):
+    """A strict pool the chooser cannot resolve must not block the looser
+    word-overlap pool: when the strict answer is ``None`` the loose pool is
+    offered and a valid answer taken from it is downloaded."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="3ds", name="Monster Hunter 3")
+    listing = (
+        '<a href="Monster%20Hunter%203%20Ultimate%20(USA).png">'
+        "Monster Hunter 3 Ultimate (USA).png</a>"
+        '<a href="Monster%20Hunter%203%20Ultimate%20(USA)%20(En,Fr,De,Es,It).png">'
+        "Monster Hunter 3 Ultimate (USA) (En,Fr,De,Es,It).png</a>"
+        '<a href="Monster%20Hunter%203G%20(Japan).png">'
+        "Monster Hunter 3G (Japan).png</a>"
+    )
+    calls = []
+    offered = []
+
+    def opener(url, timeout=None):
+        calls.append(url)
+        if url.endswith("/Named_Boxarts/"):
+            return FakeResponse(listing.encode("utf-8"))
+        if url.endswith("Monster%20Hunter%203G%20(Japan).png"):
+            return FakeResponse(png_bytes())
+        return FakeResponse(b"missing", status=404)
+
+    def chooser(candidates, query):
+        offered.append((tuple(candidates), query))
+        if candidates == (
+            "Monster Hunter 3 Ultimate (USA).png",
+            "Monster Hunter 3 Ultimate (USA) (En,Fr,De,Es,It).png",
+        ):
+            return "NONE"
+        return "Monster Hunter 3G (Japan).png"
+
+    service = ArtworkService(
+        cache=cache,
+        downloader=ArtworkDownloader(urlopen=opener),
+        llm_chooser=chooser,
+    )
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="3ds",
+        title="Monster Hunter 3",
+        identity_key="3ds:0x00481",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_DOWNLOADED
+    assert offered[0][0] == (
+        "Monster Hunter 3 Ultimate (USA).png",
+        "Monster Hunter 3 Ultimate (USA) (En,Fr,De,Es,It).png",
+    )
+    assert any("Monster Hunter 3G (Japan).png" in pool for pool, _ in offered)
+    boxart = [url for url in calls if "Named_Boxarts" in url and url.endswith(".png")]
+    assert boxart and boxart[-1].endswith("Monster%20Hunter%203G%20(Japan).png")
+    assert cache.lookup("3ds", "3ds:0x00481") is not None
 
 
 def test_ensure_cover_for_title_llm_nonsense_is_placeholder_and_uncached(

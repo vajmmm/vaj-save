@@ -41,14 +41,47 @@ def expand_3ds_title_id(value: object) -> Optional[str]:
     return f"{_BASE_GAME_PREFIX}{(number << 8):08x}"
 
 
+def _strip_cjk_parentheticals(text: str) -> str:
+    """Drop each bracketed group whose content contains Japanese/CJK text.
+
+    ASCII parentheses -- a pronunciation gloss (``3 (Try) G``) or a region tag
+    (``(USA)``) -- are kept, so only the appended Japanese name is removed from
+    ``Monster Hunter 3 (Try) G(モンスターハンター3(トライ)G)``. Nested groups
+    (``(トライ)`` inside the outer name) are removed as one unit.
+    """
+    out = []
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char == "(":
+            depth = 0
+            end = index
+            while end < length:
+                if text[end] == "(":
+                    depth += 1
+                elif text[end] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                end += 1
+            if end < length:
+                if _CJK_RE.search(text[index + 1 : end]):
+                    index = end + 1
+                    continue
+                out.append(text[index : end + 1])
+                index = end + 1
+                continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
 def clean_eshop_name(name: str) -> str:
-    """Strip TM marks, HTML, and a trailing Japanese parenthetical."""
+    """Strip TM marks, HTML, and Japanese parentheticals (keeping ASCII ones)."""
     text = _HTML_RE.sub(" ", str(name or ""))
     text = _TRADEMARK_RE.sub("", text)
-    if "(" in text:
-        head, rest = text.split("(", 1)
-        if _CJK_RE.search(rest):
-            text = head
+    text = _strip_cjk_parentheticals(text)
     return re.sub(r"\s+", " ", text).strip(" -_")
 
 
