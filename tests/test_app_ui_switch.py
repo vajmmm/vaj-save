@@ -133,6 +133,19 @@ def test_list_is_single_column(tk_root):
         grid.destroy()
 
 
+def test_widgets_live_in_ui_widgets_module():
+    from vajsave import ui_widgets
+
+    # The standalone widgets moved next to their tokens; ``app_ui`` re-exports
+    # them so existing imports keep working.
+    assert app_ui.CanvasButton is ui_widgets.CanvasButton
+    assert app_ui.SaveList is ui_widgets.SaveList
+    assert app_ui.ui_font is ui_widgets.ui_font
+    assert app_ui._truncate_ui_text is ui_widgets._truncate_ui_text
+    # The app shell itself stays in ``app_ui``.
+    assert not hasattr(ui_widgets, "VajSaveApp")
+
+
 def test_no_tile_pill_star_bar_or_monogram_items(tk_root):
     grid = _grid(tk_root)
     try:
@@ -391,6 +404,29 @@ def _app_with_volume(tk_root, tmp_path, psp_sfo_bytes, title_ids=("ULJM05800", "
 def test_tile_grid_widget_is_gone():
     assert not hasattr(app_ui, "SaveTileGrid")
     assert hasattr(app_ui, "SaveList")
+
+
+def test_enrichment_entrypoints_share_one_worker(tk_root, tmp_path):
+    from vajsave.identity import GameIdentity, resolved
+
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    app = build_app(state=state, root=tk_root)
+    try:
+        entry = SaveEntry(
+            platform="gba", source_id="gba", display_name="Apotris", path="/tmp/Apotris.sav"
+        )
+        identity = GameIdentity(identity_key="gba:sha1:aa", platform="gba", title="Apotris", rom_sha1="aa")
+        result = resolved(identity)
+
+        # Both the inspector and the eager list must funnel through the one
+        # shared worker instead of each defining its own task closure.
+        calls = []
+        app._submit_enrichment = lambda save, res, callback: calls.append((save.path, res))
+        app._request_enrichment(entry, result)
+        app._submit_row_enrichment(entry, result, app._list_generation)
+        assert calls == [(entry.path, result), (entry.path, result)]
+    finally:
+        _dispose(app, tk_root)
 
 
 def test_app_list_matches_visible_saves_and_wires_selection(tk_root, tmp_path, psp_sfo_bytes):
