@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import json
 import urllib.request
-from typing import Any, Callable, Optional, Sequence
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Optional, Sequence, Tuple, Union
 
 # OpenAI-compatible chat-completions endpoint; overridable for tests and for
 # self-hosted gateways.
@@ -34,6 +36,11 @@ DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_LLM_MODEL = "gpt-4o-mini"
 DEFAULT_LLM_TIMEOUT = 15.0
 MAX_LLM_RESPONSE_BYTES = 256 * 1024
+
+# Debug log written next to the library root when a chooser is built with a
+# ``log_path``. Every request/result line is appended here so the user can see
+# what was sent and what came back. The API key is never written.
+LLM_LOG_NAME = "llm-cover.log"
 
 # Selectable wire protocols. Gemini is deliberately not implemented: only the
 # OpenAI chat-completions shape and the Anthropic messages shape are supported.
@@ -168,6 +175,7 @@ class LLMCoverChooser:
         timeout: float = DEFAULT_LLM_TIMEOUT,
         protocol: object = DEFAULT_LLM_PROTOCOL,
         urlopen: Optional[Callable[..., Any]] = None,
+        log_path: Optional[Union[str, Path]] = None,
     ) -> None:
         self._api_key = str(api_key or "").strip()
         self.protocol = normalize_protocol(protocol)
@@ -175,6 +183,21 @@ class LLMCoverChooser:
         self.base_url = normalize_base_url(base_url, self.protocol).rstrip("/")
         self.timeout = float(timeout)
         self._urlopen = urlopen or urllib.request.urlopen
+        # ``None`` keeps the chooser silent (used by unit tests); the app passes
+        # a real path so the exchange can be inspected after the fact.
+        self._log_path = Path(log_path) if log_path else None
+
+    def _log(self, message: str) -> None:
+        """Append one timestamped debug line; never raises, never logs the key."""
+        if self._log_path is None:
+            return
+        try:
+            self._log_path.parent.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            with self._log_path.open("a", encoding="utf-8") as handle:
+                handle.write(f"[{stamp}] {message}\n")
+        except Exception:  # noqa: BLE001 - a debug log must never break a lookup
+            pass
 
     def __repr__(self) -> str:  # pragma: no cover - trivial formatting
         return (
@@ -191,11 +214,23 @@ class LLMCoverChooser:
         if not self._api_key or not names:
             return None
         request = self._build_request(names, query)
+        endpoint = getattr(request, "full_url", "") or ""
+        self._log(
+            f"request protocol={self.protocol} model={self.model} "
+            f"endpoint={endpoint} query={str(query or '').strip()!r} "
+            f"candidates={len(names)}"
+        )
+        for name in names:
+            self._log(f"  candidate: {name}")
         try:
             response = self._urlopen(request, timeout=self.timeout)
-        except Exception:  # noqa: BLE001 - offline/timeout/HTTP all mean "no choice"
+        except Exception as exc:  # noqa: BLE001 - offline/timeout/HTTP all mean "no choice"
+            self._log(f"result error={type(exc).__name__}: {exc}")
             return None
         try:
+            status = getattr(response, "status", None)
+            if status is None:
+                status = getattr(response, "code", None)
             raw = self._read_response(response)
         finally:
             close = getattr(response, "close", None)
@@ -205,8 +240,54 @@ class LLMCoverChooser:
                 except Exception:  # noqa: BLE001
                     pass
         if raw is None:
+            self._log(f"result status={status} -> no usable response")
             return None
-        return _match_choice(_extract_content(raw, self.protocol), names)
+        choice = _match_choice(_extract_content(raw, self.protocol), names)
+        self._log(f"result status={status} choice={choice!r}")
+        return choice
+
+    def probe(self) -> Tuple[bool, str]:
+        """Send one tiny message to check the endpoint/model/key actually work.
+
+        Returns ``(ok, detail)``: ``detail`` is the model's trimmed reply on
+        success, or a short reason on failure. Never raises and never includes
+        the API key, so it is safe to show in the status bar.
+        """
+        if not self._api_key:
+            return False, "请先填写 API 密钥"
+        if not str(self.model or "").strip():
+            return False, "请先填写模型 ID"
+        prompt = "ping"
+        if self.protocol == PROTOCOL_ANTHROPIC:
+            request = self._build_anthropic_request(prompt)
+        else:
+            request = self._build_openai_request(prompt)
+        endpoint = getattr(request, "full_url", "") or ""
+        self._log(f"probe protocol={self.protocol} model={self.model} endpoint={endpoint}")
+        try:
+            response = self._urlopen(request, timeout=self.timeout)
+        except Exception as exc:  # noqa: BLE001 - report, never raise
+            self._log(f"probe error={type(exc).__name__}: {exc}")
+            return False, f"请求失败: {type(exc).__name__}: {exc}"
+        try:
+            status = getattr(response, "status", None)
+            if status is None:
+                status = getattr(response, "code", None)
+            raw = self._read_response(response)
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001
+                    pass
+        if raw is None:
+            self._log(f"probe status={status} -> no usable response")
+            return False, f"模型返回异常（HTTP {status}）"
+        reply = (_extract_content(raw, self.protocol) or "").strip()
+        text = reply or "(空回复)"
+        self._log(f"probe status={status} reply={text!r}")
+        return True, text
 
     def _build_request(self, names: Sequence[str], query: str):
         listing = "\n".join(f"- {name}" for name in names)
@@ -287,6 +368,7 @@ def choose_cover_filename(
     timeout: float = DEFAULT_LLM_TIMEOUT,
     protocol: object = DEFAULT_LLM_PROTOCOL,
     urlopen: Optional[Callable[..., Any]] = None,
+    log_path: Optional[Union[str, Path]] = None,
 ) -> Optional[str]:
     """Convenience wrapper around :class:`LLMCoverChooser`.
 
@@ -302,6 +384,7 @@ def choose_cover_filename(
         timeout=timeout,
         protocol=proto,
         urlopen=urlopen,
+        log_path=log_path,
     )
     return chooser.choose(candidates, query)
 
@@ -316,6 +399,7 @@ __all__ = [
     "DEFAULT_LLM_PROTOCOL",
     "DEFAULT_LLM_TIMEOUT",
     "LLM_PROTOCOLS",
+    "LLM_LOG_NAME",
     "LLMCoverChooser",
     "PROTOCOL_ANTHROPIC",
     "PROTOCOL_OPENAI",

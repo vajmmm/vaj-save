@@ -335,3 +335,92 @@ def test_chooser_completes_a_missing_v1_endpoint():
         api_key="sk", base_url="https://api.deepseek.com", protocol=PROTOCOL_OPENAI
     )
     assert chooser.base_url == "https://api.deepseek.com/v1"
+
+
+# --- debug log + connectivity probe ------------------------------------------
+
+
+def test_choose_writes_debug_log_without_the_key(tmp_path):
+    log = tmp_path / "llm-cover.log"
+    choice = choose_cover_filename(
+        _CANDIDATES,
+        "Mario",
+        api_key="sk-secret-value",
+        urlopen=lambda request, timeout=None: _chat_response("Mario Party (USA).png"),
+        log_path=log,
+    )
+    assert choice == "Mario Party (USA).png"
+    text = log.read_text(encoding="utf-8")
+    assert "request" in text and "result" in text
+    assert "Mario" in text
+    assert "Mario Party (USA).png" in text
+    assert "sk-secret-value" not in text
+
+
+def test_choose_logs_failure_reason(tmp_path):
+    log = tmp_path / "llm-cover.log"
+
+    def boom(request, timeout=None):
+        raise urllib.error.URLError("offline")
+
+    assert (
+        choose_cover_filename(
+            _CANDIDATES, "Mario", api_key="sk", urlopen=boom, log_path=log
+        )
+        is None
+    )
+    text = log.read_text(encoding="utf-8")
+    assert "error" in text and "URLError" in text
+
+
+def test_probe_reports_the_reply_and_logs(tmp_path):
+    log = tmp_path / "llm-cover.log"
+    chooser = LLMCoverChooser(
+        api_key="sk-test",
+        urlopen=lambda request, timeout=None: _chat_response("OK"),
+        log_path=log,
+    )
+    ok, detail = chooser.probe()
+    assert ok is True
+    assert detail == "OK"
+    text = log.read_text(encoding="utf-8")
+    assert "probe" in text and "OK" in text
+    assert "sk-test" not in text
+
+
+def test_probe_reports_http_failure_and_accepts_anthropic(tmp_path):
+    failing = LLMCoverChooser(
+        api_key="sk-test",
+        urlopen=lambda request, timeout=None: FakeResponse(b"{}", status=401),
+    )
+    ok, detail = failing.probe()
+    assert ok is False
+    assert "401" in detail
+
+    body = {"content": [{"type": "text", "text": "OK"}]}
+    anthropic = LLMCoverChooser(
+        api_key="sk",
+        protocol=PROTOCOL_ANTHROPIC,
+        urlopen=lambda request, timeout=None: FakeResponse(
+            json.dumps(body).encode("utf-8"), status=200
+        ),
+    )
+    assert anthropic.probe() == (True, "OK")
+
+
+def test_probe_refuses_without_a_key_and_never_calls_the_network():
+    def boom(request, timeout=None):
+        raise AssertionError("probe must not hit the network without a key")
+
+    ok, detail = LLMCoverChooser(api_key="", urlopen=boom).probe()
+    assert ok is False
+    assert "密钥" in detail
+
+
+def test_debug_log_is_optional(tmp_path):
+    """No ``log_path`` means no file is written anywhere."""
+    LLMCoverChooser(
+        api_key="sk",
+        urlopen=lambda request, timeout=None: _chat_response("OK"),
+    ).probe()
+    assert list(tmp_path.iterdir()) == []

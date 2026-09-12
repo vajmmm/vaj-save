@@ -347,3 +347,45 @@ def test_settings_save_persists_the_new_protocol_value(tk_root, tmp_path):
         assert config["llm_base_url"] == "https://api.anthropic.com/v1"
     finally:
         _dispose(app, tk_root)
+
+
+def test_settings_exposes_llm_connectivity_test(tk_root, tmp_path):
+    app, state = _app(tk_root, tmp_path)
+    try:
+        dialog = _open_settings(app, tk_root)
+        assert hasattr(dialog, "llm_test_button")
+        assert hasattr(dialog, "llm_test_result_var")
+
+        calls = {}
+
+        def fake_test(**kwargs):
+            calls.update(kwargs)
+            return True, "OK"
+
+        state.test_llm_cover = fake_test  # type: ignore[assignment]
+        dialog.llm_api_key_var.set("sk-ui")
+        dialog.llm_base_url_var.set("https://example.test/v1")
+        dialog.llm_model_var.set("model-x")
+        dialog.llm_protocol_var.set("openai-completions")
+
+        _find_button(dialog, "测试连接").invoke()
+
+        assert "OK" in dialog.llm_test_result_var.get()
+        assert calls["api_key"] == "sk-ui"
+        assert calls["base_url"] == "https://example.test/v1"
+        assert calls["model"] == "model-x"
+        assert calls["protocol"] == "openai-completions"
+        assert "sk-ui" not in state.status_text
+    finally:
+        _dispose(app, tk_root)
+
+
+def test_settings_test_button_shows_failure(tk_root, tmp_path):
+    app, state = _app(tk_root, tmp_path)
+    try:
+        dialog = _open_settings(app, tk_root)
+        state.test_llm_cover = lambda **kwargs: (False, "请求失败")  # type: ignore[assignment]
+        _find_button(dialog, "测试连接").invoke()
+        assert "请求失败" in dialog.llm_test_result_var.get()
+    finally:
+        _dispose(app, tk_root)

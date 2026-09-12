@@ -42,6 +42,7 @@ from .artwork import (
     ArtworkService,
     CoverCache,
     LLMCoverChooser,
+    LLM_LOG_NAME,
     default_base_url,
     default_model,
     normalize_base_url,
@@ -483,7 +484,43 @@ class AppState:
             model=self.llm_model,
             base_url=self.llm_base_url,
             protocol=self.llm_protocol,
+            log_path=self.llm_log_path(),
         )
+
+    def llm_log_path(self) -> Path:
+        """Where the optional LLM request/result debug log is written."""
+        return Path(self.library_root) / LLM_LOG_NAME
+
+    def test_llm_cover(
+        self,
+        *,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        model: Optional[str] = None,
+        protocol: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """Send one tiny message with the current settings; never raises.
+
+        Works whether or not the feature is enabled so the user can verify the
+        endpoint/model/key before turning it on. The keyword arguments let the
+        settings dialog test values that have not been saved yet; ``None`` keeps
+        the stored value. Returns ``(ok, detail)`` with a short, key-free
+        message suitable for the status bar.
+        """
+        key = self.llm_api_key if api_key is None else str(api_key).strip()
+        if not key:
+            return False, "请先填写 API 密钥"
+        chooser = LLMCoverChooser(
+            api_key=key,
+            model=self.llm_model if model is None else model,
+            base_url=self.llm_base_url if base_url is None else base_url,
+            protocol=self.llm_protocol if protocol is None else protocol,
+            log_path=self.llm_log_path(),
+        )
+        try:
+            return chooser.probe()
+        except Exception as exc:  # noqa: BLE001 - a test must never crash the UI
+            return False, f"测试失败: {type(exc).__name__}"
 
     @staticmethod
     def _follow_protocol_default(

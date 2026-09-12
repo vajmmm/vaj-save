@@ -319,6 +319,14 @@ saturated accent fill.
   a disabled/blank configuration keeps multi-candidate behaviour byte-for-byte
   as before (placeholder, no network). A failed, nonsense or `NONE` answer leaves
   the placeholder in place and writes nothing to the cover cache.
+- **LLM debug log + connectivity test.** Every chooser request and result is
+  appended to `<library_root>/llm-cover.log` (protocol, model, endpoint, query,
+  candidate names, outcome) so the exchange can be inspected after the fact;
+  the API key is never written. The field carries no payload beyond file names,
+  so the request body itself is not logged. A **测试连接** button below the 模型 ID
+  field sends one tiny message with the values currently typed (saved or not)
+  and shows the model's reply inline plus the status bar, so the endpoint / model
+  / key can be verified before enabling the feature.
 - **帮助** opens a short, non-resizable guide. Its copy makes the archive
   direction explicit ("把掌机存档备份到电脑，不会写入掌机") and separates 备份 from
   the copy-to-folder 恢复. It replaces the old "帮助中心暂未配置" placeholder status.

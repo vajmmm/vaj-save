@@ -72,7 +72,10 @@ HELP_TEXT = (
     "· FTP：机上开启 FTP 服务器后，点设备区「FTP 拉取」把存档拉到本地缓存再扫描。"
     "默认预设为 Checkpoint，连不上可切换回退预设 ftpd；全程只读，不会写入掌机。\n"
     "· 设置：可修改本地备份库路径、可选 ROM 目录与保留版本数"
-    "（0 表示不限制）。"
+    "（0 表示不限制）。\n"
+    "· 封面消歧：设置里选填协议 / Base URL / API 密钥 / 模型 ID 后，"
+    "点「测试连接」会发一条简单消息验证能否正常返回；"
+    "请求与结果记录在备份库根目录的 llm-cover.log（不含 API 密钥）。"
 )
 
 
@@ -1668,6 +1671,37 @@ class VajSaveApp:
             anchor="w", padx=16, pady=(8, 2)
         )
         ttk.Entry(dialog, textvariable=llm_model_var).pack(fill=tk.X, padx=16)
+
+        # One-click connectivity check: sends a tiny "ping" with the values
+        # currently typed (saved or not) and shows the model's reply inline.
+        llm_test_row = tk.Frame(dialog, bg=BG)
+        llm_test_row.pack(fill=tk.X, padx=16, pady=(8, 0))
+        llm_test_result = tk.StringVar(value="")
+
+        def run_llm_test() -> None:
+            ok, detail = self.state.test_llm_cover(
+                api_key=llm_key_var.get().strip(),
+                base_url=llm_base_var.get().strip(),
+                model=llm_model_var.get().strip(),
+                protocol=llm_protocol_var.get().strip(),
+            )
+            llm_test_result.set(("✓ " if ok else "✗ ") + detail)
+            self.update_status(f"LLM 测试：{detail}")
+            self.update_warning("" if ok else f"LLM 测试失败：{detail}")
+
+        llm_test_button = CanvasButton(
+            llm_test_row, text="测试连接", command=run_llm_test
+        )
+        llm_test_button.pack(side=tk.LEFT)
+        tk.Label(
+            llm_test_row,
+            textvariable=llm_test_result,
+            bg=BG,
+            fg=MUTED_STRONG,
+            font=ui_font(11),
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        dialog.llm_test_button = llm_test_button
+        dialog.llm_test_result_var = llm_test_result
 
         dialog.llm_protocol_var = llm_protocol_var
         dialog.llm_protocol_combo = llm_protocol_combo
