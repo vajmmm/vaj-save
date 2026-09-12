@@ -6,10 +6,15 @@ fanning out into more guessed variants, :func:`unique_boxart_match` accepts a
 listing entry only when it is unambiguous: several region/language variants of
 **one** normalised title resolve to the USA release, while two genuinely
 different titles stay rejected rather than picked arbitrarily.  When even that
-strict matcher cannot line up a candidate, :func:`loose_boxart_candidates`
-offers a scored, capped word-overlap pool (stopwords and parenthetical glosses
-ignored, concatenated words ranked first) to the optional LLM so a real file
-name whose words merely overlap the query can still resolve.
+strict matcher cannot line up a candidate, :func:`concatenation_boxart_candidates`
+offers the precise subset whose words the query joins into one token (``3 G``
+-> ``3G``) and :func:`loose_boxart_candidates` a scored, capped word-overlap pool
+(stopwords and parenthetical glosses ignored, concatenated words ranked first)
+to the optional LLM so a real file name whose words merely overlap the query can
+still resolve.  The service offers the concatenation pool before the strict
+ambiguous pools, so a longer title that merely repeats the query words
+(``Monster Hunter 3`` -> ``Monster Hunter 3 Ultimate``) cannot preempt a genuine
+concatenated title (``Monster Hunter 3G``).
 
 The module also owns the one Checkpoint naming rule that changes the libretro
 *system*: a 3DS save with **no** usable 3DS title id whose display name is a DS
@@ -320,6 +325,45 @@ def loose_boxart_candidates(
     return tuple(name for _, _, _, name in capped)
 
 
+def concatenation_boxart_candidates(
+    filenames: Sequence[str],
+    query: Any,
+    *,
+    limit: int = MAX_LOOSE_CANDIDATES,
+) -> Tuple[str, ...]:
+    """Entries whose words a query's tokens join into one token.
+
+    A real file name that concatenates the query's words (``3 G`` -> ``3G``,
+    ``Heart Gold`` -> ``HeartGold``) is a much stronger signal than the token
+    containment :func:`unique_boxart_match` uses, where a longer title that
+    merely repeats the query words (``Monster Hunter 3`` -> ``Monster Hunter 3
+    Ultimate``) can look like the answer.  Callers offer this precise pool to
+    the optional LLM *before* the strict ambiguous pool, so a genuine
+    concatenated title is never preempted by such a neighbour.  Empty when no
+    entry concatenates the query, leaving the strict rule in charge.
+    """
+    query_tokens = _content_tokens(query)
+    if not query_tokens:
+        return ()
+    scored = []
+    for name in filenames:
+        if not name:
+            continue
+        entry_tokens = _content_tokens(_strip_png(str(name)))
+        if not entry_tokens:
+            continue
+        concatenated = _concatenation_matches(query_tokens, entry_tokens)
+        if concatenated <= 0:
+            continue
+        scored.append((concatenated, _region_rank(name), str(name)))
+    if not scored:
+        return ()
+    # Most joined words first; region preference only breaks a tie.
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    capped = scored[: max(int(limit), 0)]
+    return tuple(name for _, _, name in capped)
+
+
 def fetch_boxart_listing(
     urlopen: Callable[..., Any], url: Optional[str], *, timeout: float = 20.0
 ) -> Tuple[str, ...]:
@@ -425,6 +469,7 @@ def resolve_boxart_system(
 __all__ = [
     "MAX_LOOSE_CANDIDATES",
     "ambiguous_boxart_matches",
+    "concatenation_boxart_candidates",
     "fetch_boxart_listing",
     "loose_boxart_candidates",
     "normalize_boxart_name",

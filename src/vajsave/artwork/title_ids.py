@@ -28,6 +28,10 @@ _3DSDB_LISTS: Tuple[Tuple[str, str], ...] = (
 )
 _BASE_GAME_PREFIX = "00040000"
 INDEX_NAME = "3ds-title-index.json"
+# Bump whenever the on-disk shape or the eShop-name cleanup changes, so an
+# index written by an older build is discarded and rebuilt from 3dsdb instead
+# of silently serving names the current lookup rules can no longer match.
+INDEX_VERSION = 2
 
 
 def expand_3ds_title_id(value: object) -> Optional[str]:
@@ -142,6 +146,12 @@ def index_path(cache_root: Optional[Path]) -> Optional[Path]:
 
 
 def load_catalog(cache_root: Optional[Path]) -> Dict[str, List[Dict[str, str]]]:
+    """Read the cached 3dsdb catalog, or ``{}`` when absent/outdated/corrupt.
+
+    A document without the current :data:`INDEX_VERSION` is treated exactly
+    like a missing one: the caller refetches from 3dsdb and rewrites it, so a
+    cleanup or shape change can never be masked by a stale cache.
+    """
     path = index_path(cache_root)
     if path is None:
         return {}
@@ -151,7 +161,9 @@ def load_catalog(cache_root: Optional[Path]) -> Dict[str, List[Dict[str, str]]]:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, UnicodeDecodeError):
         return {}
-    games = raw.get("games") if isinstance(raw, dict) else None
+    if not isinstance(raw, dict) or raw.get("version") != INDEX_VERSION:
+        return {}
+    games = raw.get("games")
     if not isinstance(games, dict):
         return {}
     out: Dict[str, List[Dict[str, str]]] = {}
@@ -168,7 +180,7 @@ def store_catalog(cache_root: Optional[Path], catalog: Dict[str, List[Dict[str, 
     path = index_path(cache_root)
     if path is None:
         return False
-    return bool(atomic_write_json(path, {"games": catalog}))
+    return bool(atomic_write_json(path, {"version": INDEX_VERSION, "games": catalog}))
 
 
 def fetch_3dsdb_catalog(urlopen: Callable[..., Any], timeout: float = 20.0) -> Dict[str, List[Dict[str, str]]]:

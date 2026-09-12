@@ -26,6 +26,7 @@ from typing import Callable, Iterable, List, Optional, Sequence, Tuple, Union
 from ..covers import find_embedded_cover, user_cover_path
 from .boxart_index import (
     ambiguous_boxart_matches,
+    concatenation_boxart_candidates,
     fetch_boxart_listing,
     loose_boxart_candidates,
     resolve_boxart_system,
@@ -332,8 +333,9 @@ class ArtworkService:
                 break
         if not matched:
             # Deterministic matching is exhausted. The optional LLM is offered
-            # the strict ambiguous pools first, then the looser word-overlap
-            # pools; region variants were already resolved above.
+            # concatenation hits first, then the strict ambiguous pools, then
+            # the looser word-overlap pools; region variants were already
+            # resolved above.
             matched = self._choose_listing_with_llm(filenames, names)
         if not matched:
             return None
@@ -363,18 +365,38 @@ class ArtworkService:
     ) -> Optional[str]:
         """Offer the optional chooser a candidate pool from the listing.
 
-        The strict pool (full token containment, conflicting titles) is tried
-        first. When it yields no valid answer -- either because no query has
-        strict candidates or because the chooser returned nothing for every
-        strict pool -- the looser word-overlap pool is offered so a real file
-        name the strict matcher cannot line up can still resolve. A pool already
-        offered is never repeated. No chooser, a chooser error, or a name
-        outside the offered list all resolve to ``None`` so the caller keeps the
-        placeholder and never writes the cache.
+        A query whose words join a real listing token (``3 G`` -> ``3G``) is
+        offered first, with the joined name merged ahead of its word-overlap
+        pool, so a strict token-containment pool that merely repeats the query
+        words (``Monster Hunter 3`` -> ``Monster Hunter 3 Ultimate``) can never
+        preempt it.  The strict pool is tried next, then the remaining loose
+        word-overlap pools, so a real file name the strict matcher cannot line
+        up can still resolve. A pool already offered is never repeated. No
+        chooser, a chooser error, or a name outside the offered list all resolve
+        to ``None`` so the caller keeps the placeholder and never writes the
+        cache.
         """
         if self.llm_chooser is None:
             return None
         seen_pools = set()
+        # Concatenation hits take priority over the strict ambiguous pools. The
+        # leading candidate is merged ahead of the word-overlap pool so a
+        # genuine joined name that shares no whole word (``3 G`` -> ``3G``) is
+        # still offered, and a joined name is ranked before a plain neighbour.
+        for query in names:
+            concatenated = concatenation_boxart_candidates(filenames, query)
+            if not concatenated:
+                continue
+            loose = loose_boxart_candidates(filenames, query)
+            candidates = concatenated + tuple(
+                name for name in loose if name not in concatenated
+            )
+            if not candidates or candidates in seen_pools:
+                continue
+            seen_pools.add(candidates)
+            choice = self._ask_listing_chooser(candidates, query)
+            if choice is not None:
+                return choice
         for query in names:
             candidates = ambiguous_boxart_matches(filenames, query)
             if not candidates or candidates in seen_pools:

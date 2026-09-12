@@ -17,6 +17,7 @@ import urllib.error
 from vajsave.artwork.boxart_index import (
     MAX_LOOSE_CANDIDATES,
     ambiguous_boxart_matches,
+    concatenation_boxart_candidates,
     fetch_boxart_listing,
     loose_boxart_candidates,
     normalize_boxart_name,
@@ -211,6 +212,29 @@ def test_loose_boxart_candidates_rank_concatenated_words_first():
     assert loose_boxart_candidates(monster, "Monster Hunter 3 (Try) G")[0] == (
         "Monster Hunter 3G (Japan).png"
     )
+
+
+def test_concatenation_boxart_candidates_keep_only_joined_words():
+    """A concatenation pool is the precise subset of the loose pool whose words
+    a query's tokens join into (``3 G`` -> ``3G``); a neighbour that merely
+    shares words is excluded so the pool offered ahead of the strict matcher is
+    unambiguous."""
+    names = (
+        "Monster Hunter 3 Ultimate (USA).png",
+        "Monster Hunter 3G (Japan).png",
+        "Monster Hunter 4 (USA).png",
+    )
+    assert concatenation_boxart_candidates(names, "Monster Hunter 3 G") == (
+        "Monster Hunter 3G (Japan).png",
+    )
+    # A parenthetical gloss is ignored before the join is attempted.
+    assert concatenation_boxart_candidates(names, "Monster Hunter 3 (Try) G") == (
+        "Monster Hunter 3G (Japan).png",
+    )
+    # Word overlap alone is not a concatenation hit.
+    assert concatenation_boxart_candidates(names, "Monster Hunter 3 Ultimate") == ()
+    assert concatenation_boxart_candidates((), "Monster Hunter 3 G") == ()
+    assert concatenation_boxart_candidates(names, "") == ()
 
 
 def test_loose_boxart_candidates_rank_more_shared_words_first():

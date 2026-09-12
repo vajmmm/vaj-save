@@ -18,6 +18,7 @@ import urllib.error
 from io import BytesIO
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from vajsave.artwork import (
@@ -1094,6 +1095,228 @@ def test_ensure_cover_for_title_llm_falls_back_to_loose_pool_after_strict_none(
     boxart = [url for url in calls if "Named_Boxarts" in url and url.endswith(".png")]
     assert boxart and boxart[-1].endswith("Monster%20Hunter%203G%20(Japan).png")
     assert cache.lookup("3ds", "3ds:0x00481") is not None
+
+
+def test_3ds_catalog_index_is_versioned_and_discards_stale_files(tmp_path: Path):
+    """The on-disk 3dsdb index carries a schema version: a file written by an
+    older build (no ``version``, or an older one) is discarded so the caller
+    refetches and rebuilds it instead of serving stale names."""
+    from vajsave.artwork.title_ids import (
+        INDEX_NAME,
+        INDEX_VERSION,
+        load_catalog,
+        store_catalog,
+    )
+
+    catalog = {
+        "0004000000048100": [{"name": "Monster Hunter 3 (Try) G", "region": "Japan"}]
+    }
+    assert store_catalog(tmp_path, catalog) is True
+    stored = json.loads((tmp_path / INDEX_NAME).read_text(encoding="utf-8"))
+    assert stored["version"] == INDEX_VERSION
+    assert stored["games"] == catalog
+    assert load_catalog(tmp_path) == catalog
+
+    index = tmp_path / INDEX_NAME
+    # The pre-version shape and any mismatched version are both invalidated.
+    index.write_text(json.dumps({"games": catalog}), encoding="utf-8")
+    assert load_catalog(tmp_path) == {}
+    index.write_text(
+        json.dumps({"version": INDEX_VERSION - 1, "games": catalog}),
+        encoding="utf-8",
+    )
+    assert load_catalog(tmp_path) == {}
+
+
+def _resolve_monster_hunter(tmp_path: Path, *, stale: bool):
+    """Run one 3DS Monster Hunter lookup, optionally over a stale index."""
+    from vajsave.artwork.title_ids import INDEX_NAME, INDEX_VERSION
+
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="3ds", name="MONSTER HUNTER 3")
+    covers = library / COVER_CACHE_DIR
+    if stale:
+        # An index written before the eShop-name cleanup kept the ASCII
+        # ``(Try)`` gloss, so it maps the id to the wrong bare title.
+        covers.mkdir(parents=True, exist_ok=True)
+        (covers / INDEX_NAME).write_text(
+            json.dumps(
+                {
+                    "games": {
+                        "0004000000048100": [
+                            {"name": "Monster Hunter 3", "region": "Japan"}
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+    listing = (
+        '<a href="Monster%20Hunter%203%20Ultimate%20(USA).png">'
+        "Monster Hunter 3 Ultimate (USA).png</a>"
+        '<a href="Monster%20Hunter%203%20Ultimate%20(USA)%20(En,Fr,De,Es,It).png">'
+        "Monster Hunter 3 Ultimate (USA) (En,Fr,De,Es,It).png</a>"
+        '<a href="Monster%20Hunter%203G%20(Japan).png">'
+        "Monster Hunter 3G (Japan).png</a>"
+    )
+    catalog = json.dumps(
+        [
+            {
+                "Name": "Monster Hunter 3 (Try) G(モンスターハンター3(トライ)G)",
+                "TitleID": "0004000000048100",
+            }
+        ]
+    ).encode("utf-8")
+    calls = []
+    offered = []
+
+    def opener(url, timeout=None):
+        calls.append(url)
+        if "list_JP.json" in url:
+            return FakeResponse(catalog)
+        if "3dsdb" in url or "list_" in url:
+            return FakeResponse(b"[]")
+        if url.endswith("/Named_Boxarts/"):
+            return FakeResponse(listing.encode("utf-8"))
+        if url.endswith("Monster%20Hunter%203G%20(Japan).png"):
+            return FakeResponse(png_bytes())
+        return FakeResponse(b"missing", status=404)
+
+    def chooser(candidates, query):
+        # A deterministic stand-in: whoever leads the offered pool wins.
+        offered.append((tuple(candidates), query))
+        return candidates[0]
+
+    service = ArtworkService(
+        cache=cache,
+        downloader=ArtworkDownloader(urlopen=opener),
+        llm_chooser=chooser,
+    )
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="3ds",
+        title="MONSTER HUNTER 3",
+        identity_key="3ds:0x00481",
+        library_root=library,
+        title_id="0x00481",
+    )
+    return resolution, calls, offered, covers, cache, INDEX_VERSION
+
+
+@pytest.mark.parametrize("stale", [False, True])
+def test_ensure_cover_for_title_hits_monster_hunter_with_fresh_or_stale_index(
+    tmp_path: Path, stale: bool
+):
+    """Both a brand-new cache and a cache holding a stale pre-version index must
+    rebuild the 3dsdb catalog and resolve Monster Hunter to 3G, never 3U."""
+    from vajsave.artwork.title_ids import INDEX_NAME
+
+    resolution, calls, offered, covers, cache, index_version = _resolve_monster_hunter(
+        tmp_path, stale=stale
+    )
+    assert resolution.source == SOURCE_DOWNLOADED
+    # The stale index was discarded and the catalog refetched, then rewritten.
+    assert any("list_JP.json" in url for url in calls)
+    stored = json.loads((covers / INDEX_NAME).read_text(encoding="utf-8"))
+    assert stored["version"] == index_version
+    # The concatenation hit leads the very first pool offered to the chooser.
+    assert offered and offered[0][0][0] == "Monster Hunter 3G (Japan).png"
+    assert resolution.path.endswith(".png")
+    assert cache.lookup("3ds", "3ds:0x00481") is not None
+
+
+def test_llm_concatenation_pool_precedes_a_wrong_strict_pool(tmp_path: Path):
+    """A token-containment pool that merely repeats the query words (MH3U) must
+    not preempt a query whose words join a real file name (``3 (Try) G`` ->
+    ``3G``): the concatenation pool is offered first."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="3ds", name="Monster Hunter 3 (Try) G")
+    listing = (
+        '<a href="Monster%20Hunter%203%20Ultimate%20(USA).png">'
+        "Monster Hunter 3 Ultimate (USA).png</a>"
+        '<a href="Monster%20Hunter%203%20Ultimate%20(USA)%20(En,Fr,De,Es,It).png">'
+        "Monster Hunter 3 Ultimate (USA) (En,Fr,De,Es,It).png</a>"
+        '<a href="Monster%20Hunter%203G%20(Japan).png">'
+        "Monster Hunter 3G (Japan).png</a>"
+    )
+    calls = []
+    offered = []
+
+    def opener(url, timeout=None):
+        calls.append(url)
+        if url.endswith("/Named_Boxarts/"):
+            return FakeResponse(listing.encode("utf-8"))
+        if url.endswith("Monster%20Hunter%203G%20(Japan).png"):
+            return FakeResponse(png_bytes())
+        return FakeResponse(b"missing", status=404)
+
+    def chooser(candidates, query):
+        offered.append((tuple(candidates), query))
+        return candidates[0]
+
+    service = ArtworkService(
+        cache=cache,
+        downloader=ArtworkDownloader(urlopen=opener),
+        llm_chooser=chooser,
+    )
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="3ds",
+        title="Monster Hunter 3 (Try) G",
+        identity_key="3ds:name:mh3g",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_DOWNLOADED
+    # The wrong strict MH3U pool is never offered first (or at all).
+    assert offered[0][0][0] == "Monster Hunter 3G (Japan).png"
+    assert all("3 Ultimate" not in pool[0] for pool, _ in offered)
+    boxart = [url for url in calls if "Named_Boxarts" in url and url.endswith(".png")]
+    assert boxart and boxart[-1].endswith("Monster%20Hunter%203G%20(Japan).png")
+    assert cache.lookup("3ds", "3ds:name:mh3g") is not None
+
+
+def test_llm_offers_a_concatenation_candidate_without_a_shared_word(tmp_path: Path):
+    """``3 G`` -> ``3G`` shares no whole word, so the word-overlap pool is empty;
+    the concatenation candidate must still reach the chooser, not be dropped."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="3ds", name="3 G")
+    listing = (
+        '<a href="3G%20(Japan).png">3G (Japan).png</a>'
+        '<a href="4%20(USA).png">4 (USA).png</a>'
+    )
+    calls = []
+    offered = []
+
+    def opener(url, timeout=None):
+        calls.append(url)
+        if url.endswith("/Named_Boxarts/"):
+            return FakeResponse(listing.encode("utf-8"))
+        if url.endswith("3G%20(Japan).png"):
+            return FakeResponse(png_bytes())
+        return FakeResponse(b"missing", status=404)
+
+    def chooser(candidates, query):
+        offered.append((tuple(candidates), query))
+        return candidates[0]
+
+    service = ArtworkService(
+        cache=cache,
+        downloader=ArtworkDownloader(urlopen=opener),
+        llm_chooser=chooser,
+    )
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="3ds",
+        title="3 G",
+        identity_key="3ds:name:3g",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_DOWNLOADED
+    assert offered and offered[0][0] == ("3G (Japan).png",)
+    assert cache.lookup("3ds", "3ds:name:3g") is not None
 
 
 def test_ensure_cover_for_title_llm_nonsense_is_placeholder_and_uncached(
