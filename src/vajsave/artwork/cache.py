@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 from ..covers import DOWNLOADED_COVER_DIR, identity_hash
+from ..persistence import atomic_write_bytes, atomic_write_json
 
 # Directory (under the library root) that holds the covers/ tree.
 COVER_CACHE_DIR = DOWNLOADED_COVER_DIR
@@ -87,16 +88,25 @@ class CoverCache:
     def identity_hash(identity_key: str) -> str:
         return identity_hash(identity_key)
 
-    def path_for(self, platform: str, identity_key: str) -> Optional[Path]:
-        if self.root is None or not identity_key:
-            return None
-        plat = (str(platform or "").strip() or "unknown")
-        return self.root / plat / f"{identity_hash(identity_key)}.png"
-
     @staticmethod
-    def _local_path(platform: str, identity_key: str) -> str:
+    def _relative_path(platform: str, identity_key: str) -> str:
         plat = (str(platform or "").strip() or "unknown")
         return f"{plat}/{identity_hash(identity_key)}.png"
+
+    @staticmethod
+    def path_in(
+        root: Union[Path, str, None], platform: str, identity_key: str
+    ) -> Optional[Path]:
+        """Absolute cover path under ``root`` (the ``covers/`` directory)."""
+        if root is None or not identity_key:
+            return None
+        return Path(root) / CoverCache._relative_path(platform, identity_key)
+
+    def path_for(self, platform: str, identity_key: str) -> Optional[Path]:
+        return self.path_in(self.root, platform, identity_key)
+
+    # Back-compat alias for the previous private name.
+    _local_path = _relative_path
 
     # -- lookup --------------------------------------------------------------
 
@@ -151,16 +161,7 @@ class CoverCache:
         if path is None:
             return None
         relative = self._local_path(platform, identity_key)
-        tmp = path.with_name(path.name + ".tmp")
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp.write_bytes(data)
-            tmp.replace(path)
-        except OSError:
-            try:
-                tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
+        if not atomic_write_bytes(path, data):
             return None
         record = {
             "identity_key": str(identity_key),
@@ -174,7 +175,7 @@ class CoverCache:
         with self._lock:
             self._entries[str(identity_key)] = record
             payload = {"version": _VERSION, "entries": dict(self._entries)}
-            self._write(payload)
+            atomic_write_json(self.root / MANIFEST_NAME, payload)
         return path
 
     # -- manifest ------------------------------------------------------------
@@ -206,28 +207,7 @@ class CoverCache:
             if self.root is None:
                 return False
             payload = {"version": _VERSION, "entries": dict(self._entries)}
-            return self._write(payload)
-
-    def _write(self, payload: Dict[str, Any]) -> bool:
-        if self.root is None:
-            return False
-        manifest = self.root / MANIFEST_NAME
-        tmp = None
-        try:
-            self.root.mkdir(parents=True, exist_ok=True)
-            tmp = manifest.with_name(manifest.name + ".tmp")
-            tmp.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            tmp.replace(manifest)
-        except (OSError, TypeError, ValueError):
-            if tmp is not None:
-                try:
-                    tmp.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            return False
-        return True
+            return atomic_write_json(self.root / MANIFEST_NAME, payload)
 
     def prune(self) -> int:
         """Drop manifest entries whose file vanished; returns entries removed."""
@@ -246,7 +226,7 @@ class CoverCache:
                     removed += 1
             if removed:
                 payload = {"version": _VERSION, "entries": dict(self._entries)}
-                self._write(payload)
+                atomic_write_json(self.root / MANIFEST_NAME, payload)
         return removed
 
 

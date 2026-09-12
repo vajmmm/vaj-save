@@ -247,15 +247,20 @@ def test_cover_helpers_never_raise_on_exotic_entry(tmp_path: Path):
 
 
 def test_resolve_cover_priority_user_then_downloaded_then_embedded(tmp_path: Path):
+    from vajsave.artwork import CoverCache
+
     save_dir = tmp_path / "ULJM05800"
     save_dir.mkdir()
     embedded = _write_image(save_dir / "ICON0.PNG")
     lib = tmp_path / "lib"
     user = _write_image(lib / "covers" / "psp" / "ULJM05800.png")
     identity_key = "psp:ULJM05800"
-    downloaded = lib / "covers" / "psp" / (covers.identity_hash(identity_key) + ".png")
-    downloaded.parent.mkdir(parents=True, exist_ok=True)
-    downloaded.write_bytes(user.read_bytes())
+    # The downloaded layer is manifest-backed, so register it through the one
+    # real CoverCache implementation instead of dropping a bare file.
+    downloaded = CoverCache(lib / "covers").store(
+        "psp", identity_key, user.read_bytes()
+    )
+    assert downloaded is not None
 
     entry = _entry(path=str(save_dir), cover_path=str(embedded))
     # user file outranks downloaded and embedded.
@@ -264,11 +269,14 @@ def test_resolve_cover_priority_user_then_downloaded_then_embedded(tmp_path: Pat
     user.unlink()
     assert covers.resolve_cover(entry, lib, identity_key=identity_key) == downloaded
 
+    # A vanished file is no longer a manifest hit.
     downloaded.unlink()
     assert covers.resolve_cover(entry, lib, identity_key=identity_key) == embedded
 
+    # Even without a pre-recorded embedded path, the shared resolver discovers
+    # the icon inside the save folder.
     entry.cover_path = None
-    assert covers.resolve_cover(entry, lib, identity_key=identity_key) is None
+    assert covers.resolve_cover(entry, lib, identity_key=identity_key) == embedded
     assert covers.resolve_cover(None, lib) is None
 
 
@@ -277,6 +285,36 @@ def test_resolve_cover_ignores_stale_embedded_path(tmp_path: Path):
     user = _write_image(lib / "covers" / "psp" / "ULJM05800.png")
     entry = _entry(cover_path=str(tmp_path / "gone.png"))
     assert covers.resolve_cover(entry, lib) == user
+
+
+# --- downloaded_cover_path ---------------------------------------------------
+
+
+def test_downloaded_cover_path_matches_cover_cache_layout(tmp_path: Path):
+    from vajsave.artwork import CoverCache
+
+    lib = tmp_path / "lib"
+    key = "psp:ULJM05800"
+    expected = CoverCache.path_in(lib / "covers", "psp", key)
+    assert expected is not None
+    _write_image(expected)
+    assert covers.downloaded_cover_path(lib, "psp", key) == expected
+    assert covers.downloaded_cover_path(lib, "psp", None) is None
+    assert covers.downloaded_cover_path(tmp_path / "missing", "psp", key) is None
+
+
+def test_resolve_cover_downloaded_layer_needs_manifest(tmp_path: Path):
+    # A bare file dropped into the cache directory is not a manifest hit, so the
+    # shared resolver falls through to the embedded icon instead of trusting it.
+    save_dir = tmp_path / "save"
+    save_dir.mkdir()
+    embedded = _write_image(save_dir / "ICON0.PNG")
+    lib = tmp_path / "lib"
+    key = "psp:ULJM05800"
+    bare = lib / "covers" / "psp" / (covers.identity_hash(key) + ".png")
+    _write_image(bare)
+    entry = _entry(path=str(save_dir), cover_path=str(embedded))
+    assert covers.resolve_cover(entry, lib, identity_key=key) == embedded
 
 
 # --- load_thumbnail ---------------------------------------------------------

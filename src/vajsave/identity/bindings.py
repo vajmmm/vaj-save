@@ -12,6 +12,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
+from ..persistence import atomic_write_json
 from .models import GameIdentity, SOURCE_BINDING, SOURCE_MANUAL
 from .naming import legacy_normalize_title, normalize_title, save_hint
 
@@ -133,18 +134,5 @@ class BindingStore:
     def save(self) -> bool:
         if self.path is None:
             return False
-        tmp = None
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_name(self.path.name + ".tmp")
-            payload = {"version": _VERSION, "bindings": self._data}
-            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(self.path)
-        except (OSError, TypeError, ValueError):
-            if tmp is not None:
-                try:
-                    tmp.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            return False
-        return True
+        payload = {"version": _VERSION, "bindings": self._data}
+        return atomic_write_json(self.path, payload)

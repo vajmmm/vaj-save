@@ -21,6 +21,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
+from ..persistence import atomic_write_json
 from .models import GameMetadata
 
 # Name of the persisted cache under ``<library_root>``.
@@ -67,7 +68,7 @@ class MetadataCache:
                 return False
             self._entries[key] = record
             payload = {"version": _VERSION, "entries": dict(self._entries)}
-            return self._write(payload)
+            return atomic_write_json(self.path, payload)
 
     def all(self) -> Dict[str, Dict[str, Any]]:
         with self._lock:
@@ -95,28 +96,7 @@ class MetadataCache:
             if self.path is None:
                 return False
             payload = {"version": _VERSION, "entries": dict(self._entries)}
-            return self._write(payload)
-
-    def _write(self, payload: Dict[str, Any]) -> bool:
-        path = self.path
-        if path is None:
-            return False
-        tmp = None
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_name(path.name + ".tmp")
-            tmp.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            tmp.replace(path)
-        except (OSError, TypeError, ValueError):
-            if tmp is not None:
-                try:
-                    tmp.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            return False
-        return True
+            return atomic_write_json(self.path, payload)
 
 
 __all__ = ["MetadataCache", "METADATA_CACHE_NAME"]

@@ -112,13 +112,6 @@ def _as_path(value: Any) -> Optional[Path]:
         return None
 
 
-def _is_file(path: Path) -> bool:
-    try:
-        return path.is_file()
-    except OSError:
-        return False
-
-
 def _within_size_limit(path: Path) -> bool:
     """True when ``path`` is a regular file no larger than ``MAX_COVER_BYTES``.
 
@@ -337,16 +330,21 @@ def downloaded_cover_path(
 ) -> Optional[Path]:
     """Return the cached downloaded cover for an identity, or ``None``.
 
-    The file lives at ``<library_root>/covers/<platform>/<identity-hash>.png``
-    and is only a hit when it exists and is size-bounded.
+    Thin compatibility wrapper: the path layout is owned by
+    :meth:`vajsave.artwork.cache.CoverCache.path_in`, so this helper can never
+    drift from the directory the artwork layer actually writes into.  Only an
+    existing, size-bounded file is reported as a hit.
     """
     try:
         root = _as_path(library_root)
         if root is None or not identity_key:
             return None
-        plat = _safe_component(platform) or "unknown"
-        candidate = root / DOWNLOADED_COVER_DIR / plat / f"{identity_hash(identity_key)}.png"
-        return candidate if _within_size_limit(candidate) else None
+        from .artwork.cache import CoverCache
+
+        candidate = CoverCache.path_in(
+            root / DOWNLOADED_COVER_DIR, platform, identity_key
+        )
+        return candidate if candidate is not None and _within_size_limit(candidate) else None
     except Exception:  # noqa: BLE001 - a cover lookup must never break the UI
         return None
 
@@ -360,22 +358,30 @@ def resolve_cover(
 ) -> Optional[Path]:
     """Resolve the cover for ``entry``: user > downloaded > embedded > ``None``.
 
-    Pure-local (never touches the network) and never raises.
+    Thin compatibility wrapper over :func:`vajsave.artwork.resolve_artwork`,
+    which owns the single real implementation of the fallback order.  The
+    manifest-backed :class:`~vajsave.artwork.cache.CoverCache` is used for the
+    downloaded layer, so this stays pure-local (never touches the network) and
+    never raises.
     """
     try:
         if entry is None:
             return None
-        user = user_cover_path(entry, library_root)
-        if user is not None:
-            return user
-        plat = platform if platform is not None else getattr(entry, "platform", None)
-        downloaded = downloaded_cover_path(library_root, plat, identity_key)
-        if downloaded is not None:
-            return downloaded
-        embedded = _as_path(getattr(entry, "cover_path", None))
-        if embedded is not None and _is_file(embedded):
-            return embedded
-        return None
+        from .artwork.cache import CoverCache
+        from .artwork.service import resolve_artwork
+
+        root = _as_path(library_root)
+        cache = None
+        if root is not None and identity_key:
+            cache = CoverCache(root / DOWNLOADED_COVER_DIR)
+        resolution = resolve_artwork(
+            entry,
+            library_root,
+            cache=cache,
+            identity_key=identity_key,
+            platform=platform,
+        )
+        return _as_path(resolution.path) if resolution.path else None
     except Exception:  # noqa: BLE001 - a cover lookup must never break the UI
         return None
 
