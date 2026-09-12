@@ -26,7 +26,12 @@ from typing import Iterable, List, Optional, Union
 from ..covers import find_embedded_cover, user_cover_path
 from .cache import CoverCache
 from .downloader import ArtworkDownloader
-from .providers import Artwork, ArtworkProvider, LibretroThumbnailProvider
+from .providers import (
+    Artwork,
+    ArtworkProvider,
+    LibretroThumbnailProvider,
+    libretro_title_candidates,
+)
 
 SOURCE_USER = "user"
 SOURCE_DOWNLOADED = "downloaded"
@@ -228,6 +233,10 @@ class ArtworkService:
         title explicitly.  Unlike :meth:`ensure_cover`, an embedded icon
         (``ICON0.PNG`` / ``sce_sys/icon0.png``) is preferred over a download: a
         save that already ships artwork is never looked up online.
+
+        Checkpoint / SFO titles often miss the No-Intro filename on the first
+        try, so :func:`libretro_title_candidates` walks a short list of
+        whitespace, case and region variants until one download succeeds.
         """
         if entry is None:
             return PLACEHOLDER
@@ -241,13 +250,16 @@ class ArtworkService:
         embedded = _embedded_path(entry)
         if embedded is not None:
             return ArtworkResolution(str(embedded), SOURCE_EMBEDDED)
-        artwork = self.ref_for(plat, title)
-        if artwork is None:
-            return PLACEHOLDER
-        stored = self._store_artwork(artwork, identity_key=identity_key, platform=plat)
-        if stored is None:
-            return PLACEHOLDER
-        return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
+        for candidate in libretro_title_candidates(title):
+            artwork = self.ref_for(plat, candidate)
+            if artwork is None:
+                continue
+            stored = self._store_artwork(
+                artwork, identity_key=identity_key, platform=plat
+            )
+            if stored is not None:
+                return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
+        return PLACEHOLDER
 
     def ensure_cover(
         self,

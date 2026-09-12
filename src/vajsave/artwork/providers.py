@@ -19,8 +19,9 @@ included); every path segment is then percent-encoded.
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 from urllib.parse import quote
 
 LIBRETRO_THUMBNAIL_BASE = "https://thumbnails.libretro.com"
@@ -66,6 +67,57 @@ def sanitize_libretro_filename(name: str) -> Optional[str]:
     ).strip()
     cleaned = cleaned.strip(".")
     return cleaned or None
+
+
+# Checkpoint / SFO titles rarely match No-Intro filenames. After the exact
+# name 404s we try collapsed whitespace, ASCII-folded letters, title case for
+# ALL-CAPS names, and the common region tags. Bounded so one save cannot fan
+# out into an unbounded crawl.
+_REGION_SUFFIXES = (" (USA)", " (Europe)", " (Japan)", " (World)")
+_MAX_TITLE_CANDIDATES = 12
+
+
+def _fold_ascii(text: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+
+
+def _title_case_if_shouting(text: str) -> str:
+    letters = [ch for ch in text if ch.isalpha()]
+    if letters and all(ch.isupper() for ch in letters):
+        pretty = text.title()
+        return pretty.replace("'S ", "'s ").replace("'S", "'s")
+    return text
+
+
+def libretro_title_candidates(title: str) -> Tuple[str, ...]:
+    """Ordered unique titles to try against Named_Boxarts.
+
+    The first entry is the original (stripped) name so an already-canonical
+    title still hits on the first request.
+    """
+    original = str(title or "").strip()
+    if not original:
+        return ()
+    ordered: list[str] = []
+
+    def add(value: str) -> None:
+        cleaned = " ".join(value.split()).strip().rstrip(".…")
+        if cleaned and cleaned not in ordered:
+            ordered.append(cleaned)
+
+    add(original)
+    add(_fold_ascii(original))
+    add(_title_case_if_shouting(original))
+    add(_title_case_if_shouting(_fold_ascii(original)))
+    for base in list(ordered):
+        if "(" in base:
+            continue
+        for suffix in _REGION_SUFFIXES:
+            add(base + suffix)
+            if len(ordered) >= _MAX_TITLE_CANDIDATES:
+                return tuple(ordered)
+    return tuple(ordered[:_MAX_TITLE_CANDIDATES])
 
 
 @dataclass(frozen=True)
@@ -166,4 +218,5 @@ __all__ = [
     "THUMBNAIL_SNAP",
     "THUMBNAIL_TITLE",
     "sanitize_libretro_filename",
+    "libretro_title_candidates",
 ]

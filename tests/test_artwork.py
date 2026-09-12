@@ -37,7 +37,11 @@ from vajsave.artwork import (
     SOURCE_PLACEHOLDER,
     SOURCE_USER,
 )
-from vajsave.artwork.providers import ArtworkProvider, LIBRETRO_SYSTEM_NAMES
+from vajsave.artwork.providers import (
+    ArtworkProvider,
+    LIBRETRO_SYSTEM_NAMES,
+    libretro_title_candidates,
+)
 from vajsave.metadata import GameMetadata
 from vajsave.models import SaveEntry
 
@@ -152,6 +156,17 @@ def test_libretro_provider_psp_vita_and_3ds_boxart_urls():
         "https://thumbnails.libretro.com/Nintendo%20-%20Nintendo%203DS/"
         "Named_Boxarts/Persona%20Q2%20New%20Cinema%20Labyrinth.png"
     )
+
+
+def test_libretro_title_candidates_checkpoint_shouting_and_regions():
+    names = libretro_title_candidates("MARIO KART 7")
+    assert names[0] == "MARIO KART 7"
+    assert "Mario Kart 7" in names
+    assert "Mario Kart 7 (USA)" in names
+    # Double spaces / trailing ellipsis from Checkpoint folders.
+    collapsed = libretro_title_candidates("Kid Icarus  Uprising")
+    assert "Kid Icarus Uprising" in collapsed
+    assert "Kid Icarus Uprising (USA)" in collapsed
 
 
 def test_base_provider_is_inert():
@@ -501,6 +516,31 @@ def test_ensure_cover_for_title_downloads_psp_boxart(tmp_path: Path):
     assert calls and "Sony%20-%20PlayStation%20Portable" in calls[0]
     assert "Monster%20Hunter%20Portable%203rd" in calls[0]
     assert cache.manifest()["psp:ULJM05800"]["remote_url"] == calls[0]
+
+
+def test_ensure_cover_for_title_retries_region_suffix_after_404(tmp_path: Path):
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="3ds", name="MK7")
+    calls = []
+
+    def opener(url, timeout=None):
+        calls.append(url)
+        if "Mario%20Kart%207%20(USA)" in url:
+            return FakeResponse(png_bytes())
+        return FakeResponse(b"missing", status=404)
+
+    service = ArtworkService(cache=cache, downloader=ArtworkDownloader(urlopen=opener))
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="3ds",
+        title="MARIO KART 7",
+        identity_key="3ds:0x00306",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_DOWNLOADED
+    assert any("Mario%20Kart%207%20(USA)" in url for url in calls)
+    assert len(calls) >= 2
 
 
 def test_ensure_cover_for_title_embedded_icon_skips_network(tmp_path: Path):
