@@ -296,22 +296,18 @@ saturated accent fill.
   entry is rejected with a status warning, the dialog stays open, and
   `settings.json` is left untouched. Changing the value never prunes existing
   versions — pruning still happens only when a new version is added.
-- **Optional LLM cover disambiguation** sits below `keep_last`: an 启用 toggle, a
-  服务商预设 selector (`openai` / `anthropic` / `deepseek` / `openrouter` /
-  `custom`), a 协议 selector (`openai` / `anthropic`), a masked API Key field and
-  the endpoint/model fields (Base URL and 模型). Choosing a provider preset
-  auto-fills the protocol, base URL and model from that preset (OpenAI and
-  DeepSeek/OpenRouter use the OpenAI shape; Anthropic uses the messages shape;
-  `custom` keeps whatever the user typed). Auto-fill never clobbers a value the
-  user has already changed — it only replaces a field that still holds the
-  previous preset's value (or is blank). Gemini is deliberately not offered and
-  any unknown protocol or preset value falls back to `openai`. The toggle, the
-  key, the protocol, the preset, the base URL and the model are persisted to
-  `config.json` (so
-  they survive a restart); a blank base URL or model falls back to the selected
-  protocol's built-in default rather than persisting an unusable configuration.
-  Switching protocol rewrites only a still-default base URL (and model) to the
-  new protocol's default — a customised gateway endpoint is left untouched. The
+- **Optional LLM cover disambiguation** sits below `keep_last` and exposes four
+  fields: a 启用 toggle, a 协议 selector (`openai-completions` /
+  `anthropic-messages`), a Base URL field, a masked API 密钥 field and a 模型 ID
+  field. Gemini is deliberately not offered; the pre-rename `openai` /
+  `anthropic` protocol values are still accepted and any unknown value falls back
+  to `openai-completions`. The toggle, the key, the protocol, the base URL and the
+  model are persisted to `config.json` (so they survive a restart); a blank base
+  URL or model falls back to the selected protocol's built-in default, and a bare
+  host without a `/v1` segment is completed (an existing `/v1` is never
+  duplicated). Switching protocol rewrites only a still-default base URL (and
+  model) to the new protocol's default — a customised gateway endpoint is left
+  untouched. The
   OpenAI shape posts to `<base>/chat/completions` with a `Bearer` token; the
   Anthropic shape posts to `<base>/messages` with `x-api-key` and
   `anthropic-version` headers. The key is written to disk but never echoed into

@@ -26,8 +26,7 @@ from __future__ import annotations
 
 import json
 import urllib.request
-from dataclasses import dataclass
-from typing import Any, Callable, Optional, Sequence, Tuple
+from typing import Any, Callable, Optional, Sequence
 
 # OpenAI-compatible chat-completions endpoint; overridable for tests and for
 # self-hosted gateways.
@@ -38,156 +37,23 @@ MAX_LLM_RESPONSE_BYTES = 256 * 1024
 
 # Selectable wire protocols. Gemini is deliberately not implemented: only the
 # OpenAI chat-completions shape and the Anthropic messages shape are supported.
-PROTOCOL_OPENAI = "openai"
-PROTOCOL_ANTHROPIC = "anthropic"
+PROTOCOL_OPENAI = "openai-completions"
+PROTOCOL_ANTHROPIC = "anthropic-messages"
 DEFAULT_LLM_PROTOCOL = PROTOCOL_OPENAI
 LLM_PROTOCOLS = (PROTOCOL_OPENAI, PROTOCOL_ANTHROPIC)
+
+# Wire-shape names accepted from an older config, so a stored ``openai`` /
+# ``anthropic`` keeps working after the rename to the explicit shape names.
+_LEGACY_PROTOCOL_ALIASES = {
+    "openai": PROTOCOL_OPENAI,
+    "anthropic": PROTOCOL_ANTHROPIC,
+}
 
 # Anthropic messages endpoint defaults (used only when that protocol is chosen).
 DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1"
 DEFAULT_ANTHROPIC_MODEL = "claude-3-5-haiku-latest"
 ANTHROPIC_API_VERSION = "2023-06-01"
 ANTHROPIC_MAX_TOKENS = 1024
-
-# Provider presets bundle the wire protocol with a sensible endpoint and model
-# so the common gateways can be configured with one choice. ``custom`` is the
-# escape hatch: it keeps whatever the user has typed (see ``fill_from_preset``)
-# so a private/self-hosted endpoint is never clobbered. Gemini is deliberately
-# absent -- only the OpenAI and Anthropic wire shapes are implemented.
-PRESET_OPENAI = "openai"
-PRESET_ANTHROPIC = "anthropic"
-PRESET_DEEPSEEK = "deepseek"
-PRESET_OPENROUTER = "openrouter"
-PRESET_CUSTOM = "custom"
-DEFAULT_LLM_PRESET = PRESET_OPENAI
-
-
-@dataclass(frozen=True)
-class LLMPreset:
-    """One provider preset: a wire protocol plus its default endpoint/model.
-
-    ``key`` is the persisted/serialised identity (``openai``/``anthropic``/
-    ``deepseek``/``openrouter``/``custom``); ``protocol`` is the wire shape the
-    chooser speaks; ``base_url``/``model`` are the values auto-filled into the
-    settings fields when the preset is chosen.
-    """
-
-    key: str
-    label: str
-    protocol: str
-    base_url: str
-    model: str
-    description: str = ""
-
-
-_LLM_PRESETS: Tuple[LLMPreset, ...] = (
-    LLMPreset(
-        key=PRESET_OPENAI,
-        label="OpenAI",
-        protocol=PROTOCOL_OPENAI,
-        base_url=DEFAULT_LLM_BASE_URL,
-        model=DEFAULT_LLM_MODEL,
-        description="OpenAI 官方接口",
-    ),
-    LLMPreset(
-        key=PRESET_ANTHROPIC,
-        label="Anthropic",
-        protocol=PROTOCOL_ANTHROPIC,
-        base_url=DEFAULT_ANTHROPIC_BASE_URL,
-        model=DEFAULT_ANTHROPIC_MODEL,
-        description="Anthropic Claude 接口",
-    ),
-    LLMPreset(
-        key=PRESET_DEEPSEEK,
-        label="DeepSeek",
-        protocol=PROTOCOL_OPENAI,
-        base_url="https://api.deepseek.com/v1",
-        model="deepseek-chat",
-        description="DeepSeek（OpenAI 兼容）",
-    ),
-    LLMPreset(
-        key=PRESET_OPENROUTER,
-        label="OpenRouter",
-        protocol=PROTOCOL_OPENAI,
-        base_url="https://openrouter.ai/api/v1",
-        model="openai/gpt-4o-mini",
-        description="OpenRouter 聚合网关（OpenAI 兼容）",
-    ),
-    LLMPreset(
-        key=PRESET_CUSTOM,
-        label="自定义",
-        protocol=PROTOCOL_OPENAI,
-        base_url=DEFAULT_LLM_BASE_URL,
-        model=DEFAULT_LLM_MODEL,
-        description="自定义协议 / 地址 / 模型（保留已填内容）",
-    ),
-)
-
-
-def llm_presets() -> Tuple[LLMPreset, ...]:
-    """All built-in provider presets, in dropdown order."""
-    return _LLM_PRESETS
-
-
-def llm_preset_keys() -> Tuple[str, ...]:
-    return tuple(preset.key for preset in _LLM_PRESETS)
-
-
-def normalize_preset(value: object) -> str:
-    """A known preset key; anything else (including Gemini) -> OpenAI."""
-    text = str(value or "").strip().lower()
-    return text if text in llm_preset_keys() else DEFAULT_LLM_PRESET
-
-
-def get_llm_preset(key: object) -> LLMPreset:
-    """The preset named by ``key``, falling back to the default on a miss."""
-    text = normalize_preset(key)
-    for preset in _LLM_PRESETS:
-        if preset.key == text:
-            return preset
-    return _LLM_PRESETS[0]
-
-
-def default_llm_preset() -> LLMPreset:
-    return _LLM_PRESETS[0]
-
-
-def fill_from_preset(
-    target: LLMPreset,
-    source: LLMPreset,
-    protocol: object,
-    base_url: object,
-    model: object,
-) -> Tuple[str, str, str]:
-    """``(protocol, base_url, model)`` after choosing the ``target`` preset.
-
-    A field is filled from ``target`` only when the current value is blank or
-    still equals ``source``'s declared value for that field -- i.e. the user has
-    not customised it. A value the user typed is preserved. The ``custom``
-    preset is the escape hatch: it keeps every current value untouched so a
-    private endpoint survives the selection. Non-string/``None`` values are
-    treated as blank.
-    """
-    if target.key == PRESET_CUSTOM:
-        return (
-            normalize_protocol(protocol),
-            "" if base_url is None else str(base_url),
-            "" if model is None else str(model),
-        )
-
-    def _pick(target_value: str, source_value: str, current: object) -> str:
-        text = "" if current is None else str(current)
-        if not target_value:
-            return text
-        if not text.strip() or text.rstrip("/") == source_value.rstrip("/"):
-            return target_value
-        return text
-
-    return (
-        _pick(target.protocol, source.protocol, protocol),
-        _pick(target.base_url, source.base_url, base_url),
-        _pick(target.model, source.model, model),
-    )
 
 _SYSTEM_PROMPT = (
     "You choose the single best box-art file for a video game from a candidate "
@@ -197,9 +63,11 @@ _SYSTEM_PROMPT = (
 
 
 def normalize_protocol(value: object) -> str:
-    """A supported protocol key; anything else (including Gemini) -> OpenAI."""
+    """A supported wire-shape key; legacy keys map across, unknown -> default."""
     text = str(value or "").strip().lower()
-    return text if text in LLM_PROTOCOLS else DEFAULT_LLM_PROTOCOL
+    if text in LLM_PROTOCOLS:
+        return text
+    return _LEGACY_PROTOCOL_ALIASES.get(text, DEFAULT_LLM_PROTOCOL)
 
 
 def default_base_url(protocol: object) -> str:
@@ -214,6 +82,24 @@ def default_model(protocol: object) -> str:
     if normalize_protocol(protocol) == PROTOCOL_ANTHROPIC:
         return DEFAULT_ANTHROPIC_MODEL
     return DEFAULT_LLM_MODEL
+
+
+def normalize_base_url(
+    value: object, protocol: object = DEFAULT_LLM_PROTOCOL
+) -> str:
+    """A usable endpoint: blank -> the protocol default; a missing ``/v1`` gains it.
+
+    An endpoint that already carries a ``/v1`` segment is returned untouched
+    (trailing slash and all), so the version prefix is never duplicated. This
+    makes a bare host such as ``https://api.deepseek.com`` usable while leaving
+    the built-in defaults byte-for-byte unchanged.
+    """
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return default_base_url(protocol)
+    if "/v1" not in text:
+        return text.rstrip("/") + "/v1"
+    return text
 
 
 def _match_choice(text: Optional[str], candidates: Sequence[str]) -> Optional[str]:
@@ -286,7 +172,7 @@ class LLMCoverChooser:
         self._api_key = str(api_key or "").strip()
         self.protocol = normalize_protocol(protocol)
         self.model = model or default_model(self.protocol)
-        self.base_url = (base_url or default_base_url(self.protocol)).rstrip("/")
+        self.base_url = normalize_base_url(base_url, self.protocol).rstrip("/")
         self.timeout = float(timeout)
         self._urlopen = urlopen or urllib.request.urlopen
 
@@ -405,7 +291,8 @@ def choose_cover_filename(
     """Convenience wrapper around :class:`LLMCoverChooser`.
 
     ``model``/``base_url`` fall back to the chosen protocol's built-in default,
-    so ``protocol="anthropic"`` without either yields the Anthropic endpoint.
+    so ``protocol="anthropic-messages"`` without either yields the Anthropic
+    endpoint.
     """
     proto = normalize_protocol(protocol)
     chooser = LLMCoverChooser(
@@ -426,27 +313,15 @@ __all__ = [
     "DEFAULT_ANTHROPIC_MODEL",
     "DEFAULT_LLM_BASE_URL",
     "DEFAULT_LLM_MODEL",
-    "DEFAULT_LLM_PRESET",
     "DEFAULT_LLM_PROTOCOL",
     "DEFAULT_LLM_TIMEOUT",
     "LLM_PROTOCOLS",
-    "LLMPreset",
     "LLMCoverChooser",
-    "PRESET_ANTHROPIC",
-    "PRESET_CUSTOM",
-    "PRESET_DEEPSEEK",
-    "PRESET_OPENAI",
-    "PRESET_OPENROUTER",
     "PROTOCOL_ANTHROPIC",
     "PROTOCOL_OPENAI",
     "choose_cover_filename",
     "default_base_url",
-    "default_llm_preset",
     "default_model",
-    "fill_from_preset",
-    "get_llm_preset",
-    "llm_preset_keys",
-    "llm_presets",
-    "normalize_preset",
+    "normalize_base_url",
     "normalize_protocol",
 ]

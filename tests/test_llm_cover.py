@@ -21,24 +21,14 @@ from vajsave.artwork.llm_choice import (
     DEFAULT_ANTHROPIC_MODEL,
     DEFAULT_LLM_BASE_URL,
     DEFAULT_LLM_MODEL,
-    DEFAULT_LLM_PRESET,
     DEFAULT_LLM_PROTOCOL,
     LLM_PROTOCOLS,
     MAX_LLM_RESPONSE_BYTES,
-    PRESET_ANTHROPIC,
-    PRESET_CUSTOM,
-    PRESET_DEEPSEEK,
-    PRESET_OPENAI,
-    PRESET_OPENROUTER,
     PROTOCOL_ANTHROPIC,
     PROTOCOL_OPENAI,
     LLMCoverChooser,
     choose_cover_filename,
-    fill_from_preset,
-    get_llm_preset,
-    llm_preset_keys,
-    llm_presets,
-    normalize_preset,
+    normalize_base_url,
     normalize_protocol,
 )
 
@@ -199,14 +189,23 @@ def test_chooser_repr_never_leaks_the_api_key():
 # --- selectable OpenAI / Anthropic protocol ----------------------------------
 
 
-def test_default_protocol_is_openai_and_openai_request_is_unchanged():
+def test_protocols_use_wire_shape_names_and_accept_legacy_values():
+    assert PROTOCOL_OPENAI == "openai-completions"
+    assert PROTOCOL_ANTHROPIC == "anthropic-messages"
     assert DEFAULT_LLM_PROTOCOL == PROTOCOL_OPENAI
-    assert normalize_protocol(None) == PROTOCOL_OPENAI
-    assert normalize_protocol("") == PROTOCOL_OPENAI
-    assert normalize_protocol("gemini") == PROTOCOL_OPENAI  # unsupported -> default
     assert "gemini" not in LLM_PROTOCOLS
     assert LLM_PROTOCOLS == (PROTOCOL_OPENAI, PROTOCOL_ANTHROPIC)
 
+    assert normalize_protocol(None) == PROTOCOL_OPENAI
+    assert normalize_protocol("") == PROTOCOL_OPENAI
+    assert normalize_protocol("gemini") == PROTOCOL_OPENAI  # unsupported -> default
+    # Legacy keys from an older config keep working.
+    assert normalize_protocol("openai") == PROTOCOL_OPENAI
+    assert normalize_protocol("anthropic") == PROTOCOL_ANTHROPIC
+    assert normalize_protocol("OPENAI") == PROTOCOL_OPENAI
+
+
+def test_default_protocol_is_openai_and_openai_request_is_unchanged():
     captured = {}
 
     def opener(request, timeout=None):
@@ -302,103 +301,37 @@ def test_chooser_repr_includes_protocol_but_never_the_key():
     assert PROTOCOL_ANTHROPIC in text
 
 
-# --- provider presets: protocol / base URL / model combinations --------------
+# --- base URL completion ------------------------------------------------------
 
 
-def test_llm_preset_catalogue_has_the_expected_keys_and_no_gemini():
-    assert llm_preset_keys() == (
-        PRESET_OPENAI,
-        PRESET_ANTHROPIC,
-        PRESET_DEEPSEEK,
-        PRESET_OPENROUTER,
-        PRESET_CUSTOM,
+def test_normalize_base_url_appends_v1_only_when_missing():
+    assert normalize_base_url("https://api.deepseek.com", PROTOCOL_OPENAI) == (
+        "https://api.deepseek.com/v1"
     )
-    assert DEFAULT_LLM_PRESET == PRESET_OPENAI
-    assert "gemini" not in llm_preset_keys()
-
-
-def test_llm_presets_declare_correct_protocol_and_base():
-    presets = {preset.key: preset for preset in llm_presets()}
-
-    assert presets[PRESET_OPENAI].protocol == PROTOCOL_OPENAI
-    assert presets[PRESET_OPENAI].base_url == DEFAULT_LLM_BASE_URL
-    assert presets[PRESET_OPENAI].model == DEFAULT_LLM_MODEL
-
-    assert presets[PRESET_ANTHROPIC].protocol == PROTOCOL_ANTHROPIC
-    assert presets[PRESET_ANTHROPIC].base_url == DEFAULT_ANTHROPIC_BASE_URL
-    assert presets[PRESET_ANTHROPIC].model == DEFAULT_ANTHROPIC_MODEL
-
-    assert presets[PRESET_DEEPSEEK].protocol == PROTOCOL_OPENAI
-    assert presets[PRESET_DEEPSEEK].base_url == "https://api.deepseek.com/v1"
-    assert presets[PRESET_DEEPSEEK].model == "deepseek-chat"
-
-    assert presets[PRESET_OPENROUTER].protocol == PROTOCOL_OPENAI
-    assert presets[PRESET_OPENROUTER].base_url == "https://openrouter.ai/api/v1"
-
-    assert presets[PRESET_CUSTOM].protocol == PROTOCOL_OPENAI
-
-
-def test_normalize_preset_falls_back_to_openai():
-    assert normalize_preset(None) == PRESET_OPENAI
-    assert normalize_preset("") == PRESET_OPENAI
-    assert normalize_preset("gemini") == PRESET_OPENAI
-    assert normalize_preset("DeepSeek") == PRESET_DEEPSEEK
-    assert normalize_preset(PRESET_CUSTOM) == PRESET_CUSTOM
-
-
-def test_get_llm_preset_falls_back_to_default_on_unknown_key():
-    assert get_llm_preset("nope").key == PRESET_OPENAI
-    assert get_llm_preset(PRESET_DEEPSEEK).key == PRESET_DEEPSEEK
-    assert get_llm_preset(PRESET_ANTHROPIC).protocol == PROTOCOL_ANTHROPIC
-
-
-def test_fill_from_preset_fills_defaults_and_spares_customised_values():
-    openai = get_llm_preset(PRESET_OPENAI)
-    deepseek = get_llm_preset(PRESET_DEEPSEEK)
-
-    # Fields still holding the source preset's values follow the new preset.
-    assert fill_from_preset(
-        deepseek, openai, PROTOCOL_OPENAI, DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL
-    ) == (PROTOCOL_OPENAI, "https://api.deepseek.com/v1", "deepseek-chat")
-
-    # A customised endpoint/model is never clobbered by a preset switch.
-    assert fill_from_preset(
-        deepseek, openai, PROTOCOL_OPENAI, "https://my.gateway/v1", "my-model"
-    ) == (PROTOCOL_OPENAI, "https://my.gateway/v1", "my-model")
-
-
-def test_fill_from_preset_custom_keeps_every_current_value():
-    custom = get_llm_preset(PRESET_CUSTOM)
-    openai = get_llm_preset(PRESET_OPENAI)
-
-    assert fill_from_preset(
-        custom, openai, PROTOCOL_ANTHROPIC, "https://my.gateway/v1", "my-model"
-    ) == (PROTOCOL_ANTHROPIC, "https://my.gateway/v1", "my-model")
-
-
-def test_fill_from_preset_fills_blank_fields():
-    anthropic = get_llm_preset(PRESET_ANTHROPIC)
-    openai = get_llm_preset(PRESET_OPENAI)
-
-    assert fill_from_preset(anthropic, openai, "", "", "") == (
-        PROTOCOL_ANTHROPIC,
-        DEFAULT_ANTHROPIC_BASE_URL,
-        DEFAULT_ANTHROPIC_MODEL,
+    assert normalize_base_url("https://api.deepseek.com/", PROTOCOL_OPENAI) == (
+        "https://api.deepseek.com/v1"
+    )
+    assert normalize_base_url("https://api.deepseek.com/v1", PROTOCOL_OPENAI) == (
+        "https://api.deepseek.com/v1"
+    )
+    # An existing /v1 is never duplicated (trailing slash and all).
+    assert normalize_base_url("https://api.deepseek.com/v1/", PROTOCOL_OPENAI) == (
+        "https://api.deepseek.com/v1/"
+    )
+    assert normalize_base_url("https://openrouter.ai/api/v1", PROTOCOL_OPENAI) == (
+        "https://openrouter.ai/api/v1"
     )
 
 
-def test_fill_from_preset_switches_protocol_when_still_the_source_value():
-    anthropic = get_llm_preset(PRESET_ANTHROPIC)
-    openai = get_llm_preset(PRESET_OPENAI)
+def test_normalize_base_url_blank_uses_the_protocol_default():
+    assert normalize_base_url(None, PROTOCOL_OPENAI) == DEFAULT_LLM_BASE_URL
+    assert normalize_base_url("", PROTOCOL_OPENAI) == DEFAULT_LLM_BASE_URL
+    assert normalize_base_url("   ", PROTOCOL_ANTHROPIC) == DEFAULT_ANTHROPIC_BASE_URL
+    assert normalize_base_url(None, PROTOCOL_ANTHROPIC) == DEFAULT_ANTHROPIC_BASE_URL
 
-    filled_protocol, _, _ = fill_from_preset(
-        anthropic, openai, PROTOCOL_OPENAI, DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL
-    )
-    assert filled_protocol == PROTOCOL_ANTHROPIC
 
-    # A protocol the user already changed stays put even when switching preset.
-    deepseek = get_llm_preset(PRESET_DEEPSEEK)
-    filled_protocol, _, _ = fill_from_preset(
-        deepseek, openai, PROTOCOL_ANTHROPIC, DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL
+def test_chooser_completes_a_missing_v1_endpoint():
+    chooser = LLMCoverChooser(
+        api_key="sk", base_url="https://api.deepseek.com", protocol=PROTOCOL_OPENAI
     )
-    assert filled_protocol == PROTOCOL_ANTHROPIC
+    assert chooser.base_url == "https://api.deepseek.com/v1"
