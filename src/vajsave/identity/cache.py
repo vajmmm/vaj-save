@@ -25,6 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 
+from ..persistence import atomic_write_json
 from .models import GameIdentity
 
 ROM_CACHE_NAME = "identity_rom_cache.json"
@@ -138,18 +139,7 @@ class RomIdentityCache:
             return False
         with self._lock:
             payload = {"version": _VERSION, "entries": dict(self._entries)}
-        tmp = None
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_name(self.path.name + ".tmp")
-            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(self.path)
-        except (OSError, TypeError, ValueError):
-            if tmp is not None:
-                try:
-                    tmp.unlink(missing_ok=True)
-                except OSError:
-                    pass
+        if not atomic_write_json(self.path, payload):
             return False
         with self._lock:
             self._dirty = False
