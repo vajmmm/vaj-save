@@ -3,12 +3,13 @@
 
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 spec_dir = Path(SPECPATH).resolve()
 project_root = spec_dir.parent
 entry = spec_dir / "entrypoint.py"
 hiddenimports = collect_submodules("vajsave")
+qtawesome_datas = collect_data_files("qtawesome")
 
 a = Analysis(
     [str(entry)],
@@ -17,7 +18,7 @@ a = Analysis(
     datas=[
         (str(project_root / "assets"), "assets"),
         (str(project_root / "src" / "vajsave" / "data"), "vajsave/data"),
-    ],
+    ] + qtawesome_datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

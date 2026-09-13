@@ -2,18 +2,17 @@ import sys
 from typing import Optional
 
 from .app_state import AppState
-from .app_ui import build_app
 
 
 def main(state: Optional[AppState] = None) -> int:
-    """Launch the vaj-save Tkinter desktop application."""
+    """启动 vaj-save 的 Qt 桌面应用。"""
+    from .qt_ui import run_app
+
     app_state = state or AppState()
-    app = build_app(state=app_state)
     try:
-        app.root.mainloop()
+        return run_app(app_state)
     finally:
         app_state.stop_watch(timeout=0.5)
-    return 0
 
 
 if __name__ == "__main__":

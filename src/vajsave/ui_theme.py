@@ -2,7 +2,7 @@
 
 This module is intentionally free of Tkinter imports so it can be unit tested
 without a display. ``app_ui`` consumes these tokens/helpers to render the
-three-column archive desk and its right-hand inspector.
+platform dock, responsive gallery and fog-white detail drawer.
 """
 
 from __future__ import annotations
@@ -44,6 +44,19 @@ SWITCH: Dict[str, str] = {
     "status_blue": "#2563eb",
     "status_green": "#16a34a",
     "status_orange": "#f59e0b",
+    # Mist-silver gallery surfaces.  These stay neutral so box art remains the
+    # strongest colour in the room; the system blue is still reserved for the
+    # primary action and focused selection.
+    "fog_top": "#f4f6f9",
+    "fog_canvas": "#edf1f5",
+    "fog_panel": "#f8fafc",
+    "fog_glass": "#f5f8fb",
+    "shadow_soft": "#cbd2dc",
+    "shadow_deep": "#aeb7c3",
+    "shelf_face": "#d9dee5",
+    "shelf_edge": "#b9c1cc",
+    "shelf_highlight": "#f9fafc",
+    "dock_selected": "#dcecff",
 }
 
 # Module-level aliases keep the token names greppable from the UI code without
@@ -63,12 +76,32 @@ PLATFORM_COLORS: Dict[str, str] = {
     "gba": "#30d158",
 }
 
-# Archive-table row metrics. The extra breathing room keeps the title block,
-# metadata columns and status block visually separate at the minimum width.
+# Legacy row metrics remain exported for integrations that still import them;
+# the live SaveList uses the gallery metrics below.
 ROW_HEIGHT = 70
 ROW_COVER = 52
 ROW_COVER_RADIUS = 6
 ROW_PIP_WIDTH = 3
+
+# Responsive gallery metrics. The card width is intentionally compact enough
+# to keep four covers visible in the centre column at the default window size.
+GALLERY_CARD_WIDTH = 208
+GALLERY_CELL_HEIGHT = 396
+GALLERY_COVER_WIDTH = 184
+GALLERY_DISPLAY_HEIGHT = 300
+# Combined height of the visible shelf face and its front lip.  The soft
+# projection is painted below this baseline and does not consume the card hit
+# target, matching the substantial floating shelf in the reference.
+GALLERY_SHELF_HEIGHT = 38
+# The rear edge of the shelf is recessed from the front edge, while the shadow
+# continues past the lip as a broad, low-contrast gradient.  These geometry
+# tokens are shared by the live Canvas and the offline visual preview.
+GALLERY_SHELF_INSET = 48
+GALLERY_SHELF_SHADOW_HEIGHT = 44
+DOCK_WIDTH = 116
+DRAWER_WIDTH = 430
+DRAWER_ANIMATION_STEPS = 8
+DRAWER_ANIMATION_MS = 16
 
 STATUS_LABELS: Dict[str, str] = {
     "new": "新",
@@ -148,12 +181,12 @@ def status_label(status: Any) -> str:
 
 
 def save_row(entry: Any, status: Any, *, starred: bool = False) -> Dict[str, Any]:
-    """Describe one row of the single-column save list.
+    """Describe one display item for the responsive save gallery.
 
     ``status`` may be a status string or any object exposing a ``.status``
     attribute (e.g. ``library.SaveBackupStatus``), keeping this helper pure and
-    independent of the state layer. The row intentionally carries only plain
-    text data — no pastel face, monogram, pill or geometry.
+    independent of the state layer. The item intentionally carries plain data;
+    geometry and shelf rendering stay in ``ui_widgets.SaveList``.
     """
     status_key = getattr(status, "status", status) or "new"
     title = entry.display_name or entry.path

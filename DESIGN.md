@@ -1,418 +1,172 @@
 ---
-name: vaj-save Archive Desk
-description: Desktop archive workspace for handheld console save backups
+name: vaj-save 收藏架
+description: 面向掌机存档备份的雾银亮色收藏架工作台
 colors:
   bg: "#ebebeb"
   surface: "#f2f2f2"
   surface_alt: "#e7e7e7"
   card: "#ffffff"
   text: "#2d2d2d"
-  text_strong: "#1f2733"
   ink: "#14233b"
-  muted: "#8b8b8b"
-  muted_strong: "#687383"
+  muted: "#687383"
   line: "#d6d6d6"
-  line_soft: "#e3e6ea"
   border_soft: "#e1e7f0"
-  window: "#ffffff"
-  panel: "#ffffff"
-  panel_alt: "#f7f9fc"
-  line_strong: "#b0b0b0"
-  hover: "#e2e2e2"
   accent: "#0a84ff"
-  selected: "#e4f1ff"
-  selected_soft: "#eaf3ff"
   accent_hover: "#409cff"
   on_accent: "#ffffff"
-  primary: "#0a84ff"
   success: "#30d158"
   warning: "#ff9f0a"
   danger: "#ff453a"
-  status_blue: "#2563eb"
-  status_green: "#16a34a"
-  status_orange: "#f59e0b"
-  green: "#30d158"
-  orange: "#ff9f0a"
-  red: "#ff453a"
-  all: "#0a84ff"
-  psp: "#64d2ff"
-  vita: "#63e6be"
-  switch: "#ff3c28"
-  3ds: "#ffd60a"
-  threeds: "#ffd60a"
-  nds: "#bf5af2"
-  gba: "#30d158"
+  fog_top: "#f4f6f9"
+  fog_canvas: "#edf1f5"
+  fog_panel: "#f8fafc"
+  fog_glass: "#f5f8fb"
+  shadow_soft: "#cbd2dc"
+  shadow_deep: "#aeb7c3"
+  shelf_face: "#d9dee5"
+  shelf_edge: "#b9c1cc"
+  shelf_highlight: "#f9fafc"
+  dock_selected: "#dcecff"
 typography:
   fontFamily: PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif
-  title:
-    fontFamily: PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif
-    fontSize: 17px
-    fontWeight: 700
-    lineHeight: 1.3
-  heading:
-    fontFamily: PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif
-    fontSize: 15px
-    fontWeight: 700
-    lineHeight: 1.4
-  body:
-    fontFamily: PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif
-    fontSize: 13px
-    lineHeight: 1.5
-  detail:
-    fontFamily: PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif
-    fontSize: 12px
-    lineHeight: 1.4
-rounded:
-  none: 0px
-  sm: 6px
-  md: 10px
-  row: 6px
-spacing:
-  xs: 4px
-  sm: 8px
-  md: 12px
-  lg: 16px
-  xl: 24px
-components:
-  top-brand-bar:
-    backgroundColor: "{colors.surface}"
-    textColor: "{colors.text}"
-    height: 68px
-  panel:
-    backgroundColor: "{colors.surface}"
-    textColor: "{colors.text}"
-    rounded: "{rounded.md}"
-  list-row:
-    backgroundColor: "{colors.window}"
-    height: 70px
-    pipWidth: 3px
-    coverSize: 52px
-    coverRadius: 6px
-    selectedBackgroundColor: "#eaf3ff"
-    hoverBackgroundColor: "{colors.hover}"
-    textColor: "{colors.text}"
-    mutedTextColor: "{colors.muted}"
-  button-primary:
-    backgroundColor: "{colors.accent}"
-    hoverColor: "{colors.accent_hover}"
-    textColor: "{colors.on_accent}"
-    height: 32px
-    rounded: "{rounded.sm}"
-  button-neutral:
-    backgroundColor: "{colors.surface_alt}"
-    hoverColor: "{colors.hover}"
-    textColor: "{colors.text}"
-    height: 30px
-    rounded: "{rounded.sm}"
-  input:
-    backgroundColor: "{colors.card}"
-    textColor: "{colors.text}"
-    borderColor: "{colors.line}"
-    padding: 6px
-  platform-pip:
-    backgroundColor: "{colors.panel}"
-    width: 3px
-  divider:
-    backgroundColor: "{colors.line}"
-  bottom-system-bar:
-    backgroundColor: "{colors.surface}"
-    textColor: "{colors.text}"
+  title: 17px/700
+  heading: 15px/700
+  body: 13px/400
+  detail: 12px/400
 ---
 
-## Overview
+# vaj-save 视觉规范
 
-A dense desktop archive workspace for handheld console saves (PSP, PS Vita,
-Nintendo Switch, 3DS, NDS, GBA). The visual target is a white, high-contrast
-three-column workbench: navigation on the left, a data-rich archive table in
-the center and an actionable inspector on the right.
+## 设计目标
 
-Design philosophy:
-- **Archive table, not a card gallery.** The middle column remains a flat,
-  single-column（单列）list, but each row carries the information needed for a fast
-  decision: cover, title, subtitle, platform, Title ID, latest backup and
-  version count. Selection is a pale blue row tint, never a floating card.
-- **Inspector on the right.** Selection opens a complete action surface with a
-  large cover, metadata, a full-width blue 备份 action, secondary actions,
-  version history and an editable note.
-- **Platform identity stays compact.** Platform rows use small geometric marks
-  and counts; save rows use the platform name and a restrained accent marker.
-- **Status is scannable.** Status remains written out ("新" / "有变化" /
-  "已备份"), with a small semantic dot and version count beneath it.
+界面是一座明亮、安静但有实体收藏感的掌机存档架。整体保留 Switch
+Basic White 色阶，以雾银顶栏、窄平台 Dock、响应式包装盒画廊、右侧雾白详情
+抽屉和底部设备状态条组成。用户应能像浏览实体游戏收藏一样快速定位存档，同时
+仍可完成设备管理、平台筛选、搜索、排序、多选、备份、恢复、版本管理、FTP 拉取、
+ROM 绑定、备注、导出与设置等全部既有工作流。
 
-## Colors
+视觉层次来自柔和渐变、细边、卡盒接触暗边、货架前缘和适量高光。避免厚重拟物、
+高饱和背景和装饰噪音。蓝色仍是主操作与当前选择的唯一大面积强调色。
 
-All values live in `src/vajsave/ui_theme.py` (`SWITCH`, `PLATFORM_COLORS`, and
-the module-level `HOVER` / `LINE_STRONG` / `ACCENT_HOVER` aliases) and are
-re-exported by `src/vajsave/app_ui.py`. Nothing in the UI may hardcode a colour
-literal.
+## 颜色与材质
 
-### Structural surfaces (top to bottom)
-- **Window (`#ffffff`)** — the main canvas and all three work areas.
-- **Panel alt (`#f7f9fc`)** — the local library card and empty cover placeholder.
-- **Subtle borders (`#e1e7f0`)** — column separators, inputs, table borders and row dividers.
-- **Legacy tokens (`#ebebeb` / `#f2f2f2`)** remain exported for compatibility with
-  the existing pure-theme tests; new widgets use the white workspace tokens.
-- **Cards / inputs (`#ffffff`)** — the device Listbox, the versions Listbox and entries.
-- **Hover (`#e2e2e2`)** — the face of a hovered row and of a hovered neutral button.
-- **Divider lines (`#d6d6d6`)** — 1px row separators; **strong lines (`#b0b0b0`)** for emphasised edges.
+所有运行时颜色必须来自 `src/vajsave/ui_theme.py` 的 `SWITCH`、
+`PLATFORM_COLORS` 或其颜色混合工具；组件内不得散落十六进制颜色。
 
-### Text & information
-- **Primary ink (`#14233b`)** — titles, list labels, definition values and numbers.
-- **Muted ink (`#687383`)** — metadata, subtitles, timestamps and captions.
+- 窗口底色采用 `#ebebeb` 到 `#ffffff` 的亮色层级。
+- 顶栏使用雾银表面，可用浅灰渐变或分层色块模拟金属雾面。
+- 画廊背景保持低对比度，让封面成为信息焦点。
+- 货架由浅灰托面、1px 高光、加厚前缘、卡盒接触暗边和渐变落影组成，不使用木纹或深色重阴影。
+- 详情抽屉使用接近白色的雾面表面、细边和左侧软阴影。Tkinter 不支持子控件
+  实时透明或毛玻璃，因此不得依赖真实 alpha；使用主题色混合模拟半透明观感。
+- 平台色只用于 Dock 图标、3px 标记或包装盒上的小型平台识别元素。
+- `#0a84ff` 用于备份主按钮、当前 Dock 项与选中包装盒描边/柔和光晕。
+- 成功、警告、危险状态分别使用主题中的绿、橙、红语义色。
 
-### Interaction
-- **Accent (`#0a84ff`)** — the primary 备份 button and the selected platform mark. The 备份 button is the only saturated accent fill used as a large surface. In local-library browse mode the same primary slot renders as a neutral 删除备份 button, so the app never paints two saturated action surfaces at once.
-- **Accent hover (`#409cff`)** — the 备份 button while hovered.
-- **Selected list row (`#eaf3ff`, a tint of the accent)** — the default selection background for navigation, Listbox rows and save rows.
+## 排版
 
-### Handheld platform identifiers
-- **All (`#0a84ff`)**, **PSP (`#64d2ff`)**, **PS Vita (`#63e6be`)**, **Nintendo Switch (`#ff3c28`)**, **Nintendo 3DS (`#ffd60a`)**, **Nintendo DS (`#bf5af2`)**, **Game Boy Advance (`#30d158`)** — used in compact platform marks and row accents.
+字体顺序为 macOS `PingFang SC`、Windows `Microsoft YaHei`、Linux
+`Noto Sans CJK SC`，最后回退到 Tk 默认字体。标题 17pt 粗体，区块标题 15pt
+粗体，正文 13pt，元数据 11–12pt。封面承担主要识别任务，卡面文字保持克制，
+不得覆盖封面。
 
-### Functional status colors
-- **Success (`#16a34a`)**, **Warning (`#f59e0b`)**, **Danger (`#ff453a`)** — used for status dots, confirmations and destructive prompts.
+## 页面结构
 
-## Typography
+最小窗口 `1320x780`，默认窗口 `1480x900`。纵向分为顶栏、主体与底部状态栏。
 
-Cross-platform stack: macOS `PingFang SC`, Windows `Microsoft YaHei`, Linux
-`Noto Sans CJK SC`, then `sans-serif`.
-- App title 17pt bold, detail heading 15pt bold, list titles 13pt, list subtitles
-  and status 11–12pt, panel captions 12pt.
+### 雾银顶栏
 
-## Layout
+高度约 74px，从左到右依次放置：菜单/品牌、搜索、排序、仅显示有更新、设置、
+帮助和收藏统计。搜索占据主要弹性空间，排序和筛选保持紧凑。顶栏控件复用统一的
+圆角、边框、悬停和按压状态，不引入第二种强调色。
 
-The window is composed of three vertical bands: **顶部品牌栏** (top brand bar) →
-**三栏主体** (three-column body) → **底部操作栏** (combined action/status bar).
+### 窄平台 Dock
 
-- **Dimensions**: min-size `1320x780`, default geometry `1480x900`.
-- **1. Top brand bar (`#ffffff`)** — app identity on the left ("vaj-save" plus
-  a subtitle) and archive statistics on the right. The mark is geometric and
-  restrained: no round monogram badge and no clock.
-- **2. Three-column body**:
-  1. **Left panel (236px fixed, `#ffffff`)**: platform navigation rows with a
-     geometric mark, label and count above the detected **device Listbox**
-     (`tk.Listbox`, white rows, blue selected row) and a local-library card.
-  2. **Middle column (flexible, `#ffffff`)**: the **single-column（单列）archive
-     table** — a `tk.Canvas` (`SaveList`) drawing one 70px row per *visible* save,
-     with 游戏 / 平台 / Title ID / 最近备份 / 状态 columns.
-  3. **Right panel (430px fixed, `#ffffff`)**: the **inspector** — a large cover
-     and metadata block, a full-width primary 备份 action, three secondary actions,
-     the **versions Listbox** and an editable note.
-- **3. Bottom status bar (`#ffffff`)**: connection state, archive state and warning
-  text only. Quick actions live next to the relevant content instead of forming a
-  bottom button wall.
+Dock 宽约 116px，固定在主体左侧。平台按 `all / psp / vita / switch /
+3ds / nds / gba` 排列，以图标、名称和当前项浅蓝底表达筛选状态。Dock 下部保留
+当前设备、刷新设备、添加设备、其他设备、FTP 拉取和本地存档入口；空间不足时
+优先保证入口可操作，说明文字可缩短但功能不得隐藏或删除。
 
-## Save List Behavior
+### 响应式实体收藏架画廊
 
-The middle column is a `SaveList` Canvas, not a Listbox and not a grid. The
-number of rows always equals `len(state.visible_saves())`.
+中央区域是 `SaveList` 兼容的 Canvas 画廊。保存项按可用宽度自动排成多列；每一
+视觉行下方绘制一段浅灰陈列架。包装盒或卡带保持平台适合的轮廓与封面比例，并由
+细描边、顶缘高光和短投影产生轻微实体感。
 
-A row is `PAD + index * 70` tall and spans the flexible center column:
-a 3px neutral edge and a 52px cover square lead into the title and subtitle;
-platform, Title ID and latest backup occupy the metadata columns, while the
-status column shows a small semantic dot, status text and version count. There
-is no selection grow, ring, star or full-width platform bar.
+- Switch 使用偏高的红标塑料盒轮廓。
+- PSP、PS Vita、3DS、NDS 使用各自接近实体盒的纵横比与小型平台标识。
+- GBA 可使用横向盒装或卡带轮廓，但必须保持标题可辨。
+- 无封面时用平台色的小标记和中性占位面，不伪造封面。
+- 选中项可使用 2px 蓝色描边和低强度外光；尺寸不得跳变。
+- 悬停仅轻微提亮或上移视觉内容，不改变布局占位。
+- 画廊须在 `<Configure>` 后重新计算列数、总高度与 `scrollregion`，并保证当前
+  活动项仍在可视区域。
 
-- **Single click** — selects exactly one row (clears the rest) and shows its details.
-- **Ctrl/Command + click** — toggles that row in the multi-selection.
-- **Shift + click** — selects the contiguous range from the anchor row to the clicked row.
-- **Ctrl/Command + A** — selects every visible row.
-- **Arrow keys** — `↑/↓` move the active row by one; selection follows and clamps at the edges instead of wrapping.
-- **Double click / Return** — activates the row and runs the primary 备份 action.
-- **Hover** (`<Enter>` / `<Motion>` / `<Leave>`) — the row under the pointer repaints on the `hover` face; leaving clears it.
-- **Auto-scroll** — whenever the selection moves, the row is scrolled into view (`yview_moveto`).
-- **Wheel** — scrolls the list. There is no visible scrollbar chrome.
+画廊的公共选择接口必须保持兼容：`curselection()`、`select_index()`、
+`selection_set()`、`selection_clear()`、`select_all()`、`move_active()`、
+`activate_index()` 和 `size()`。单击单选，Ctrl/Command 单击切换，Shift 单击连续
+选择，Ctrl/Command+A 全选，双击或回车执行主操作。左右键移动一格，上下键按
+当前列数移动，边缘处钳制而不循环。封面缓存应有界并保留 Tk 图片强引用。
 
-The device Listbox (`vol_list`) and versions Listbox (`version_list`) remain
-`tk.Listbox` widgets and keep their native wheel handling.
+### 雾白详情抽屉
 
-## Elevation & Depth
+详情区默认不抢占画廊焦点；选中游戏后从右侧滑入约 420–450px 的雾白抽屉，关闭
+后释放中央宽度。动画由短周期 `after()` 驱动，时长约 160–220ms；动画过程中不做
+文件 I/O 或图片解码。降低动态效果或运行环境不适合动画时允许直接切换终态。
 
-- **Flat by design**: `ttk` "clam" style, flat relief and no blur drop-shadows.
-- **Separator layering** creates depth: `#ffffff` workspace → `#f7f9fc` utility
-  card → `#e1e7f0` borders.
-- **Selection** is expressed with a light accent tint (`#e4f1ff`), never by
-  growing or outlining a card.
+抽屉从上到下包含：关闭入口、封面与身份信息、稳定的定义列表、备份主按钮、恢复/
+导出 ZIP/打开位置三个次操作、按需显示的 ROM 绑定区、填充剩余高度的版本列表与
+底部备注输入框。恢复必须保留明确确认；本地库模式下主按钮转换为中性的删除备份。
+长路径截断显示，但完整值仍应可访问。
 
-## Shapes
+### 底部状态栏
 
-- **List rows**: flat full-width bands separated by 1px lines; the hover/selection
-  face uses a 6px rounded rectangle.
-- **Cover squares**: 52px list squares and a 108×144 detail cover with an 8px radius; a lighter radius is used
-  for the empty placeholder so it never reads as artwork.
-- **Buttons**: `CanvasButton` draws a 6px rounded rectangle with a 1px outline.
-- **Platform marks**: small geometric marks carry platform identity without
-  turning the navigation into a wall of saturated strips.
+底栏约 38–42px，以小型语义点和分隔线展示当前设备、来源、扫描/加载状态与监听状态。
+“仅显示有更新”只在顶栏提供，底栏不重复创建筛选控件；筛选状态通过扫描提示文字
+或顶栏选中态反馈。监听开关必须与应用状态双向同步。
 
-## Components
+## 功能完整性
 
-### Save Row
-The only representation of a save in the middle column (70px tall):
-- **3px neutral edge** at the left edge; platform identity is carried by the
-  geometric platform mark in the left rail rather than a repeated colour strip.
-- **52px cover square** — the cover from `vajsave.covers.resolve_cover` (an
-  embedded console icon found during the scan, then a user cover at
-  `<library_root>/covers/<platform>/<name>.<ext>`), or a plain `#e7e7e7` square
-  when nothing resolves. Covers are cover-cropped to a square and rounded.
-- **Title** (13pt) and optional **subtitle** (11pt, muted) — the title_id / slot /
-  user joined with " · ".
-- **Status** — a semantic dot, the status text ("新", "有变化" or "已备份") and
-  the number of versions.
+视觉重构不得改变存档读写语义或后端数据格式，并须保留下列链路：
 
-Rows are separated by a 1px `#d6d6d6` line. Hover paints the row face `#e2e2e2`;
-selection paints it the light accent tint. Rows never grow or ring on selection.
+- 设备发现、刷新、挂载点选择、自定义目录和热插拔轮询。
+- 平台筛选、搜索、最近备份排序、仅显示有更新。
+- 单选、多选、连续选择、全选与键盘导航。
+- 从设备备份、本地备份删除、恢复到用户所选目录、版本选择、ZIP 导出和打开位置。
+- ROM 候选绑定与 GBA/NDS 手动绑定。
+- 备注的回车/失焦保存。
+- Checkpoint/ftpd FTP 只读拉取及原子缓存替换。
+- 设置、版本保留规则、LLM 封面消歧与连接测试。
 
-### Detail Inspector
-Right panel, top to bottom:
-- **Cover and identity**: a 108×144 cover preview beside the game name and
-  subtitle.
-- **Metadata grid**: platform, Title ID, version, size, latest backup, status and
-  path use stable label/value columns so a long path cannot cover another field.
-- **Primary action**: a full-width blue 备份 button. While browsing the local
-  library it becomes a neutral 「删除备份」 button instead: the saturated accent
-  stays reserved for backing a device save up, and the action deletes the
-  selected games' local snapshots and covers after a confirmation.
-- **Secondary actions**: 恢复, 导出 ZIP and 打开位置 in one measured row.
-  - **恢复** first asks for confirmation and states that the selected version is
-    copied to a folder and the handheld console is not written to; cancelling the
-    confirmation copies nothing. It calls `restore_snapshot`, which only copies
-    out of the library and never prunes the existing versions.
-- **Game-identity binding (contextual)**: shown only when the selected save still
-  needs help. An `ambiguous` save lists its candidate ROMs and offers a measured
-  绑定所选 ROM button; an `unresolved` GBA/NDS save offers a 手动选择 ROM… button
-  that opens the file dialog. The section stays hidden for every other save.
-- **Versions Listbox**: white, blue selection, with a compact monospace row and a
-  grid row that occupies the remaining inspector height.
-- **Note entry**: a white input pinned to the bottom.
+设备与版本仍可使用 `tk.Listbox`，也可替换为等价 Canvas 视图，但其选择、滚轮、
+索引和刷新语义必须保持。所有按钮与开关继续使用统一的 `CanvasButton` 状态模型。
 
-The path is one row in the metadata grid; there is no separate full-width path strip.
+## 无障碍与响应式要求
 
-### Settings & Help (top brand bar)
-Two quiet neutral buttons sit at the right of the top brand bar; neither uses a
-saturated accent fill.
-- **设置** opens a non-resizable dialog listing the local backup library path, the
-  optional GBA/NDS ROM directories and the libretro metadata directory, plus the
-  **保留版本数 (`keep_last`)** field. `keep_last` is read from and written back to
-  the library's `settings.json`; `0` means unlimited. A blank/negative/non-numeric
-  entry is rejected with a status warning, the dialog stays open, and
-  `settings.json` is left untouched. Changing the value never prunes existing
-  versions — pruning still happens only when a new version is added. A
-  「打开设置…」 entry button at the bottom of the dialog opens the LLM settings;
-  no LLM field remains inline, so the main dialog stays short.
-- **Optional LLM cover disambiguation** lives in its own non-resizable
-  「LLM 封面消歧」 dialog reached from that entry button, and exposes the same
-  fields it used to: a 启用 toggle, a 协议 selector (`openai-completions` /
-  `anthropic-messages`), a Base URL field, a masked API 密钥 field and a 模型 ID
-  field, with its own 测试连接 / 保存 actions. Gemini is deliberately not
-  offered; the pre-rename `openai` /
-  `anthropic` protocol values are still accepted and any unknown value falls back
-  to `openai-completions`. The toggle, the key, the protocol, the base URL and the
-  model are persisted to `config.json` (so they survive a restart); a blank base
-  URL or model falls back to the selected protocol's built-in default, and a bare
-  host without a `/v1` segment is completed (an existing `/v1` is never
-  duplicated). Switching protocol rewrites only a still-default base URL (and
-  model) to the new protocol's default — a customised gateway endpoint is left
-  untouched. The
-  OpenAI shape posts to `<base>/chat/completions` with a `Bearer` token; the
-  Anthropic shape posts to `<base>/messages` with `x-api-key` and
-  `anthropic-version` headers. The key is written to disk but never echoed into
-  status/warning text or any log line or `repr`. When enabled,
-  the LLM is consulted *only* for a genuinely ambiguous `Named_Boxarts` listing —
-  several *different* titles matching one query — and must return one exact file
-  name from the offered list. Region/language variants of a single title are
-  still resolved deterministically to the USA release without any LLM call, and
-  a disabled/blank configuration keeps multi-candidate behaviour byte-for-byte
-  as before (placeholder, no network). A failed, nonsense or `NONE` answer leaves
-  the placeholder in place and writes nothing to the cover cache.
-- **LLM debug log + connectivity test.** Every chooser request and result is
-  appended to `<library_root>/llm-cover.log` (protocol, model, endpoint, query,
-  candidate names, outcome) so the exchange can be inspected after the fact;
-  the API key is never written. Requests send an explicit `User-Agent`
-  (`vaj-save/…`): the default `Python-urllib` token is banned by the
-  Cloudflare fronting some gateways (403 / error 1010). The field carries no payload beyond file names,
-  so the request body itself is not logged. A **测试连接** button below the 模型 ID
-  field sends one tiny message with the values currently typed (saved or not)
-  and shows the model's reply inline plus the status bar, so the endpoint / model
-  / key can be verified before enabling the feature.
-- **帮助** opens a short, non-resizable guide. Its copy makes the archive
-  direction explicit ("把掌机存档备份到电脑，不会写入掌机") and separates 备份 from
-  the copy-to-folder 恢复. It replaces the old "帮助中心暂未配置" placeholder status.
-  The guide also names the FTP pull and its Checkpoint / ftpd presets.
+- 文本与背景保持足够对比度，不用颜色作为唯一状态提示。
+- 所有图标入口带可见中文标签或悬停提示，并可通过键盘到达。
+- 焦点、选择和悬停三种状态必须可区分。
+- 1320×780 下主操作、版本区和备注不可互相覆盖；窄窗口优先减少画廊列数。
+- 高 DPI 下依据 Tk 缩放工作，不使用依赖具体操作系统的坐标或路径。
+- 封面缺失、空列表、多选、长标题、长 Title ID 和抽屉关闭状态都必须有稳定布局。
 
-### FTP Pull (left device rail)
-A quiet neutral 「FTP 拉取」 button sits beside 「＋ 添加设备」 under the device
-Listbox. It opens a non-resizable dialog that pulls handheld saves straight from
-a console FTP server into the local library's `ftp-cache/` tree, then scans that
-cache like any other device.
-- **Presets**: `Checkpoint` is the default; `ftpd` is a switchable fallback. The
-  active preset, host, port and user are persisted; the password is kept in
-  memory only and never written to `config.json` or any log/status line.
-- **Read-only**: the client only ever lists and downloads. No upload/delete
-  command is issued, and downloads are confined to
-  `<library>/ftp-cache/<preset>/` (unsafe remote names are skipped).
-- **Atomic**: files are staged in a hidden directory and the cache is swapped in
-  only after the whole tree downloads. A failed or partial pull removes the
-  staging directory, keeps the previous cache, and never becomes the selected
-  device — the error is surfaced as a status warning instead.
-- The pulled cache appears in the device list as a non-removable `FTP · <label>`
-  row and is scanned with the normal platform scanners, so a 3DS/Switch
-  Checkpoint export pulled over FTP behaves exactly like a mounted card.
+## 实现边界
 
-### Platform Rows
-`hand2` cursor; selected row tinted `#eaf3ff`, idle rows `#ffffff`. A small
-geometric platform mark uses the canonical platform colour, while the row itself
-stays neutral. Rows are **created once** and only their colours/texts are refreshed by
-`refresh_platform_ui()`, so widget ids stay stable.
+- `src/vajsave/ui_theme.py`：颜色、画廊尺寸、包装盒比例、抽屉与动画 Token，以及
+  无显示依赖的布局辅助函数。
+- `src/vajsave/ui_widgets.py`：`CanvasButton` 与响应式 `SaveList` 画廊，包括选择模型、
+  二维导航、滚动与封面缓存。
+- `src/vajsave/app_ui.py`：顶栏、Dock、画廊、详情抽屉、状态栏和完整业务事件装配。
+- `src/vajsave/covers.py`：只读封面解析与缩略图生成。
+- `scripts/ui_preview.py`：离线生成带“示意图 · 非真实截图”标识的新版布局示意图，
+  并在可用时抓取真实画廊 Canvas；无显示或无 Ghostscript 时仍须成功降级。
 
-### Listboxes (devices, versions)
-White background, dark text, light accent tint (`#e4f1ff`) selection with dark
-foreground, flat relief, zero border. The accent tint is the same quiet
-selection used by the save list — the saturated accent is reserved for the 备份
-button.
+## Do / Don't
 
-### Buttons — `CanvasButton`
-Every button and monitoring toggle is a `CanvasButton` (a `tk.Canvas` subclass);
-no `ttk.Button`/`ttk.Checkbutton` remains.
-
-- **States**: `idle`, `hover` (`#e2e2e2` neutral / `#409cff` accent), `pressed`,
-  and an `accent` variant for the primary 备份 action.
-- **Toggle state**: `selected` (used by "监听插拔" / "仅显示有更新") tints the button.
-- **API**: `set_text`, `set_selected`, `invoke`.
-- **Sizing**: height `30px` in the status bar, `34px` in secondary actions and
-  `40px` in the primary inspector action; width is measured from the label font
-  unless the primary action fills its column.
-
-### Inputs
-White field background, dark text, `#d6d6d6` border, 6px padding.
-
-## Do's and Don'ts
-
-### Do's
-- **DO** pull every colour from `vajsave.ui_theme` (`SWITCH`, `PLATFORM_COLORS`) — no ad-hoc hex literals in widgets.
-- **DO** keep the vertical structure: top brand bar → three-column body → bottom status bar.
-- **DO** render saves as a single-column list of flat rows; one row per visible save.
-- **DO** show the resolved cover as a small square, falling back to a plain light-gray placeholder.
-- **DO** write the status out as text with a small semantic dot.
-- **DO** keep the secondary inspector actions measured; the primary 备份 action may fill the inspector width.
-- **DO** let the versions list fill the remaining height of the inspector.
-- **DO** use `CanvasButton` for every button and toggle so states stay consistent.
-- **DO** keep the device and versions lists as `tk.Listbox`.
-- **DO** use the canonical platform colours for platform marks and row accents only.
-
-### Don'ts
-- **DON'T** reintroduce the Console Dark surfaces (`#1c1c1e`, `#2c2c2e`, `#3a3a3c`) as UI background/panel/card colours.
-- **DON'T** render saves as cards/grids or add grow/ring/star/bar/monogram decorations.
-- **DON'T** use large coloured status badges; status dots must stay small and sit beside the text.
-- **DON'T** fall back to `ttk.Button` / `ttk.Checkbutton`; bypassing `CanvasButton` breaks the Basic White chrome.
-- **DON'T** use random saturated colours for a platform — always reference `PLATFORM_COLORS`.
-- **DON'T** add a full-width secondary button wall or a full-width path strip to the inspector.
-- **DON'T** hardcode Windows drive letters (e.g. `D:`) or OS-specific paths — use cross-platform path handling.
-
-## Implementation Notes
-
-- `src/vajsave/ui_theme.py` — pure tokens + helpers (`mix`, `lighten`, `darken`, `hex_to_rgb`, `rgb_to_hex`, `status_label`, `save_row`) plus the list row metrics (`ROW_HEIGHT`/`ROW_COVER`/`ROW_COVER_RADIUS`/`ROW_PIP_WIDTH`); display-free and unit tested in `tests/test_ui_theme.py`.
-- `src/vajsave/covers.py` — read-only, exception-safe cover discovery and thumbnailing (`find_embedded_cover`, `user_cover_path`, `resolve_cover`, `load_thumbnail`); never imports tkinter and is unit tested in `tests/test_covers.py`.
-- `src/vajsave/app_ui.py` — `CanvasButton` (rounded Canvas button/checkbutton), `SaveList` (single-column save list + bounded cover cache), and `VajSaveApp` (window wiring).
-- `src/vajsave/scanner.py` — fills `SaveEntry.cover_path` with an embedded icon during the (bounded, read-only) scan.
-- `src/vajsave/remote_ftp.py` — read-only FTP client and presets (`RemoteFtpClient`, `FtpProfile`, `ensure_read_only`, `sanitize_component`); password-free `repr`, no mutating verbs, injected transport for tests.
-- `src/vajsave/ftp_fetch.py` — atomic preset pull into `<library>/ftp-cache/<preset>/` (`pull_preset`, `FtpPullResult`, `ftp_cache_root`); staged download + swap so a partial pull never becomes a device.
-- `scripts/ui_preview.py` — builds the app offscreen and writes `build/ui-preview/home-preview.png` (Pillow) plus `save-list.eps` (converted to PNG when Ghostscript is available; degrades gracefully and still exits 0). The Pillow image is an **illustrative mock**, not a screenshot of the live widgets.
+- **DO** 使用主题 Token、响应式多列布局、适量实体层次和雾白拟态抽屉。
+- **DO** 将封面、平台形态和状态文字共同用于识别。
+- **DO** 完整保留业务入口、错误可见性和跨平台行为。
+- **DON'T** 恢复旧式单列数据表或固定三等宽主体布局。
+- **DON'T** 使用真实子控件透明、毛玻璃依赖或持续高频动画。
+- **DON'T** 让光晕、投影、平台色压过封面与文字。
+- **DON'T** 硬编码盘符、系统路径或平台专属文件管理方式。
