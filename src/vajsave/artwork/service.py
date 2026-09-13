@@ -4,11 +4,14 @@ The public fallback order is fixed and tested:
 
     user local  >  downloaded  >  embedded  >  placeholder
 
-* **user local** -- ``<library_root>/covers/<platform>/<name>.<ext>`` (the
-  existing :func:`vajsave.covers.user_cover_path`);
-* **downloaded** -- an image fetched from a provider and committed to the
-  identity-hash cover cache (``covers/<platform>/<identity-hash>.png``);
-* **embedded** -- an icon found inside the save folder during the scan;
+* **user local** -- a portrait or near-square image under
+  ``<library_root>/covers/<platform>/<name>.<ext>`` (the existing
+  :func:`vajsave.covers.user_cover_path`);
+* **downloaded** -- a portrait or near-square image fetched from a provider and
+  committed to the identity-hash cover cache
+  (``covers/<platform>/<identity-hash>.png``);
+* **embedded** -- a portrait or near-square icon found inside the save folder during
+  the scan;
 * **placeholder** -- no path; the UI paints its light-grey square.
 
 :func:`resolve_artwork` is the synchronous, network-free resolver used for the
@@ -33,7 +36,7 @@ from .boxart_index import (
     resolve_boxart_system,
     unique_boxart_match,
 )
-from .cache import CoverCache
+from .cache import CoverCache, is_portrait_image_file
 from .downloader import ArtworkDownloader
 from .providers import (
     Artwork,
@@ -86,6 +89,19 @@ def _user_path(entry, library_root) -> Optional[Path]:
         return None
 
 
+def _portrait_path(path: Optional[Path]) -> Optional[Path]:
+    """Return ``path`` only when it is a decodable cover, not a wide banner.
+
+    Save-folder icons are useful provenance, but PSP ``ICON0.PNG`` files are
+    commonly 144×80 banners rather than box art. Keeping the orientation gate
+    here lets the scanner preserve the original file while the gallery uses a
+    consistent cover-only policy.
+    """
+    if path is None:
+        return None
+    return path if is_portrait_image_file(path) else None
+
+
 def _downloaded_path(
     cache: Optional[CoverCache],
     platform: Optional[str],
@@ -107,17 +123,17 @@ def resolve_artwork(
     identity_key: Optional[str] = None,
     platform: Optional[str] = None,
 ) -> ArtworkResolution:
-    """Network-free best cover: user local > downloaded cache > embedded."""
+    """Network-free best portrait cover: user > downloaded > embedded."""
     if entry is None:
         return PLACEHOLDER
     plat = platform if platform is not None else getattr(entry, "platform", None)
-    user = _user_path(entry, library_root)
+    user = _portrait_path(_user_path(entry, library_root))
     if user is not None:
         return ArtworkResolution(str(user), SOURCE_USER)
     downloaded = _downloaded_path(cache, plat, identity_key)
     if downloaded is not None:
         return ArtworkResolution(str(downloaded), SOURCE_DOWNLOADED)
-    embedded = _embedded_path(entry)
+    embedded = _portrait_path(_embedded_path(entry))
     if embedded is not None:
         return ArtworkResolution(str(embedded), SOURCE_EMBEDDED)
     return PLACEHOLDER
@@ -247,8 +263,10 @@ class ArtworkService:
 
         PSP/Vita have no ROM index, so the caller passes the PARAM.SFO / display
         title explicitly.  The usually small embedded icon
-        (``ICON0.PNG`` / ``sce_sys/icon0.png``) remains the offline fallback;
-        when possible, a full-size box cover is downloaded and cached first.
+        (``ICON0.PNG`` / ``sce_sys/icon0.png``) is only an offline fallback when
+        it is portrait or near-square; PSP's common 144×80 banner icons are kept in
+        the save but never shown as gallery covers. When possible, a full-size
+        box cover is downloaded and cached first.
 
         Checkpoint / SFO titles often miss the No-Intro filename on the first
         try, so :func:`libretro_title_candidates` walks a short list of
@@ -264,13 +282,13 @@ class ArtworkService:
             return PLACEHOLDER
         plat = (platform or getattr(entry, "platform", "") or "").strip().lower()
         plat, title = resolve_boxart_system(plat, title, title_id)
-        user = _user_path(entry, library_root)
+        user = _portrait_path(_user_path(entry, library_root))
         if user is not None:
             return ArtworkResolution(str(user), SOURCE_USER)
         cached = _downloaded_path(self.cache, plat, identity_key)
         if cached is not None:
             return ArtworkResolution(str(cached), SOURCE_DOWNLOADED)
-        embedded = _embedded_path(entry)
+        embedded = _portrait_path(_embedded_path(entry))
         names = []
         if plat == "3ds" and title_id:
             names.extend(self._3ds_names_for_title_id(title_id))
@@ -453,12 +471,13 @@ class ArtworkService:
         """Full fallback order including a download attempt.
 
         Intended to run on a worker thread: it may block on the network, but any
-        failure simply falls through to the embedded icon or the placeholder.
+        failure simply falls through to a portrait embedded icon or the
+        placeholder.
         """
         if entry is None:
             return PLACEHOLDER
         plat = platform if platform is not None else getattr(entry, "platform", None)
-        user = _user_path(entry, library_root)
+        user = _portrait_path(_user_path(entry, library_root))
         if user is not None:
             return ArtworkResolution(str(user), SOURCE_USER)
         cached = _downloaded_path(self.cache, plat, identity_key)
@@ -469,7 +488,7 @@ class ArtworkService:
         )
         if downloaded is not None:
             return ArtworkResolution(str(downloaded), SOURCE_DOWNLOADED)
-        embedded = _embedded_path(entry)
+        embedded = _portrait_path(_embedded_path(entry))
         if embedded is not None:
             return ArtworkResolution(str(embedded), SOURCE_EMBEDDED)
         return PLACEHOLDER

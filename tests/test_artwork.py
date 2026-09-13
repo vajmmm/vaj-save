@@ -257,6 +257,7 @@ def test_cover_cache_write_failure_degrades(tmp_path: Path):
 def test_cover_cache_rejects_landscape_artwork(tmp_path: Path):
     landscape = png_bytes(size=(8, 4))
     assert not is_portrait_image_bytes(landscape)
+    assert is_portrait_image_bytes(png_bytes(size=(144, 141)))
     cache = CoverCache(tmp_path / "covers")
     assert cache.store("psp", "psp:landscape", landscape) is None
     assert cache.manifest() == {}
@@ -416,6 +417,25 @@ def test_resolve_artwork_none_entry_is_placeholder(tmp_path: Path):
     assert resolve_artwork(None, tmp_path).source == SOURCE_PLACEHOLDER
 
 
+def test_resolve_artwork_skips_landscape_user_and_embedded_images(tmp_path: Path):
+    library = tmp_path / "lib"
+    entry = make_entry(tmp_path, platform="psp", name="Banner Game")
+    embedded = tmp_path / "ICON0.PNG"
+    embedded.write_bytes(png_bytes(size=(8, 4)))
+    entry.cover_path = str(embedded)
+    user_dir = library / "covers" / "psp"
+    user_dir.mkdir(parents=True)
+    (user_dir / "Banner Game.png").write_bytes(png_bytes(size=(8, 4)))
+
+    resolution = resolve_artwork(
+        entry,
+        library,
+        cache=CoverCache(library / COVER_CACHE_DIR),
+        identity_key="psp:banner-game",
+    )
+    assert resolution.source == SOURCE_PLACEHOLDER
+
+
 def test_ensure_downloaded_cache_hit_is_zero_network(tmp_path: Path):
     cache = CoverCache(tmp_path / "covers")
     calls = []
@@ -516,6 +536,63 @@ def test_ensure_cover_rejects_landscape_download_and_uses_embedded(tmp_path: Pat
     )
     assert resolution.source == SOURCE_EMBEDDED
     assert cache.lookup("psp", key) is None
+
+
+def test_ensure_cover_for_title_skips_landscape_user_and_downloads_portrait(
+    tmp_path: Path,
+):
+    library = tmp_path / "lib"
+    user_dir = library / "covers" / "psp"
+    user_dir.mkdir(parents=True)
+    (user_dir / "Monster Hunter.png").write_bytes(png_bytes(size=(8, 4)))
+    entry = make_entry(tmp_path, platform="psp", name="Monster Hunter")
+    calls = []
+    service = ArtworkService(
+        cache=CoverCache(library / COVER_CACHE_DIR),
+        downloader=ArtworkDownloader(
+            urlopen=lambda url, timeout=None: calls.append(url)
+            or FakeResponse(png_bytes(size=(8, 12)))
+        ),
+    )
+
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="psp",
+        title="Monster Hunter Portable 3rd",
+        identity_key="psp:ULJM05800",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_DOWNLOADED
+    assert calls
+    assert Path(resolution.path).name.endswith(".png")
+
+
+def test_ensure_cover_for_title_ignores_landscape_embedded_when_offline(
+    tmp_path: Path,
+):
+    library = tmp_path / "lib"
+    entry = make_entry(tmp_path, platform="psp")
+    icon = tmp_path / "ICON0.PNG"
+    icon.write_bytes(png_bytes(size=(144, 80)))
+    entry.cover_path = str(icon)
+    service = ArtworkService(
+        cache=CoverCache(library / COVER_CACHE_DIR),
+        downloader=ArtworkDownloader(
+            urlopen=lambda url, timeout=None: (_ for _ in ()).throw(
+                urllib.error.URLError("offline")
+            )
+        ),
+    )
+
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="psp",
+        title="Monster Hunter Portable 3rd",
+        identity_key="psp:ULJM05800",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_PLACEHOLDER
+    assert resolution.path is None
 
 
 def test_ensure_cover_user_local_skips_network(tmp_path: Path):

@@ -303,6 +303,17 @@ def test_downloaded_cover_path_matches_cover_cache_layout(tmp_path: Path):
     assert covers.downloaded_cover_path(tmp_path / "missing", "psp", key) is None
 
 
+def test_downloaded_cover_path_rejects_landscape_file(tmp_path: Path):
+    from vajsave.artwork import CoverCache
+
+    lib = tmp_path / "lib"
+    key = "psp:landscape"
+    expected = CoverCache.path_in(lib / "covers", "psp", key)
+    assert expected is not None
+    _write_image(expected, size=(144, 80))
+    assert covers.downloaded_cover_path(lib, "psp", key) is None
+
+
 def test_resolve_cover_downloaded_layer_needs_manifest(tmp_path: Path):
     # A bare file dropped into the cache directory is not a manifest hit, so the
     # shared resolver falls through to the embedded icon instead of trusting it.

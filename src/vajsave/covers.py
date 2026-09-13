@@ -8,7 +8,8 @@ The module is intentionally self-contained and side-effect free:
 * it **does not import tkinter** — thumbnails come back as Pillow ``RGBA``
   images, and the UI layer wraps them in ``ImageTk.PhotoImage`` itself.
 
-Cover resolution follows a four layer priority:
+Cover resolution follows a four layer priority; the artwork service applies a
+portrait/near-square orientation gate before any path is returned to the UI:
 
 1. the user cover directory ``<library_root>/covers/<platform>/<name>.<ext>``
    (see :func:`user_cover_path`) — an explicit file the user dropped in;
@@ -332,19 +333,25 @@ def downloaded_cover_path(
 
     Thin compatibility wrapper: the path layout is owned by
     :meth:`vajsave.artwork.cache.CoverCache.path_in`, so this helper can never
-    drift from the directory the artwork layer actually writes into.  Only an
-    existing, size-bounded file is reported as a hit.
+    drift from the directory the artwork layer actually writes into. Only an
+    existing, size-bounded portrait/square file is reported as a hit.
     """
     try:
         root = _as_path(library_root)
         if root is None or not identity_key:
             return None
-        from .artwork.cache import CoverCache
+        from .artwork.cache import CoverCache, is_portrait_image_file
 
         candidate = CoverCache.path_in(
             root / DOWNLOADED_COVER_DIR, platform, identity_key
         )
-        return candidate if candidate is not None and _within_size_limit(candidate) else None
+        return (
+            candidate
+            if candidate is not None
+            and _within_size_limit(candidate)
+            and is_portrait_image_file(candidate)
+            else None
+        )
     except Exception:  # noqa: BLE001 - a cover lookup must never break the UI
         return None
 
@@ -356,7 +363,7 @@ def resolve_cover(
     identity_key: Any = None,
     platform: Any = None,
 ) -> Optional[Path]:
-    """Resolve the cover for ``entry``: user > downloaded > embedded > ``None``.
+    """Resolve a portrait/square cover for ``entry``: user > downloaded > embedded.
 
     Thin compatibility wrapper over :func:`vajsave.artwork.resolve_artwork`,
     which owns the single real implementation of the fallback order.  The

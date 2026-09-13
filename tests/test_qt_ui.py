@@ -14,7 +14,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton
 
 from vajsave.app_state import AppState
-from vajsave.artwork import ArtworkResolution, SOURCE_DOWNLOADED
+from vajsave.artwork import ArtworkResolution, PLACEHOLDER, SOURCE_DOWNLOADED
 from vajsave.metadata import GameMetadata
 from vajsave.models import SaveEntry, ScanResult, VolumeInfo
 from vajsave.qt_ui import (
@@ -23,7 +23,6 @@ from vajsave.qt_ui import (
     LLMSettingsDialog,
     PlatformButton,
     VajSaveWindow,
-    _cover_draw_rect,
     _cover_source_rect,
     _platform_icon,
     _render_platform_logo,
@@ -188,15 +187,6 @@ def test_cover_crop_uses_original_pixels(qt_app):
     assert source.center() == QRectF(0, 0, 300, 500).center()
 
 
-def test_landscape_cover_is_contained_without_crop(qt_app):
-    landscape = QPixmap(400, 200)
-    target = QRectF(0, 0, 180, 260)
-    draw = _cover_draw_rect(landscape, target)
-    assert draw.width() == target.width()
-    assert draw.height() == pytest.approx(90)
-    assert draw.center() == target.center()
-
-
 def test_gallery_case_geometry_stays_portrait_for_supported_platforms(qt_app, qt_state):
     canvas = GalleryCanvas(qt_state)
     for platform in ("switch", "psp", "vita", "3ds", "nds", "gba"):
@@ -251,6 +241,33 @@ def test_qt_gallery_enriches_visible_covers_in_background(
         assert window.gallery.canvas._cover_paths[first.path] == str(cover)
     finally:
         window.close()
+
+
+def test_gallery_clears_landscape_cover_when_enrichment_falls_back(
+    qt_app, qt_state
+):
+    window = VajSaveWindow(qt_state)
+    try:
+        entry = qt_state.visible_saves()[0]
+        window.gallery.canvas.set_cover_path(entry.path, "/tmp/landscape-icon.png")
+        assert window.gallery.canvas._cover_paths[entry.path] == "/tmp/landscape-icon.png"
+        window._apply_cover_enrichment(entry, (None, PLACEHOLDER))
+        assert window.gallery.canvas._cover_paths[entry.path] == ""
+    finally:
+        window.close()
+
+
+def test_gallery_rejects_landscape_cover_pixmap(qt_app, qt_state, tmp_path: Path):
+    path = tmp_path / "landscape-icon.png"
+    landscape = QPixmap(400, 200)
+    landscape.fill(Qt.GlobalColor.blue)
+    assert landscape.save(str(path), "PNG")
+
+    canvas = GalleryCanvas(qt_state)
+    entry = qt_state.visible_saves()[0]
+    canvas.set_cover_path(entry.path, str(path))
+    assert canvas._load_pixmap(entry) is None
+    assert canvas._cover_paths[entry.path] == ""
 
 
 def test_llm_settings_dialog_preserves_all_configuration_fields(

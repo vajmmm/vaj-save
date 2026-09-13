@@ -14,8 +14,8 @@ contract requires: ``identity_key``, ``platform``, ``provider``,
 * a **valid hit** requires a manifest entry *and* the referenced file to exist,
   so a partially written or externally deleted image never looks like a hit;
 * an image is only ever committed (file + manifest entry) after Pillow confirms
-  it decodes and is not wider than it is tall, so a 404 HTML page, a truncated
-  download, or a landscape screenshot can never pollute the cover cache;
+  it decodes and is not a wide banner, so a 404 HTML page, a truncated download,
+  or a landscape screenshot can never pollute the cover cache;
 * writes are atomic (temp file renamed into place) to survive a crash mid-write.
 
 The whole module is best-effort: every public method degrades rather than raises.
@@ -52,6 +52,11 @@ MANIFEST_FIELDS = (
 # this so a hostile/oversized download cannot fill the library.
 MAX_COVER_BYTES = 8 * 1024 * 1024
 
+# A few box-art exports are nominally a pixel or two wider than tall after
+# trimming transparent borders. Allow that near-square rounding while still
+# rejecting PSP's 144×80 banner icons and other clearly landscape artwork.
+MAX_COVER_ASPECT_RATIO = 1.10
+
 
 def is_valid_image_bytes(data: Optional[bytes]) -> bool:
     """True when ``data`` decodes as an image (Pillow) and is non-empty."""
@@ -68,11 +73,11 @@ def is_valid_image_bytes(data: Optional[bytes]) -> bool:
 
 
 def is_portrait_image_bytes(data: Optional[bytes]) -> bool:
-    """True when ``data`` is a decodable image no wider than it is tall.
+    """True when ``data`` is decodable and not a wide banner.
 
     Downloaded artwork is shown in the gallery's portrait card geometry. Square
-    images remain valid; only landscape assets are rejected so they cannot be
-    silently center-cropped into an unrelated cover.
+    and near-square images remain valid; only clearly landscape assets are
+    rejected so they cannot be silently center-cropped into an unrelated cover.
     """
     if not data:
         return False
@@ -82,13 +87,13 @@ def is_portrait_image_bytes(data: Optional[bytes]) -> bool:
         with Image.open(BytesIO(data)) as image:
             image.verify()
             width, height = image.size
-        return width <= height
+        return width <= height * MAX_COVER_ASPECT_RATIO
     except Exception:  # noqa: BLE001 - any decode failure is not a cover
         return False
 
 
 def is_portrait_image_file(path: Path, *, max_bytes: int = MAX_COVER_BYTES) -> bool:
-    """Validate an existing cached file without loading an unbounded image."""
+    """Validate an existing cover without loading an unbounded image."""
     try:
         size = path.stat().st_size
         if size <= 0 or size > int(max_bytes):
@@ -98,7 +103,7 @@ def is_portrait_image_file(path: Path, *, max_bytes: int = MAX_COVER_BYTES) -> b
         with Image.open(path) as image:
             image.verify()
             width, height = image.size
-        return width <= height
+        return width <= height * MAX_COVER_ASPECT_RATIO
     except Exception:  # noqa: BLE001 - stale/corrupt cache entries are misses
         return False
 
@@ -333,5 +338,6 @@ __all__ = [
     "is_portrait_image_bytes",
     "is_portrait_image_file",
     "is_valid_image_bytes",
+    "MAX_COVER_ASPECT_RATIO",
     "MAX_COVER_BYTES",
 ]

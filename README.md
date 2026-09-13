@@ -44,12 +44,13 @@ U 盘，以及以 USB 大容量存储（UMS）方式直连的掌机（Hekate UMS
    - `<机种>` 取 `psp` / `vita` / `switch` / `3ds` / `nds` / `gba`
    - `<名称>` 取该存档的 `title_id`（没有时用游戏名），文件名中的 Windows 非法字符（`:` `*` `?` 等）会被替换成 `_`，所以**不会**用含 `:` 的 game key 当文件名
    - 支持的扩展名：`png` `jpg` `jpeg` `webp` `bmp` `gif`，同名时任选一种即可
-2. **下载的封面**（仅 GBA/NDS）：当存档对应的 ROM 摘要（SHA1/CRC32）命中**内置离线 libretro 元数据索引**（见下文）时，按官方 thumbnail 规则从
+   - 画廊只接受竖版或近方形图像；横向文件不会被删除，但不会作为封面显示。
+2. **下载的封面**：GBA/NDS 在 ROM 摘要（SHA1/CRC32）命中**内置离线 libretro 元数据索引**（见下文）时，PSP/Vita/3DS 使用存档标题或 Title ID，均按官方 thumbnail 规则从
    `https://thumbnails.libretro.com/<System>/Named_Boxarts/<名称>.png` 下载，并缓存到
    `<备份库>/covers/<机种>/<identity-hash>.png`（`<备份库>/covers/manifest.json` 记录
    `identity_key` / `provider` / `canonical_title` / `remote_url` / `local_path` / `updated_at`）。
    缓存有效命中时**完全不走网络**；下载失败（404 / 超时 / 离线 / 内容不完整 / 非图片）会静默跳过，
-   **不会**污染缓存，也不会顶替已有的本地封面。
+   **不会**污染缓存，也不会顶替已有的本地封面。横向下载素材同样不会写入缓存。
 3. **存档目录内的内嵌图标**（扫描设备时自动发现，只读，不做整盘递归）：
    - 先按固定名单匹配（大小写不敏感，优先级从高到低）：`icon0.*` → `icon.*` → `pic1.*` → `thumb.*` → `preview.*` → `folder.*` → `cover.*` → `banner.*` → `boxart.*`，扩展名支持 `png` `jpg` `jpeg` `webp` `bmp` `gif`
    - 例：PSP `SAVEDATA/<游戏>/ICON0.PNG`、Vita `.../savedata/<游戏>/sce_sys/icon0.png`
@@ -58,6 +59,7 @@ U 盘，以及以 USB 大容量存储（UMS）方式直连的掌机（Hekate UMS
    - 固定名单**始终优先于**通用扫描（任意深度），所以存档目录里多出来的截图不会顶掉官方图标（Vita 的 `sce_sys/icon0.png` 一定胜出）
    - 裸存档文件（GBA/NDS 的 `.sav`）会找同名的 `<游戏名>.png` / `.jpg`
    - **超过 8 MiB 的候选文件一律跳过**（避免极小体积却声明超大画布的 PNG 拖垮界面）
+   - PSP 常见的 `144×80` 横向 `ICON0.PNG` 会保留在存档中，但不会作为画廊或详情封面；找不到竖版封面时显示中性占位
 4. 都没有时，该行显示一个浅灰色方块占位（不会出现留白或字母水印）。
 
 示例（备份库为默认的 `~/Documents/vaj-save/`）：
@@ -70,7 +72,7 @@ U 盘，以及以 USB 大容量存储（UMS）方式直连的掌机（Hekate UMS
 ~/Documents/vaj-save/covers/vita/Persona 4 Golden.jpg
 ```
 
-封面缩略图采用 **「cover」填充**语义：先按 32x32 方块比例居中裁剪、再缩放到 6px 圆角的方形图。因此缩略图一定会被填满，但极端宽高比的图片会被**裁掉上下或左右边缘**（不会被拉伸变形，也不会留黑边）。超过 8 MiB 的文件、以及超出上限的目标尺寸会被跳过；文件缺失或损坏时静默回退到浅灰色方块，UI 不会报错。
+画廊封面先通过方向和解码校验，再按各平台的竖版卡片比例平滑缩放；竖版图像会居中裁切以填满卡片，横向素材不会进入画廊。旧版缩略图辅助函数仍采用 **「cover」填充**语义：极端宽高比会被**裁掉上下或左右边缘**（不会被拉伸变形，也不会留黑边）。超过 8 MiB 的文件、以及超出上限的目标尺寸会被跳过；文件缺失或损坏时静默回退到浅灰色方块，UI 不会报错。
 
 
 ## 游戏信息（GBA/NDS libretro 索引）

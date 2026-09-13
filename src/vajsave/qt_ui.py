@@ -50,7 +50,13 @@ from PySide6.QtWidgets import (
 from PySide6.QtSvg import QSvgRenderer
 
 from .app_state import PLATFORM_LABELS, PLATFORM_ORDER, AppState
-from .artwork import LLM_PROTOCOLS, ArtworkLoader, default_base_url, default_model
+from .artwork import (
+    LLM_PROTOCOLS,
+    MAX_COVER_ASPECT_RATIO,
+    ArtworkLoader,
+    default_base_url,
+    default_model,
+)
 from .identity import STATUS_AMBIGUOUS, STATUS_PARTIAL, STATUS_RESOLVED
 from .library import Snapshot, load_keep_last
 from .models import SaveEntry, VolumeInfo
@@ -153,23 +159,6 @@ def _cover_source_rect(pixmap: QPixmap, target: QRectF) -> QRectF:
         return QRectF((source_width - crop_width) / 2.0, 0, crop_width, source_height)
     crop_height = source_width / target_ratio
     return QRectF(0, (source_height - crop_height) / 2.0, source_width, crop_height)
-
-
-def _cover_draw_rect(pixmap: QPixmap, target: QRectF) -> QRectF:
-    """为横向素材返回完整显示区域，避免把横图裁成竖图。"""
-    if pixmap.isNull() or pixmap.width() <= 0 or pixmap.height() <= 0:
-        return target
-    source_ratio = pixmap.width() / pixmap.height()
-    target_ratio = target.width() / target.height()
-    if source_ratio <= target_ratio:
-        return target
-    height = target.width() / source_ratio
-    return QRectF(
-        target.left(),
-        target.center().y() - height / 2.0,
-        target.width(),
-        height,
-    )
 
 
 def _scaled_pixmap_for_dpr(
@@ -419,7 +408,10 @@ class GalleryCanvas(QWidget):
         if cached is not None:
             return cached
         pixmap = QPixmap(path)
-        if pixmap.isNull():
+        if pixmap.isNull() or pixmap.width() > pixmap.height() * MAX_COVER_ASPECT_RATIO:
+            # PSP ICON0.PNG is normally a 144×80 banner. Keep it on the
+            # mounted save, but never let it become a gallery cover.
+            self._cover_paths[entry.path] = ""
             return None
         if len(self._pixmaps) >= 256:
             self._pixmaps.clear()
@@ -503,16 +495,7 @@ class GalleryCanvas(QWidget):
         if pixmap is not None:
             painter.save()
             painter.setClipPath(self._rounded_path(cover_rect, 3))
-            draw_rect = _cover_draw_rect(pixmap, cover_rect)
-            if draw_rect != cover_rect:
-                painter.fillRect(cover_rect, QColor(SWITCH["panel_alt"]))
-                painter.drawPixmap(
-                    draw_rect,
-                    pixmap,
-                    QRectF(0, 0, pixmap.width(), pixmap.height()),
-                )
-            else:
-                painter.drawPixmap(cover_rect, pixmap, _cover_source_rect(pixmap, cover_rect))
+            painter.drawPixmap(cover_rect, pixmap, _cover_source_rect(pixmap, cover_rect))
             painter.restore()
         else:
             painter.fillPath(self._rounded_path(cover_rect, 3), QColor(SWITCH["panel_alt"]))
@@ -788,7 +771,7 @@ class DetailDrawer(QFrame):
 
     def set_cover_path(self, cover_path: Optional[str]) -> None:
         pixmap = QPixmap(str(cover_path)) if cover_path else QPixmap()
-        if pixmap.isNull():
+        if pixmap.isNull() or pixmap.width() > pixmap.height() * MAX_COVER_ASPECT_RATIO:
             self.cover.setPixmap(_icon("fa6s.image", SWITCH["muted_strong"]).pixmap(52, 52))
             return
         self.cover.setPixmap(_scaled_pixmap_for_dpr(pixmap, self.cover.size(), self.devicePixelRatioF()))
@@ -1242,15 +1225,17 @@ class VajSaveWindow(QMainWindow):
             return
         metadata, cover = payload
         cover_path = getattr(cover, "path", None)
-        if cover_path:
-            self.gallery.canvas.set_cover_path(entry.path, cover_path)
+        # A worker may finish by downgrading an initial embedded banner to the
+        # placeholder when no portrait box art is available. Clear the cached
+        # path as well as replacing successful downloads, otherwise the stale
+        # horizontal ICON0.PNG would remain painted forever.
+        self.gallery.canvas.set_cover_path(entry.path, cover_path)
         if self._selected is None or self._selected.path != entry.path:
             return
         canonical_title = getattr(metadata, "canonical_title", "") if metadata else ""
         if canonical_title:
             self.drawer.name.setText(canonical_title)
-        if cover_path:
-            self.drawer.set_cover_path(cover_path)
+        self.drawer.set_cover_path(cover_path)
 
     def _select_initial_device(self) -> None:
         if self.state.ensure_mount_selected() is not None:

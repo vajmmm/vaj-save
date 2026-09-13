@@ -753,7 +753,7 @@ class AppState:
         result: Optional[GameIdentityResult] = None,
         identity: Optional[GameIdentity] = None,
     ) -> ArtworkResolution:
-        """Network-free best cover (user > downloaded cache > embedded)."""
+        """Network-free best portrait cover (user > downloaded > embedded)."""
         try:
             if identity is None:
                 identity = (result.identity if result else None)
@@ -781,8 +781,9 @@ class AppState:
         without metadata this stays a local-only resolution: the app never guesses
         a name (and never touches the network) for an unknown ROM.  PSP/Vita/3DS
         are the exception: they have no ROM index, so their PARAM.SFO / Checkpoint
-        display title is used directly. Their small embedded icon remains the
-        fallback when a full-size cover cannot be downloaded.
+        display title is used directly. Their small portrait/near-square embedded
+        icon remains the fallback when a full-size cover cannot be downloaded;
+        landscape PSP banners are ignored.
         """
         try:
             if metadata is None or not metadata.canonical_title:
