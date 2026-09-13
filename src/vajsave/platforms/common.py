@@ -77,10 +77,9 @@ def safe_iterdir(path: Path, warnings: List[str]) -> List[Path]:
     if cache is not None and path in cache.directory_entries:
         return list(cache.directory_entries[path])
     try:
-        if not path.is_dir():
-            entries: Tuple[Path, ...] = ()
-        else:
-            entries = tuple(sorted(path.iterdir()))
+        # ``iterdir`` already raises for a missing or non-directory path. Avoid a
+        # separate ``is_dir`` metadata request, which is costly on SMB mounts.
+        entries = tuple(sorted(path.iterdir()))
     except (PermissionError, FileNotFoundError, OSError) as e:
         warnings.append(f"Cannot access directory {path}: {e}")
         entries = ()

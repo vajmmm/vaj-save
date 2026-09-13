@@ -128,12 +128,25 @@ def scan_psp(
     saves: List[SaveEntry],
     seen_source_roots: Set[Path],
     seen_save_paths: Set[Path],
+    *,
+    standard_root: bool = False,
 ) -> None:
+    wrapper_depth = 0 if standard_root else 2
     psp_dirs = collect_unique_dirs(
         [
-            *find_pattern_dirs(root, ("PSP", "SAVEDATA"), root_resolved, warnings),
-            *find_pattern_dirs(root, ("pspemu", "PSP", "SAVEDATA"), root_resolved, warnings),
-            *find_pattern_dirs(root, ("ux0", "pspemu", "PSP", "SAVEDATA"), root_resolved, warnings),
+            *find_pattern_dirs(
+                root, ("PSP", "SAVEDATA"), root_resolved, warnings, wrapper_depth
+            ),
+            *find_pattern_dirs(
+                root, ("pspemu", "PSP", "SAVEDATA"), root_resolved, warnings, wrapper_depth
+            ),
+            *find_pattern_dirs(
+                root,
+                ("ux0", "pspemu", "PSP", "SAVEDATA"),
+                root_resolved,
+                warnings,
+                wrapper_depth,
+            ),
             # Selecting the PSP folder (parent of SAVEDATA)
             *find_pattern_dirs(root, ("SAVEDATA",), root_resolved, warnings, max_wrapper_depth=0),
         ]

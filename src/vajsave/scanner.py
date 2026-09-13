@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional, Set, Union
+from typing import Callable, List, Optional, Set, Union
 
 from .models import SaveEntry, SaveSource, ScanResult
 from .covers import find_embedded_cover
@@ -38,6 +38,72 @@ def _path_exists(path: Path) -> bool:
         return path.exists()
     except OSError:
         return False
+
+
+def _detected_platforms(base: Path) -> Set[str]:
+    """Return platforms advertised by fixed, non-recursive paths at a device root.
+
+    An empty set means the path may be a wrapped backup or a user-selected
+    subdirectory, so callers must retain the compatible full scan.
+    """
+    detected: Set[str] = set()
+
+    def has_dir(rel: str) -> bool:
+        return _path_is_dir(base / rel)
+
+    def has_file(rel: str) -> bool:
+        return _path_exists(base / rel)
+
+    if any(
+        has_dir(rel)
+        for rel in (
+            "user/00/savedata",
+            "ux0/user/00/savedata",
+            "data/savegames",
+            "ux0/data/savegames",
+        )
+    ):
+        detected.add("vita")
+
+    if (
+        base.name.upper() == "SAVEDATA"
+        or any(
+            has_dir(rel)
+            for rel in (
+                "PSP/SAVEDATA",
+                "pspemu/PSP/SAVEDATA",
+                "ux0/pspemu/PSP/SAVEDATA",
+            )
+        )
+    ):
+        detected.add("psp")
+
+    if has_dir("switch/Checkpoint/saves") or has_dir("switch") or has_dir("atmosphere"):
+        detected.add("switch")
+    if has_dir("3ds/Checkpoint/saves") or has_dir("Nintendo 3DS"):
+        detected.add("3ds")
+
+    if has_dir("JKSV"):
+        # A JKSV root may contain Switch games and the reserved 3DS JKSM
+        # categories at the same time, so keep both scanners when applicable.
+        detected.add("switch")
+        if any(has_dir(f"JKSV/{cat}") for cat in ("Saves", "ExtData", "SysSave")):
+            detected.add("3ds")
+
+    if any(
+        has_dir(rel)
+        for rel in ("SAVER", "GBASYS/SAVE", "EDGBA/gamedata", ".superfw")
+    ):
+        detected.add("gba")
+
+    if (
+        any(has_dir(rel) for rel in ("roms/nds", "_nds", "__rpg", "TTMenu"))
+        or has_file("R4.dat")
+        or has_file("_system_")
+    ):
+        detected.add("nds")
+
+    return detected
 
 
 def guess_platform(root: Union[Path, str]) -> Optional[str]:
@@ -126,7 +192,9 @@ def scan(root_path: Union[Path, str]) -> ScanResult:
     warnings: List[str] = []
 
     try:
-        if not root.exists() or not root.is_dir():
+        # ``is_dir`` already reports false for a missing path. Avoiding a separate
+        # ``exists`` call saves a full metadata round-trip on network-mounted cards.
+        if not root.is_dir():
             warnings.append(f"Target path does not exist or is not a directory: {root}")
             return ScanResult(
                 root_path=str(root),
@@ -151,17 +219,21 @@ def scan(root_path: Union[Path, str]) -> ScanResult:
     seen_source_roots: Set[Path] = set()
     seen_save_paths: Set[Path] = set()
 
-    scanners = (
-        psp.scan_psp,
-        vita.scan_vita,
-        switch.scan_switch,
-        threeds.scan_threeds,
-        gba.scan_gba,
-        nds.scan_nds,
+    all_scanners: tuple[tuple[str, Callable[..., None]], ...] = (
+        ("psp", psp.scan_psp),
+        ("vita", vita.scan_vita),
+        ("switch", switch.scan_switch),
+        ("3ds", threeds.scan_threeds),
+        ("gba", gba.scan_gba),
+        ("nds", nds.scan_nds),
     )
+    detected = _detected_platforms(root)
+    # Recognised device roots use only scanners backed by an explicit shallow
+    # fingerprint. Unknown paths retain the broad wrapper-compatible behaviour.
+    scanners = [item for item in all_scanners if not detected or item[0] in detected]
     with scan_cache():
-        for scan_fn in scanners:
-            scan_fn(
+        for platform_id, scan_fn in scanners:
+            args = (
                 root,
                 root_resolved,
                 warnings,
@@ -170,6 +242,12 @@ def scan(root_path: Union[Path, str]) -> ScanResult:
                 seen_source_roots,
                 seen_save_paths,
             )
+            if platform_id == "psp":
+                scan_fn(*args, standard_root=bool(detected))
+            elif platform_id == "vita":
+                scan_fn(*args, standard_root=bool(detected))
+            else:
+                scan_fn(*args)
 
     if not sources:
         platform = "unknown"

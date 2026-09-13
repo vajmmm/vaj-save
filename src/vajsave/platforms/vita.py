@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-from ..covers import find_embedded_cover
+from ..covers import MAX_COVER_BYTES, find_embedded_cover
 from ..models import SaveEntry, SaveSource
 from ..sfo import parse_sfo
 from .common import (
@@ -92,6 +92,27 @@ def _find_vita_param_sfo(
     return None
 
 
+def _find_standard_vita_cover(directory: Path, root_resolved: Path) -> Optional[Path]:
+    """Probe canonical Vita icon paths without enumerating the game directory."""
+    for relative in (
+        ("sce_sys", "icon0.png"),
+        ("sce_sys", "ICON0.PNG"),
+        ("icon0.png",),
+        ("ICON0.PNG",),
+    ):
+        candidate = directory.joinpath(*relative)
+        try:
+            if (
+                candidate.is_file()
+                and candidate.stat().st_size <= MAX_COVER_BYTES
+                and is_safe_path(candidate, root_resolved)
+            ):
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
 def _read_vita_companion(
     directory: Path, root_resolved: Path, warnings: List[str]
 ) -> _VitaCompanionMetadata:
@@ -99,7 +120,9 @@ def _read_vita_companion(
     sfo_path = _find_vita_param_sfo(directory, root_resolved, warnings)
     sfo_data = parse_sfo(sfo_path) if sfo_path is not None else {}
     title = str(sfo_data.get("TITLE") or "").strip()
-    cover_path = find_embedded_cover(directory, max_depth=1)
+    cover_path = _find_standard_vita_cover(directory, root_resolved)
+    if cover_path is None:
+        cover_path = find_embedded_cover(directory, max_depth=1)
     return _VitaCompanionMetadata(title=title, cover_path=cover_path)
 
 
@@ -190,8 +213,9 @@ def _enrich_vita_entry(
     # The installed application's SFO is the authoritative retail title when it
     # exists. Keep the save title only as a fallback for incomplete app metadata.
     display_name = companion.title or title
-    save_cover = find_embedded_cover(item, max_depth=1)
-    return display_name, save_cover or companion.cover_path
+    if companion.cover_path is not None:
+        return display_name, companion.cover_path
+    return display_name, find_embedded_cover(item, max_depth=1)
 
 
 def _scan_vita_native_dir(
@@ -315,12 +339,23 @@ def scan_vita(
     saves: List[SaveEntry],
     seen_source_roots: Set[Path],
     seen_save_paths: Set[Path],
+    *,
+    standard_root: bool = False,
 ) -> None:
     companion_cache: Dict[str, Optional[_VitaCompanionMetadata]] = {}
+    wrapper_depth = 0 if standard_root else 2
     vita_dirs = collect_unique_dirs(
         [
-            *find_pattern_dirs(root, ("user", "00", "savedata"), root_resolved, warnings),
-            *find_pattern_dirs(root, ("ux0", "user", "00", "savedata"), root_resolved, warnings),
+            *find_pattern_dirs(
+                root, ("user", "00", "savedata"), root_resolved, warnings, wrapper_depth
+            ),
+            *find_pattern_dirs(
+                root,
+                ("ux0", "user", "00", "savedata"),
+                root_resolved,
+                warnings,
+                wrapper_depth,
+            ),
         ]
     )
     for vita_dir in vita_dirs:
@@ -337,8 +372,16 @@ def scan_vita(
 
     vexp_dirs = collect_unique_dirs(
         [
-            *find_pattern_dirs(root, ("data", "savegames"), root_resolved, warnings),
-            *find_pattern_dirs(root, ("ux0", "data", "savegames"), root_resolved, warnings),
+            *find_pattern_dirs(
+                root, ("data", "savegames"), root_resolved, warnings, wrapper_depth
+            ),
+            *find_pattern_dirs(
+                root,
+                ("ux0", "data", "savegames"),
+                root_resolved,
+                warnings,
+                wrapper_depth,
+            ),
         ]
     )
     for vexp_dir in vexp_dirs:

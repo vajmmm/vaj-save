@@ -128,6 +128,74 @@ def test_vita_adrenaline_multi_source(tmp_path: Path, psp_sfo_bytes: bytes, vita
     assert platforms == {"vita", "psp"}
 
 
+def test_vita_device_root_skips_unrelated_platform_scanners(
+    monkeypatch, tmp_path: Path, vita_sfo_bytes: bytes, psp_sfo_bytes: bytes
+):
+    vita_sys = tmp_path / "user" / "00" / "savedata" / "PCSE00120" / "sce_sys"
+    vita_sys.mkdir(parents=True)
+    (vita_sys / "param.sfo").write_bytes(vita_sfo_bytes)
+    psp_save = tmp_path / "pspemu" / "PSP" / "SAVEDATA" / "ULJM05800"
+    psp_save.mkdir(parents=True)
+    (psp_save / "PARAM.SFO").write_bytes(psp_sfo_bytes)
+
+    def unexpected_scan(*args, **kwargs):
+        raise AssertionError("不应扫描没有浅层特征的平台")
+
+    for module in ("switch", "threeds", "gba", "nds"):
+        monkeypatch.setattr(f"vajsave.scanner.{module}.scan_{module}", unexpected_scan)
+
+    result = scan(tmp_path)
+
+    assert {entry.platform for entry in result.saves} == {"vita", "psp"}
+
+
+def test_vita_device_root_disables_wrapper_walk(
+    monkeypatch, tmp_path: Path, vita_sfo_bytes: bytes
+):
+    save_sys = tmp_path / "user" / "00" / "savedata" / "PCSE00120" / "sce_sys"
+    save_sys.mkdir(parents=True)
+    (save_sys / "param.sfo").write_bytes(vita_sfo_bytes)
+
+    from vajsave.platforms import vita
+
+    original = vita.find_pattern_dirs
+    depths = []
+
+    def tracked_find(*args, **kwargs):
+        depth = kwargs.get("max_wrapper_depth", args[4] if len(args) > 4 else 2)
+        depths.append(depth)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(vita, "find_pattern_dirs", tracked_find)
+
+    result = scan(tmp_path)
+
+    assert len(result.saves) == 1
+    assert depths and set(depths) == {0}
+
+
+def test_vita_standard_companion_icon_avoids_generic_cover_walk(
+    monkeypatch, tmp_path: Path, vita_sfo_bytes: bytes
+):
+    save_dir = tmp_path / "user" / "00" / "savedata" / "PCSE00120"
+    save_dir.mkdir(parents=True)
+    (save_dir / "savedata.bin").write_bytes(b"vita_save")
+    app_sys = tmp_path / "app" / "PCSE00120" / "sce_sys"
+    app_sys.mkdir(parents=True)
+    (app_sys / "param.sfo").write_bytes(vita_sfo_bytes)
+    icon = app_sys / "icon0.png"
+    icon.write_bytes(b"installed_app_icon")
+
+    def unexpected_generic_walk(*args, **kwargs):
+        raise AssertionError("规范 Vita 图标不应触发通用目录枚举")
+
+    monkeypatch.setattr("vajsave.platforms.vita.find_embedded_cover", unexpected_generic_walk)
+
+    result = scan(tmp_path)
+
+    assert result.saves[0].cover_path == str(icon)
+
+
 def test_vita_exported_savegames(tmp_path: Path):
     save_dir = tmp_path / "data" / "savegames" / "PCSG00100"
     save_dir.mkdir(parents=True)
