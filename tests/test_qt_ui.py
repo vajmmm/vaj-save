@@ -23,6 +23,7 @@ from vajsave.qt_ui import (
     LLMSettingsDialog,
     PlatformButton,
     VajSaveWindow,
+    _cover_draw_rect,
     _cover_source_rect,
     _platform_icon,
     _render_platform_logo,
@@ -185,6 +186,23 @@ def test_cover_crop_uses_original_pixels(qt_app):
     assert source.width() == 300
     assert source.height() < 500
     assert source.center() == QRectF(0, 0, 300, 500).center()
+
+
+def test_landscape_cover_is_contained_without_crop(qt_app):
+    landscape = QPixmap(400, 200)
+    target = QRectF(0, 0, 180, 260)
+    draw = _cover_draw_rect(landscape, target)
+    assert draw.width() == target.width()
+    assert draw.height() == pytest.approx(90)
+    assert draw.center() == target.center()
+
+
+def test_gallery_case_geometry_stays_portrait_for_supported_platforms(qt_app, qt_state):
+    canvas = GalleryCanvas(qt_state)
+    for platform in ("switch", "psp", "vita", "3ds", "nds", "gba"):
+        entry = SaveEntry(platform=platform, source_id="test", display_name=platform, path=platform)
+        width, height = canvas._case_size(entry)
+        assert width <= height, platform
 
 
 @pytest.mark.parametrize("dpr", (1.25, 1.5, 2.0))

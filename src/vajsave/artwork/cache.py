@@ -14,8 +14,8 @@ contract requires: ``identity_key``, ``platform``, ``provider``,
 * a **valid hit** requires a manifest entry *and* the referenced file to exist,
   so a partially written or externally deleted image never looks like a hit;
 * an image is only ever committed (file + manifest entry) after Pillow confirms
-  it decodes, so a 404 HTML page or a truncated download can never pollute the
-  cache;
+  it decodes and is not wider than it is tall, so a 404 HTML page, a truncated
+  download, or a landscape screenshot can never pollute the cover cache;
 * writes are atomic (temp file renamed into place) to survive a crash mid-write.
 
 The whole module is best-effort: every public method degrades rather than raises.
@@ -64,6 +64,42 @@ def is_valid_image_bytes(data: Optional[bytes]) -> bool:
             image.verify()
         return True
     except Exception:  # noqa: BLE001 - any decode failure means "not an image"
+        return False
+
+
+def is_portrait_image_bytes(data: Optional[bytes]) -> bool:
+    """True when ``data`` is a decodable image no wider than it is tall.
+
+    Downloaded artwork is shown in the gallery's portrait card geometry. Square
+    images remain valid; only landscape assets are rejected so they cannot be
+    silently center-cropped into an unrelated cover.
+    """
+    if not data:
+        return False
+    try:
+        from PIL import Image
+
+        with Image.open(BytesIO(data)) as image:
+            image.verify()
+            width, height = image.size
+        return width <= height
+    except Exception:  # noqa: BLE001 - any decode failure is not a cover
+        return False
+
+
+def is_portrait_image_file(path: Path, *, max_bytes: int = MAX_COVER_BYTES) -> bool:
+    """Validate an existing cached file without loading an unbounded image."""
+    try:
+        size = path.stat().st_size
+        if size <= 0 or size > int(max_bytes):
+            return False
+        from PIL import Image
+
+        with Image.open(path) as image:
+            image.verify()
+            width, height = image.size
+        return width <= height
+    except Exception:  # noqa: BLE001 - stale/corrupt cache entries are misses
         return False
 
 
@@ -130,6 +166,8 @@ class CoverCache:
             size = path.stat().st_size
             if size <= 0 or size > self.max_bytes:
                 return None
+            if not is_portrait_image_file(path, max_bytes=self.max_bytes):
+                return None
         except OSError:
             return None
         return path
@@ -155,7 +193,7 @@ class CoverCache:
             return None
         if not data or len(data) > self.max_bytes:
             return None
-        if not is_valid_image_bytes(data):
+        if not is_portrait_image_bytes(data):
             return None
         path = self.path_for(platform, identity_key)
         if path is None:
@@ -292,6 +330,8 @@ __all__ = [
     "COVER_CACHE_DIR",
     "MANIFEST_NAME",
     "MANIFEST_FIELDS",
+    "is_portrait_image_bytes",
+    "is_portrait_image_file",
     "is_valid_image_bytes",
     "MAX_COVER_BYTES",
 ]

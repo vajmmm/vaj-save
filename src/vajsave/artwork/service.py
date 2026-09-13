@@ -13,8 +13,9 @@ The public fallback order is fixed and tested:
 
 :func:`resolve_artwork` is the synchronous, network-free resolver used for the
 first paint.  :meth:`ArtworkService.ensure_cover` additionally attempts one
-bounded download before falling back to the embedded icon, and is meant to run
-off the UI thread.
+bounded portrait download before falling back to the embedded icon, and is meant
+to run off the UI thread. Landscape downloads are rejected before they enter
+the cache.
 """
 
 from __future__ import annotations

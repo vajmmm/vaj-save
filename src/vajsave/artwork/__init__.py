@@ -20,6 +20,8 @@ from .cache import (
     MANIFEST_NAME,
     MAX_COVER_BYTES,
     CoverCache,
+    is_portrait_image_bytes,
+    is_portrait_image_file,
     is_valid_image_bytes,
 )
 from .downloader import DEFAULT_TIMEOUT, MAX_DOWNLOAD_BYTES, ArtworkDownloader
@@ -101,6 +103,8 @@ __all__ = [
     "MANIFEST_NAME",
     "MANIFEST_FIELDS",
     "MAX_COVER_BYTES",
+    "is_portrait_image_bytes",
+    "is_portrait_image_file",
     "is_valid_image_bytes",
     "ArtworkService",
     "ArtworkResolution",

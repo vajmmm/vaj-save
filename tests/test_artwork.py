@@ -33,6 +33,8 @@ from vajsave.artwork import (
     PLACEHOLDER,
     resolve_artwork,
     sanitize_libretro_filename,
+    is_portrait_image_bytes,
+    is_portrait_image_file,
     SOURCE_DOWNLOADED,
     SOURCE_EMBEDDED,
     SOURCE_PLACEHOLDER,
@@ -250,6 +252,24 @@ def test_cover_cache_write_failure_degrades(tmp_path: Path):
     cache = CoverCache(root)
     assert cache.store("gba", "k", png_bytes()) is None
     assert cache.manifest() == {}
+
+
+def test_cover_cache_rejects_landscape_artwork(tmp_path: Path):
+    landscape = png_bytes(size=(8, 4))
+    assert not is_portrait_image_bytes(landscape)
+    cache = CoverCache(tmp_path / "covers")
+    assert cache.store("psp", "psp:landscape", landscape) is None
+    assert cache.manifest() == {}
+
+
+def test_cover_cache_ignores_stale_landscape_hit(tmp_path: Path):
+    cache = CoverCache(tmp_path / "covers")
+    key = "psp:stale"
+    path = cache.store("psp", key, png_bytes(size=(4, 8)))
+    assert path is not None
+    path.write_bytes(png_bytes(size=(8, 4)))
+    assert not is_portrait_image_file(path)
+    assert cache.lookup("psp", key) is None
 
 
 def test_cover_cache_corrupt_entry_without_local_path_is_not_a_hit(tmp_path: Path):
@@ -473,6 +493,29 @@ def test_ensure_cover_full_fallback_order(tmp_path: Path):
     assert failing.ensure_cover(
         bare, metadata=make_metadata(key="gba:sha1:zz"), identity_key="gba:sha1:zz", library_root=library
     ).source == SOURCE_PLACEHOLDER
+
+
+def test_ensure_cover_rejects_landscape_download_and_uses_embedded(tmp_path: Path):
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    embedded = tmp_path / "ICON0.PNG"
+    Image.new("RGBA", (8, 8), (200, 30, 30, 255)).save(embedded, format="PNG")
+    entry = make_entry(tmp_path, platform="psp", cover_path=str(embedded))
+    service = ArtworkService(
+        cache=cache,
+        downloader=ArtworkDownloader(
+            urlopen=lambda url, timeout=None: FakeResponse(png_bytes(size=(8, 4)))
+        ),
+    )
+    key = "psp:landscape"
+    resolution = service.ensure_cover(
+        entry,
+        metadata=make_metadata(platform="psp", title="Landscape Game", key=key),
+        identity_key=key,
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_EMBEDDED
+    assert cache.lookup("psp", key) is None
 
 
 def test_ensure_cover_user_local_skips_network(tmp_path: Path):

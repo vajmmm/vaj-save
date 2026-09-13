@@ -155,6 +155,23 @@ def _cover_source_rect(pixmap: QPixmap, target: QRectF) -> QRectF:
     return QRectF(0, (source_height - crop_height) / 2.0, source_width, crop_height)
 
 
+def _cover_draw_rect(pixmap: QPixmap, target: QRectF) -> QRectF:
+    """为横向素材返回完整显示区域，避免把横图裁成竖图。"""
+    if pixmap.isNull() or pixmap.width() <= 0 or pixmap.height() <= 0:
+        return target
+    source_ratio = pixmap.width() / pixmap.height()
+    target_ratio = target.width() / target.height()
+    if source_ratio <= target_ratio:
+        return target
+    height = target.width() / source_ratio
+    return QRectF(
+        target.left(),
+        target.center().y() - height / 2.0,
+        target.width(),
+        height,
+    )
+
+
 def _scaled_pixmap_for_dpr(
     pixmap: QPixmap,
     logical_size: QSize,
@@ -375,7 +392,7 @@ class GalleryCanvas(QWidget):
         return QRectF(start + col * (self.CELL_W + self.CELL_GAP), self.PAD_TOP + row * self.ROW_H + overflow_gap, self.CELL_W, self.ROW_H)
 
     def _case_size(self, entry: SaveEntry) -> tuple[int, int]:
-        ratio = {"switch": 0.70, "psp": 0.74, "vita": 0.74, "3ds": 0.90, "nds": 0.90, "gba": 1.12}.get(entry.platform, 0.78)
+        ratio = {"switch": 0.70, "psp": 0.74, "vita": 0.74, "3ds": 0.90, "nds": 0.90, "gba": 0.90}.get(entry.platform, 0.78)
         height = self.CASE_H
         width = int(height * ratio)
         if width > self.CELL_W - 12:
@@ -486,7 +503,16 @@ class GalleryCanvas(QWidget):
         if pixmap is not None:
             painter.save()
             painter.setClipPath(self._rounded_path(cover_rect, 3))
-            painter.drawPixmap(cover_rect, pixmap, _cover_source_rect(pixmap, cover_rect))
+            draw_rect = _cover_draw_rect(pixmap, cover_rect)
+            if draw_rect != cover_rect:
+                painter.fillRect(cover_rect, QColor(SWITCH["panel_alt"]))
+                painter.drawPixmap(
+                    draw_rect,
+                    pixmap,
+                    QRectF(0, 0, pixmap.width(), pixmap.height()),
+                )
+            else:
+                painter.drawPixmap(cover_rect, pixmap, _cover_source_rect(pixmap, cover_rect))
             painter.restore()
         else:
             painter.fillPath(self._rounded_path(cover_rect, 3), QColor(SWITCH["panel_alt"]))
