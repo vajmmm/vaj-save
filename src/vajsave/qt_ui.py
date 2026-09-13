@@ -17,7 +17,7 @@ from typing import Iterable, Optional
 os.environ["QT_API"] = "pyside6"
 
 import qtawesome as qta
-from PySide6.QtCore import QByteArray, QEasingCurve, QObject, QPoint, QPointF, QPropertyAnimation, QRectF, QSize, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QByteArray, QEasingCurve, QObject, QPoint, QPropertyAnimation, QRectF, QSize, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QIcon, QKeyEvent, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -110,8 +110,7 @@ def _render_platform_logo(platform: str, svg: bytes, dpr: float) -> QPixmap:
     canvas.setDevicePixelRatio(dpr)
     canvas.fill(Qt.GlobalColor.transparent)
     bounds = renderer.viewBoxF()
-    max_width = 26.0 if platform == "switch" else 64.0
-    scale = min(max_width / bounds.width(), 24.0 / bounds.height())
+    scale = min(64.0 / bounds.width(), 24.0 / bounds.height())
     target = QRectF(
         (logical_width - bounds.width() * scale) / 2.0,
         (logical_height - bounds.height() * scale) / 2.0,
@@ -123,26 +122,6 @@ def _render_platform_logo(platform: str, svg: bytes, dpr: float) -> QPixmap:
     painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
     painter.fillRect(QRectF(0, 0, logical_width, logical_height), QColor(SWITCH["ink"]))
     painter.end()
-    if platform != "switch":
-        strengthened = QPixmap(canvas.size())
-        strengthened.setDevicePixelRatio(dpr)
-        strengthened.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(strengthened)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        for x, y in (
-            (-0.45, -0.45),
-            (0.0, -0.45),
-            (0.45, -0.45),
-            (-0.45, 0.0),
-            (0.0, 0.0),
-            (0.45, 0.0),
-            (-0.45, 0.45),
-            (0.0, 0.45),
-            (0.45, 0.45),
-        ):
-            painter.drawPixmap(QPointF(x, y), canvas)
-        painter.end()
-        canvas = strengthened
     return canvas
 
 

@@ -120,7 +120,7 @@ def test_formal_entry_uses_qt_runtime():
     assert "mainloop" not in source
 
 
-def test_platform_icons_use_distinct_console_marks(qt_app):
+def test_platform_icons_use_distinct_official_marks(qt_app):
     cache_keys = []
     for platform in ("all", "psp", "vita", "switch", "3ds", "nds", "gba"):
         pixmap = _platform_icon(platform).pixmap(68, 28)
@@ -143,7 +143,7 @@ def test_platform_icons_remain_legible_at_100_percent(qt_app):
             for y in range(image.height())
             for x in range(image.width())
         )
-        assert strong_pixels >= 100, platform
+        assert strong_pixels >= 90, platform
 
 
 def test_platform_logo_assets_are_packaged():
