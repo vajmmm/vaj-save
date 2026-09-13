@@ -161,6 +161,23 @@ def _cover_source_rect(pixmap: QPixmap, target: QRectF) -> QRectF:
     return QRectF(0, (source_height - crop_height) / 2.0, source_width, crop_height)
 
 
+def _cover_fit_rect(pixmap: QPixmap, target: QRectF) -> QRectF:
+    """返回完整保留封面的居中目标区域，不拉伸也不裁切。"""
+    source_width = float(pixmap.width())
+    source_height = float(pixmap.height())
+    if source_width <= 0 or source_height <= 0 or target.width() <= 0 or target.height() <= 0:
+        return QRectF()
+    scale = min(target.width() / source_width, target.height() / source_height)
+    width = source_width * scale
+    height = source_height * scale
+    return QRectF(
+        target.center().x() - width / 2.0,
+        target.center().y() - height / 2.0,
+        width,
+        height,
+    )
+
+
 def _scaled_pixmap_for_dpr(
     pixmap: QPixmap,
     logical_size: QSize,
@@ -495,7 +512,17 @@ class GalleryCanvas(QWidget):
         if pixmap is not None:
             painter.save()
             painter.setClipPath(self._rounded_path(cover_rect, 3))
-            painter.drawPixmap(cover_rect, pixmap, _cover_source_rect(pixmap, cover_rect))
+            if str(entry.platform or "").strip().lower() == "psp":
+                # PSP 盒装图的实际比例比卡片略窄；完整缩放可保留封面边缘和文字，
+                # 由卡片底色承接两侧留白，避免再次出现中心裁切。
+                painter.fillRect(cover_rect, QColor(SWITCH["panel_alt"]))
+                painter.drawPixmap(
+                    _cover_fit_rect(pixmap, cover_rect),
+                    pixmap,
+                    QRectF(0, 0, pixmap.width(), pixmap.height()),
+                )
+            else:
+                painter.drawPixmap(cover_rect, pixmap, _cover_source_rect(pixmap, cover_rect))
             painter.restore()
         else:
             painter.fillPath(self._rounded_path(cover_rect, 3), QColor(SWITCH["panel_alt"]))

@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QImage, QPainter, QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton
 
@@ -23,11 +23,13 @@ from vajsave.qt_ui import (
     LLMSettingsDialog,
     PlatformButton,
     VajSaveWindow,
+    _cover_fit_rect,
     _cover_source_rect,
     _platform_icon,
     _render_platform_logo,
     _scaled_pixmap_for_dpr,
 )
+import vajsave.qt_ui as qt_ui
 from vajsave.volume import FakeVolumeProvider
 
 
@@ -185,6 +187,46 @@ def test_cover_crop_uses_original_pixels(qt_app):
     assert source.width() == 300
     assert source.height() < 500
     assert source.center() == QRectF(0, 0, 300, 500).center()
+
+
+def test_psp_cover_fit_preserves_full_artwork(qt_app):
+    portrait = QPixmap(600, 1000)
+    target = QRectF(0, 0, 180, 280)
+    fitted = _cover_fit_rect(portrait, target)
+    assert fitted.height() == target.height()
+    assert fitted.width() < target.width()
+    assert fitted.center() == target.center()
+
+
+def test_psp_gallery_uses_full_cover_fit(qt_app, qt_state, tmp_path: Path, monkeypatch):
+    path = tmp_path / "psp-boxart.png"
+    cover = QPixmap(600, 1000)
+    cover.fill(Qt.GlobalColor.blue)
+    assert cover.save(str(path), "PNG")
+    entry = SaveEntry(
+        platform="psp",
+        source_id="psp-demo",
+        display_name="PSP 游戏",
+        path=str(tmp_path / "save"),
+    )
+    canvas = GalleryCanvas(qt_state)
+    canvas.resize(320, 440)
+    canvas.set_entries([entry])
+    canvas.set_cover_path(entry.path, str(path))
+    calls = []
+    original = qt_ui._cover_fit_rect
+
+    def record_fit(pixmap, target):
+        calls.append(target)
+        return original(pixmap, target)
+
+    monkeypatch.setattr(qt_ui, "_cover_fit_rect", record_fit)
+    image = QImage(320, 440, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(image)
+    canvas._paint_case(painter, 0, entry)
+    painter.end()
+    assert calls
 
 
 def test_gallery_case_geometry_stays_portrait_for_supported_platforms(qt_app, qt_state):
