@@ -629,7 +629,7 @@ def test_ensure_cover_for_title_retries_region_suffix_after_404(tmp_path: Path):
     assert len(calls) >= 2
 
 
-def test_ensure_cover_for_title_embedded_icon_skips_network(tmp_path: Path):
+def test_ensure_cover_for_title_upgrades_embedded_icon(tmp_path: Path):
     library = tmp_path / "lib"
     cache = CoverCache(library / COVER_CACHE_DIR)
     entry = make_entry(tmp_path, platform="psp")
@@ -651,9 +651,34 @@ def test_ensure_cover_for_title_embedded_icon_skips_network(tmp_path: Path):
         identity_key="psp:ULJM05800",
         library_root=library,
     )
+    assert resolution.source == SOURCE_DOWNLOADED
+    assert Path(resolution.path) != icon
+    assert calls
+
+
+def test_ensure_cover_for_title_keeps_embedded_icon_when_offline(tmp_path: Path):
+    library = tmp_path / "lib"
+    entry = make_entry(tmp_path, platform="psp")
+    icon = tmp_path / "ICON0.PNG"
+    icon.write_bytes(png_bytes())
+    entry.cover_path = str(icon)
+    service = ArtworkService(
+        cache=CoverCache(library / COVER_CACHE_DIR),
+        downloader=ArtworkDownloader(
+            urlopen=lambda url, timeout=None: (_ for _ in ()).throw(
+                urllib.error.URLError("offline")
+            )
+        ),
+    )
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="psp",
+        title="Monster Hunter Portable 3rd",
+        identity_key="psp:ULJM05800",
+        library_root=library,
+    )
     assert resolution.source == SOURCE_EMBEDDED
     assert Path(resolution.path) == icon
-    assert calls == []
 
 
 def test_ensure_cover_for_title_cache_hit_is_zero_network(tmp_path: Path):

@@ -380,9 +380,8 @@ def test_appstate_psp_cover_uses_sfo_title_without_icon(tmp_path: Path, psp_sfo_
     assert "Monster%20Hunter%20Portable%203rd" in urls[0]
 
 
-def test_appstate_psp_icon0_skips_network(tmp_path: Path, psp_sfo_bytes: bytes):
-    """When the save folder already ships an ICON0.PNG, the PSP path must not
-    go online:"""
+def test_appstate_psp_icon0_is_upgraded_to_boxart(tmp_path: Path, psp_sfo_bytes: bytes):
+    """A small ICON0.PNG stays available while the full-size cover is fetched."""
     entry = _psp_entry(tmp_path, with_icon=True)
     (Path(entry.path) / "PARAM.SFO").write_bytes(psp_sfo_bytes)
 
@@ -397,8 +396,8 @@ def test_appstate_psp_icon0_skips_network(tmp_path: Path, psp_sfo_bytes: bytes):
         ),
     )
     cover = state.ensure_save_cover(entry, result)
-    assert cover.source == SOURCE_EMBEDDED
-    assert calls == []
+    assert cover.source == SOURCE_DOWNLOADED
+    assert calls
 
 
 def test_appstate_vita_cover_uses_sfo_title(tmp_path: Path, vita_sfo_bytes: bytes):

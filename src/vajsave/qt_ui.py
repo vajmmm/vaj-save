@@ -17,7 +17,7 @@ from typing import Iterable, Optional
 os.environ["QT_API"] = "pyside6"
 
 import qtawesome as qta
-from PySide6.QtCore import QByteArray, QEasingCurve, QPoint, QPropertyAnimation, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QEasingCurve, QObject, QPoint, QPointF, QPropertyAnimation, QRectF, QSize, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QIcon, QKeyEvent, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtSvg import QSvgRenderer
 
 from .app_state import PLATFORM_LABELS, PLATFORM_ORDER, AppState
+from .artwork import LLM_PROTOCOLS, ArtworkLoader, default_base_url, default_model
 from .identity import STATUS_AMBIGUOUS, STATUS_PARTIAL, STATUS_RESOLVED
 from .library import Snapshot, load_keep_last
 from .models import SaveEntry, VolumeInfo
@@ -71,6 +72,20 @@ WARNING_BORDER = mix(SWITCH["card"], SWITCH["warning"], 0.28)
 WARNING_TEXT = darken(SWITCH["warning"], 0.30)
 
 
+class _QtCallbackBridge(QObject):
+    """把后台线程完成回调安全地投递回 Qt 主线程。"""
+
+    dispatch = Signal(object)
+
+    def __init__(self, parent: Optional[QObject] = None) -> None:
+        super().__init__(parent)
+        self.dispatch.connect(self._run)
+
+    @Slot(object)
+    def _run(self, callback) -> None:
+        callback()
+
+
 def _icon(name: str, color: str = SWITCH["ink"], scale: float = 1.0):
     return qta.icon(name, color=color, scale_factor=scale)
 
@@ -84,7 +99,7 @@ _PLATFORM_LOGOS = {
     "gba": "platform-gba.svg",
 }
 _PLATFORM_ICON_CACHE: dict[str, QIcon] = {}
-_ICON_DPR_LEVELS = (1.0, 1.25, 1.5, 2.0, 3.0)
+_ICON_MASTER_DPR = 4.0
 
 
 def _render_platform_logo(platform: str, svg: bytes, dpr: float) -> QPixmap:
@@ -106,8 +121,28 @@ def _render_platform_logo(platform: str, svg: bytes, dpr: float) -> QPixmap:
     painter = QPainter(canvas)
     renderer.render(painter, target)
     painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-    painter.fillRect(QRectF(0, 0, logical_width, logical_height), QColor(SWITCH["muted_strong"]))
+    painter.fillRect(QRectF(0, 0, logical_width, logical_height), QColor(SWITCH["ink"]))
     painter.end()
+    if platform != "switch":
+        strengthened = QPixmap(canvas.size())
+        strengthened.setDevicePixelRatio(dpr)
+        strengthened.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(strengthened)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        for x, y in (
+            (-0.45, -0.45),
+            (0.0, -0.45),
+            (0.45, -0.45),
+            (-0.45, 0.0),
+            (0.0, 0.0),
+            (0.45, 0.0),
+            (-0.45, 0.45),
+            (0.0, 0.45),
+            (0.45, 0.45),
+        ):
+            painter.drawPixmap(QPointF(x, y), canvas)
+        painter.end()
+        canvas = strengthened
     return canvas
 
 
@@ -121,9 +156,9 @@ def _platform_icon(platform: str) -> QIcon:
         return icon
 
     svg = resources.files("vajsave.data").joinpath(_PLATFORM_LOGOS[platform]).read_bytes()
-    icon = QIcon()
-    for dpr in _ICON_DPR_LEVELS:
-        icon.addPixmap(_render_platform_logo(platform, svg, dpr))
+    # 只缓存一份 4× 物理像素母版。Qt 在 100%～400% 缩放下只会从它缩小，
+    # 不会再把低 DPI 档位放大；这也覆盖 Windows 常见的 125%/150%/175%。
+    icon = QIcon(_render_platform_logo(platform, svg, _ICON_MASTER_DPR))
     _PLATFORM_ICON_CACHE[platform] = icon
     return icon
 
@@ -312,6 +347,15 @@ class GalleryCanvas(QWidget):
         self.selected = {i for i, item in enumerate(self.entries) if item.path in current_paths}
         self.active = min(self.active, len(self.entries) - 1)
         self._update_geometry()
+        self.update()
+
+    def set_cover_path(self, entry_path: str, cover_path: Optional[str]) -> None:
+        """替换一个条目的封面路径，并让下一帧重新读取高清资源。"""
+        path = str(cover_path or "")
+        previous = self._cover_paths.get(entry_path, "")
+        if previous == path:
+            return
+        self._cover_paths[entry_path] = path
         self.update()
 
     def set_reserved_right(self, width: int) -> None:
@@ -730,6 +774,13 @@ class DetailDrawer(QFrame):
         rows = self.versions.selectionModel().selectedRows()
         self.version_changed.emit(rows[0].row() if rows else -1)
 
+    def set_cover_path(self, cover_path: Optional[str]) -> None:
+        pixmap = QPixmap(str(cover_path)) if cover_path else QPixmap()
+        if pixmap.isNull():
+            self.cover.setPixmap(_icon("fa6s.image", SWITCH["muted_strong"]).pixmap(52, 52))
+            return
+        self.cover.setPixmap(_scaled_pixmap_for_dpr(pixmap, self.cover.size(), self.devicePixelRatioF()))
+
     def set_entry(self, state: AppState, entry: SaveEntry) -> list[Snapshot]:
         result = state.resolve_save_identity(entry)
         identity = result.identity
@@ -752,11 +803,7 @@ class DetailDrawer(QFrame):
         self.fields["path"].setText(_short_path(entry.path))
         self.fields["path"].setToolTip(str(entry.path))
         resolution = state.resolve_save_cover(entry, result=result)
-        pixmap = QPixmap(str(resolution.path)) if resolution.path else QPixmap()
-        if pixmap.isNull():
-            self.cover.setPixmap(_icon("fa6s.image", SWITCH["muted_strong"]).pixmap(52, 52))
-        else:
-            self.cover.setPixmap(_scaled_pixmap_for_dpr(pixmap, self.cover.size(), self.devicePixelRatioF()))
+        self.set_cover_path(resolution.path)
         needs_binding = result.status == STATUS_AMBIGUOUS or result.status not in (STATUS_RESOLVED, STATUS_PARTIAL)
         self.warning.setVisible(needs_binding)
         self.warning_title.setText("多个 ROM 候选" if result.status == STATUS_AMBIGUOUS else "未绑定 ROM")
@@ -806,6 +853,93 @@ class DetailDrawer(QFrame):
         return f"{size} B"
 
 
+class LLMSettingsDialog(QDialog):
+    """可选的 LLM 封面消歧设置，完整复用 AppState 的持久化能力。"""
+
+    def __init__(self, state: AppState, loader: ArtworkLoader, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.state = state
+        self.loader = loader
+        self.setWindowTitle("LLM 封面消歧")
+        self.setMinimumWidth(520)
+        form = QFormLayout(self)
+        self.enabled = QCheckBox("启用（仅在封面候选存在歧义时使用）")
+        self.enabled.setChecked(state.llm_cover_enabled)
+        self.protocol = QComboBox()
+        labels = {
+            "openai-completions": "OpenAI 兼容 Chat Completions",
+            "anthropic-messages": "Anthropic Messages",
+        }
+        for value in LLM_PROTOCOLS:
+            self.protocol.addItem(labels.get(value, value), value)
+        self.protocol.setCurrentIndex(max(0, self.protocol.findData(state.llm_protocol)))
+        self.base_url = QLineEdit(state.llm_base_url)
+        self.api_key = QLineEdit(state.llm_api_key)
+        self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.model = QLineEdit(state.llm_model)
+        form.addRow("", self.enabled)
+        form.addRow("协议", self.protocol)
+        form.addRow("Base URL", self.base_url)
+        form.addRow("API 密钥", self.api_key)
+        form.addRow("模型 ID", self.model)
+        test_row = QHBoxLayout()
+        self.test_button = _button("测试连接", "fa6s.plug-circle-check")
+        self.test_result = QLabel("")
+        self.test_result.setObjectName("sectionMuted")
+        test_row.addWidget(self.test_button)
+        test_row.addWidget(self.test_result, 1)
+        form.addRow("", test_row)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+        self._last_protocol = self.protocol.currentData()
+        self.protocol.currentIndexChanged.connect(self._protocol_changed)
+        self.test_button.clicked.connect(self._test_connection)
+
+    def _protocol_changed(self) -> None:
+        new_protocol = self.protocol.currentData()
+        old_protocol = self._last_protocol
+        if self.base_url.text().strip().rstrip("/") == default_base_url(old_protocol).rstrip("/"):
+            self.base_url.setText(default_base_url(new_protocol))
+        if self.model.text().strip() == default_model(old_protocol):
+            self.model.setText(default_model(new_protocol))
+        self._last_protocol = new_protocol
+
+    def _values(self) -> dict[str, object]:
+        return {
+            "enabled": self.enabled.isChecked(),
+            "protocol": self.protocol.currentData(),
+            "base_url": self.base_url.text().strip(),
+            "api_key": self.api_key.text().strip(),
+            "model": self.model.text().strip(),
+        }
+
+    def _save(self) -> None:
+        self.state.set_llm_cover(**self._values())
+        self.accept()
+
+    def _test_connection(self) -> None:
+        values = self._values()
+        self.test_button.setEnabled(False)
+        self.test_result.setText("正在测试…")
+
+        def task():
+            return self.state.test_llm_cover(
+                protocol=str(values["protocol"]),
+                base_url=str(values["base_url"]),
+                api_key=str(values["api_key"]),
+                model=str(values["model"]),
+            )
+
+        def completed(result) -> None:
+            self.test_button.setEnabled(True)
+            ok, detail = result if result is not None else (False, "测试失败")
+            self.test_result.setText(("✓ " if ok else "✗ ") + detail)
+
+        self.loader.submit(("llm-probe", id(self)), task, completed)
+
+
 class VajSaveWindow(QMainWindow):
     """参考图对应的雾银收藏架主窗口。"""
 
@@ -818,6 +952,10 @@ class VajSaveWindow(QMainWindow):
         self._sort_mode = "recent"
         self._drawer_open = False
         self._drawer_animation: Optional[QPropertyAnimation] = None
+        self._callback_bridge = _QtCallbackBridge(self)
+        self._artwork_loader = ArtworkLoader(self._callback_bridge.dispatch.emit)
+        self._enrichment_attempted: set[str] = set()
+        self._list_generation = 0
         self.setWindowTitle("vaj-save")
         self.resize(1480, 900)
         self.setMinimumSize(1180, 700)
@@ -1041,7 +1179,16 @@ class VajSaveWindow(QMainWindow):
         return saves
 
     def refresh_all(self) -> None:
-        self.gallery.set_entries(self._visible_saves())
+        saves = self._visible_saves()
+        self.gallery.set_entries(saves)
+        self._list_generation += 1
+        generation = self._list_generation
+        QTimer.singleShot(
+            0,
+            lambda current=list(saves), current_generation=generation: self._schedule_cover_enrichment(
+                current, current_generation
+            ),
+        )
         self.dock.set_current(self.state.selected_platform)
         stats = self.state.collection_stats()
         self.stats.setText(f"已备份 {stats.get('games', 0)} 款游戏 · {stats.get('versions', 0)} 个版本")
@@ -1051,6 +1198,47 @@ class VajSaveWindow(QMainWindow):
         self.dock.set_device(name, connected or self.state.library_mode)
         self.status_device.setText(f"●  {name}")
         self.status_text.setText(self.state.status_text)
+
+    def _schedule_cover_enrichment(
+        self, saves: list[SaveEntry], generation: int
+    ) -> None:
+        """首帧之后为可见条目恢复元数据解析和高清封面下载。"""
+        if generation != self._list_generation or self.state.library_mode:
+            return
+        pending = [save for save in saves if save.path not in self._enrichment_attempted]
+        if not pending:
+            return
+        results = self.state.resolve_identities(pending)
+        for save, result in zip(pending, results):
+            if not result.is_resolved or result.identity is None:
+                continue
+            self._enrichment_attempted.add(save.path)
+            identity = result.identity
+
+            def task(entry=save, resolved=result, game_identity=identity):
+                metadata = self.state.resolve_save_metadata(entry, game_identity)
+                cover = self.state.ensure_save_cover(entry, resolved, metadata)
+                return metadata, cover
+
+            def completed(payload, entry=save) -> None:
+                self._apply_cover_enrichment(entry, payload)
+
+            self._artwork_loader.submit(("cover", save.path), task, completed)
+
+    def _apply_cover_enrichment(self, entry: SaveEntry, payload) -> None:
+        if not payload:
+            return
+        metadata, cover = payload
+        cover_path = getattr(cover, "path", None)
+        if cover_path:
+            self.gallery.canvas.set_cover_path(entry.path, cover_path)
+        if self._selected is None or self._selected.path != entry.path:
+            return
+        canonical_title = getattr(metadata, "canonical_title", "") if metadata else ""
+        if canonical_title:
+            self.drawer.name.setText(canonical_title)
+        if cover_path:
+            self.drawer.set_cover_path(cover_path)
 
     def _select_initial_device(self) -> None:
         if self.state.ensure_mount_selected() is not None:
@@ -1156,6 +1344,8 @@ class VajSaveWindow(QMainWindow):
             QMessageBox.warning(self, "ROM 绑定失败", str(exc))
             return
         self._versions = self.drawer.set_entry(self.state, self._selected)
+        self._enrichment_attempted.discard(self._selected.path)
+        self.refresh_all()
 
     def _save_note(self, note: str) -> None:
         if self._selected:
@@ -1163,6 +1353,7 @@ class VajSaveWindow(QMainWindow):
             self.status_text.setText(self.state.status_text)
 
     def _refresh_devices(self) -> None:
+        self._enrichment_attempted.clear()
         self.state.refresh_volumes()
         self.state.ensure_mount_selected()
         self.refresh_all()
@@ -1246,11 +1437,28 @@ class VajSaveWindow(QMainWindow):
         library = QLineEdit(str(self.state.library_root))
         gba = QLineEdit(str(self.state.gba_rom_dir or ""))
         nds = QLineEdit(str(self.state.nds_rom_dir or ""))
+        libretro = QLineEdit(str(self.state.libretro_dir or ""))
+        libretro.setObjectName("libretroDirectory")
         keep = QLineEdit(str(load_keep_last(self.state.library_root)))
         form.addRow("本地备份库", library)
         form.addRow("GBA ROM 目录", gba)
         form.addRow("NDS ROM 目录", nds)
+        form.addRow("Libretro 元数据目录", libretro)
         form.addRow("保留版本数（0 为不限）", keep)
+        llm_entry = _button(
+            "配置…（已启用）" if self.state.llm_cover_enabled else "配置…（未启用）",
+            "fa6s.wand-magic-sparkles",
+        )
+        llm_entry.setObjectName("llmSettingsEntry")
+
+        def open_llm_settings() -> None:
+            if self._show_llm_settings(dialog):
+                llm_entry.setText(
+                    "配置…（已启用）" if self.state.llm_cover_enabled else "配置…（未启用）"
+                )
+
+        llm_entry.clicked.connect(open_llm_settings)
+        form.addRow("LLM 封面消歧", llm_entry)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
@@ -1258,9 +1466,23 @@ class VajSaveWindow(QMainWindow):
         if dialog.exec():
             self.state.set_library_root(library.text())
             self.state.set_rom_dirs(gba.text(), nds.text())
+            self.state.set_libretro_dir(libretro.text())
             if self.state.set_keep_last(keep.text()) is None:
                 QMessageBox.warning(self, "设置", "保留版本数必须是非负整数。")
+            self._enrichment_attempted.clear()
             self.refresh_all()
+
+    def _show_llm_settings(self, parent: Optional[QWidget] = None) -> bool:
+        dialog = LLMSettingsDialog(self.state, self._artwork_loader, parent or self)
+        saved = dialog.exec() == QDialog.DialogCode.Accepted
+        if saved:
+            self._enrichment_attempted.clear()
+            self.refresh_all()
+            if self.state.llm_cover_enabled and not self.state.llm_api_key:
+                self.status_text.setText("已开启 LLM 封面消歧（未填 API 密钥，暂不生效）")
+            else:
+                self.status_text.setText("LLM 封面消歧设置已更新")
+        return saved
 
     def _show_help(self) -> None:
         QMessageBox.information(
@@ -1273,6 +1495,7 @@ class VajSaveWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self.poll_timer.stop()
+        self._artwork_loader.shutdown(wait=False)
         self.state.stop_watch(timeout=0.5)
         super().closeEvent(event)
 
@@ -1293,4 +1516,4 @@ def run_app(state: Optional[AppState] = None) -> int:
     return app.exec()
 
 
-__all__ = ["DetailDrawer", "GalleryCanvas", "GalleryView", "PlatformDock", "VajSaveWindow", "build_app", "run_app"]
+__all__ = ["DetailDrawer", "GalleryCanvas", "GalleryView", "LLMSettingsDialog", "PlatformDock", "VajSaveWindow", "build_app", "run_app"]

@@ -245,9 +245,9 @@ class ArtworkService:
         """Cover for a platform whose provider key is the save's own title.
 
         PSP/Vita have no ROM index, so the caller passes the PARAM.SFO / display
-        title explicitly.  Unlike :meth:`ensure_cover`, an embedded icon
-        (``ICON0.PNG`` / ``sce_sys/icon0.png``) is preferred over a download: a
-        save that already ships artwork is never looked up online.
+        title explicitly.  The usually small embedded icon
+        (``ICON0.PNG`` / ``sce_sys/icon0.png``) remains the offline fallback;
+        when possible, a full-size box cover is downloaded and cached first.
 
         Checkpoint / SFO titles often miss the No-Intro filename on the first
         try, so :func:`libretro_title_candidates` walks a short list of
@@ -270,8 +270,6 @@ class ArtworkService:
         if cached is not None:
             return ArtworkResolution(str(cached), SOURCE_DOWNLOADED)
         embedded = _embedded_path(entry)
-        if embedded is not None:
-            return ArtworkResolution(str(embedded), SOURCE_EMBEDDED)
         names = []
         if plat == "3ds" and title_id:
             names.extend(self._3ds_names_for_title_id(title_id))
@@ -289,9 +287,14 @@ class ArtworkService:
             )
             if stored is not None:
                 return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
-        return self._download_from_listing(
+        downloaded = self._download_from_listing(
             plat, names, identity_key=identity_key
-        ) or PLACEHOLDER
+        )
+        if downloaded is not None:
+            return downloaded
+        if embedded is not None:
+            return ArtworkResolution(str(embedded), SOURCE_EMBEDDED)
+        return PLACEHOLDER
 
     def _download_from_listing(
         self,

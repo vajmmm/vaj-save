@@ -8,16 +8,19 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QRectF, QSize, Qt
+from PySide6.QtCore import QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QPixmap
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton
 
 from vajsave.app_state import AppState
+from vajsave.artwork import ArtworkResolution, SOURCE_DOWNLOADED
+from vajsave.metadata import GameMetadata
 from vajsave.models import SaveEntry, ScanResult, VolumeInfo
 from vajsave.qt_ui import (
     DRAWER_WIDTH,
     GalleryCanvas,
+    LLMSettingsDialog,
     VajSaveWindow,
     _cover_source_rect,
     _platform_icon,
@@ -62,6 +65,14 @@ def qt_state(tmp_path: Path, monkeypatch):
     state.select_mount(mount)
     monkeypatch.setattr(state, "start_watch", lambda *args, **kwargs: None)
     monkeypatch.setattr(state, "stop_watch", lambda *args, **kwargs: None)
+    monkeypatch.setattr(state, "resolve_save_metadata", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        state,
+        "ensure_save_cover",
+        lambda entry, result=None, metadata=None: state.resolve_save_cover(
+            entry, result=result
+        ),
+    )
     return state
 
 
@@ -109,7 +120,7 @@ def test_formal_entry_uses_qt_runtime():
     assert "mainloop" not in source
 
 
-def test_platform_icons_use_distinct_official_marks(qt_app):
+def test_platform_icons_use_distinct_console_marks(qt_app):
     cache_keys = []
     for platform in ("all", "psp", "vita", "switch", "3ds", "nds", "gba"):
         pixmap = _platform_icon(platform).pixmap(68, 28)
@@ -117,10 +128,22 @@ def test_platform_icons_use_distinct_official_marks(qt_app):
         cache_keys.append(pixmap.cacheKey())
     assert len(set(cache_keys)) == 7
 
-    hidpi = _platform_icon("switch").pixmap(QSize(68, 28), 1.5)
-    assert hidpi.size() == QSize(102, 42)
-    assert hidpi.devicePixelRatio() == 1.5
-    assert hidpi.deviceIndependentSize().toSize() == QSize(68, 28)
+    for dpr in (1.0, 1.25, 1.5, 1.75, 2.0, 3.0, 4.0):
+        hidpi = _platform_icon("switch").pixmap(QSize(68, 28), dpr)
+        assert hidpi.size() == QSize(round(68 * dpr), round(28 * dpr))
+        assert hidpi.devicePixelRatio() == dpr
+        assert hidpi.deviceIndependentSize().toSize() == QSize(68, 28)
+
+
+def test_platform_icons_remain_legible_at_100_percent(qt_app):
+    for platform in ("psp", "vita", "switch", "3ds", "nds", "gba"):
+        image = _platform_icon(platform).pixmap(QSize(68, 28), 1.0).toImage()
+        strong_pixels = sum(
+            image.pixelColor(x, y).alpha() >= 160
+            for y in range(image.height())
+            for x in range(image.width())
+        )
+        assert strong_pixels >= 100, platform
 
 
 def test_platform_logo_assets_are_packaged():
@@ -163,3 +186,85 @@ def test_detail_cover_scaling_preserves_logical_size(qt_app, dpr):
     logical = scaled.deviceIndependentSize()
     assert logical.width() <= 116
     assert logical.height() <= 196
+
+
+def test_qt_gallery_enriches_visible_covers_in_background(
+    qt_app, qt_state, tmp_path: Path, monkeypatch
+):
+    cover = tmp_path / "high-resolution.png"
+    image = QPixmap(900, 1200)
+    image.fill(Qt.GlobalColor.blue)
+    assert image.save(str(cover), "PNG")
+    metadata_calls = []
+    cover_calls = []
+
+    def resolve_metadata(entry, identity=None):
+        metadata_calls.append(entry.path)
+        return GameMetadata(
+            identity_key=identity.identity_key,
+            platform=entry.platform,
+            canonical_title=f"高清 {entry.display_name}",
+        )
+
+    def ensure_cover(entry, result=None, metadata=None):
+        cover_calls.append(entry.path)
+        return ArtworkResolution(str(cover), SOURCE_DOWNLOADED)
+
+    monkeypatch.setattr(qt_state, "resolve_save_metadata", resolve_metadata)
+    monkeypatch.setattr(qt_state, "ensure_save_cover", ensure_cover)
+    window = VajSaveWindow(qt_state)
+    try:
+        window.show()
+        QTest.qWait(160)
+        first = qt_state.visible_saves()[0]
+        assert first.path in metadata_calls
+        assert first.path in cover_calls
+        assert window.gallery.canvas._cover_paths[first.path] == str(cover)
+    finally:
+        window.close()
+
+
+def test_llm_settings_dialog_preserves_all_configuration_fields(
+    qt_app, qt_state, monkeypatch
+):
+    saved = {}
+
+    class ImmediateLoader:
+        def submit(self, key, task, callback):
+            callback(task())
+            return True
+
+    monkeypatch.setattr(qt_state, "set_llm_cover", lambda **values: saved.update(values))
+    dialog = LLMSettingsDialog(qt_state, ImmediateLoader())
+    dialog.enabled.setChecked(True)
+    dialog.api_key.setText("sk-test")
+    dialog.base_url.setText("https://example.test/v1")
+    dialog.model.setText("test-model")
+    dialog._save()
+    assert saved == {
+        "enabled": True,
+        "protocol": qt_state.llm_protocol,
+        "base_url": "https://example.test/v1",
+        "api_key": "sk-test",
+        "model": "test-model",
+    }
+    assert dialog.result() == dialog.DialogCode.Accepted
+
+
+def test_main_settings_exposes_libretro_and_llm_entries(qt_app, qt_state):
+    window = VajSaveWindow(qt_state)
+    found = {}
+
+    def inspect_dialog():
+        dialog = QApplication.activeModalWidget()
+        found["libretro"] = dialog.findChild(QLineEdit, "libretroDirectory")
+        found["llm"] = dialog.findChild(QPushButton, "llmSettingsEntry")
+        dialog.reject()
+
+    try:
+        QTimer.singleShot(0, inspect_dialog)
+        window._show_settings()
+        assert found["libretro"] is not None
+        assert found["llm"] is not None
+    finally:
+        window.close()

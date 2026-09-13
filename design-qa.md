@@ -23,7 +23,7 @@
 - 字体与排版：使用平台中文 UI 字体栈；品牌、抽屉标题、游戏名、字段和辅助文字层级与参考一致。小字号在 offscreen 抗锯齿上略有差异，属于平台渲染差异。
 - 间距与布局：顶栏、104px Dock、四列首层收藏架、442px 详情抽屉和 42px 状态栏比例通过。第二排按 3DS/GBA 实体比例降低高度，两层货架可在默认窗口完整显示。
 - 颜色与 Token：所有运行时颜色取自 `vajsave.ui_theme.SWITCH`、`PLATFORM_COLORS` 或其混色函数；蓝色只承担选中态和主操作。
-- 图片质量：封面使用真实本地封面解析链路，以平滑缩放填入不同平台盒型；平台 Dock 使用 PSP、PlayStation Vita、Nintendo Switch、Nintendo 3DS、Nintendo DS 和 Game Boy Advance 的官方标识，以原始比例渲染为统一中性色，其他标准操作图标来自 QtAwesome。
+- 图片质量：封面使用真实本地封面解析链路，以平滑缩放填入不同平台盒型；平台 Dock 使用可辨认的 PSP、PlayStation Vita、Nintendo 3DS、Nintendo DS 和 Game Boy Advance 掌机轮廓矢量，Switch 使用官方 Joy-Con 标志，统一渲染为高对比中性色；其他标准操作图标来自 QtAwesome。
 - 文案与内容：参考图中的搜索、排序、更新筛选、平台、备份/恢复/导出、ROM 警告、版本历史与备注均已覆盖。
 
 ## 全画面对比
@@ -46,6 +46,14 @@
 
 ## 重点局部对比
 
+### 平台 Dock 图标
+
+- 首轮发现 P2：3DS、NDS、GBA 的横向品牌字标压入 68×28px 后只有约 7–10px 高，在 Windows 截图中无法稳定辨认。
+- 修复：保持 68×28px 逻辑占位不变，将过宽字标替换为对应掌机轮廓矢量；统一使用 4× 物理像素母版，只在 100%～400% DPI 范围向下缩小。
+- 修复：为细线轮廓增加亚像素级加粗合成，颜色仍使用主题中性色，不引入新的平台色表面。
+- 复核：实现截图中的 PSP、Vita、Switch、3DS、NDS、GBA 均可从轮廓直接区分，文字标签、按钮高度和 Dock 宽度未改变；100% 渲染的每个标志均超过 100 个高不透明像素。
+- 对比证据：`build/ui-preview/qt-design-comparison.png`，左侧为 1480×900 归一化参考，右侧为最新 Qt 实现；未发现剩余 P0、P1 或 P2 图标问题。
+
 ### 陈列架
 
 - 卡盒底边落在托面后缘，具备接触暗边。
@@ -65,7 +73,7 @@
 - 已验证：平台筛选、搜索、排序、仅显示更新、单选、Ctrl/Command 多选、Shift 连选、方向键、回车主操作、抽屉关闭、版本选择、备注提交、监听切换。
 - 已检查运行时截图；Qt offscreen 渲染无界面异常。
 - `python -m py_compile src/vajsave/qt_ui.py src/vajsave/app.py scripts/ui_preview.py`：通过。
-- `pytest -q`：849 passed。
+- `pytest -q`：860 passed。
 - `git diff --check`：通过。
 
 ## 剩余 P3

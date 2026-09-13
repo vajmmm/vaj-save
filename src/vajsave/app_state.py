@@ -781,8 +781,8 @@ class AppState:
         without metadata this stays a local-only resolution: the app never guesses
         a name (and never touches the network) for an unknown ROM.  PSP/Vita/3DS
         are the exception: they have no ROM index, so their PARAM.SFO / Checkpoint
-        display title is used directly -- but only when the save ships no embedded
-        icon.
+        display title is used directly. Their small embedded icon remains the
+        fallback when a full-size cover cannot be downloaded.
         """
         try:
             if metadata is None or not metadata.canonical_title:
