@@ -7,6 +7,12 @@
 - 备注、搜索；版本可恢复到文件夹或导出 ZIP
 - 扫描设备只读；写回请把恢复目标选成 Checkpoint / JKSV / SAVEDATA 目录
 
+## 界面预览
+
+![vaj-save 界面效果图](docs/images/vaj-save-preview.png)
+
+> 截图使用演示存档和封面，不包含用户真实数据。
+
 
 ## 设备检测（Windows）
 
