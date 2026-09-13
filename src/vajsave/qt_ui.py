@@ -208,15 +208,22 @@ def _button(text: str, icon_name: Optional[str] = None, *, primary: bool = False
 
 
 class PlatformButton(QToolButton):
-    """Dock 中带平台色图标和名称的垂直按钮。"""
+    """Dock 平台筛选按钮；“全部”显示名称，其余只显示品牌字标。"""
 
     def __init__(self, platform: str, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.platform = platform
         self.setIcon(_platform_icon(platform))
         self.setIconSize(QSize(68, 28))
-        self.setText(PLATFORM_LABELS.get(platform, platform))
-        self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+        label = PLATFORM_LABELS.get(platform, platform)
+        self.setText(label)
+        self.setToolTip(label)
+        self.setAccessibleName(label)
+        self.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextUnderIcon
+            if platform == "all"
+            else Qt.ToolButtonStyle.ToolButtonIconOnly
+        )
         self.setCheckable(True)
         self.setAutoExclusive(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)

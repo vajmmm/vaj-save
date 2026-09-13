@@ -52,7 +52,8 @@
 - 首轮发现 P2：曾将 PSP、Vita、3DS、NDS、GBA 的官方字标误换成第三方设备轮廓，与平台品牌形象不符，且和 Switch 标志风格不统一。
 - 修复：恢复六个平台的官方品牌字标；Switch 使用任天堂官方 Logo 中的字标部分，不再单独使用 Joy-Con 图形。
 - 修复：保持 68×28px 逻辑占位不变，统一使用 4× 物理像素母版，只在 100%～400% DPI 范围向下缩小；移除会改变字形粗细的叠绘处理。
-- 复核：PSP、Vita、Switch、3DS、NDS、GBA 的字标均保持原始比例，文字标签、按钮高度和 Dock 宽度未改变；100% 渲染的每个标志均超过 90 个高不透明像素。
+- 修复：按最终要求仅保留“全部”按钮下方文字，其余六个平台使用纯字标；平台名称继续作为悬停提示和无障碍名称。
+- 复核：PSP、Vita、Switch、3DS、NDS、GBA 的字标均保持原始比例，按钮高度和 Dock 宽度未改变；移除重复文字后字标居中显示，100% 渲染的每个标志均超过 90 个高不透明像素。
 - 对比证据：`build/ui-preview/qt-dock-comparison.png`，左侧为参考 Dock，右侧为最新 Qt Dock；六项均为同类字标表达，未发现剩余 P0、P1 或 P2 图标问题。
 
 ### 陈列架
@@ -74,7 +75,7 @@
 - 已验证：平台筛选、搜索、排序、仅显示更新、单选、Ctrl/Command 多选、Shift 连选、方向键、回车主操作、抽屉关闭、版本选择、备注提交、监听切换。
 - 已检查运行时截图；Qt offscreen 渲染无界面异常。
 - `python -m py_compile src/vajsave/qt_ui.py src/vajsave/app.py scripts/ui_preview.py`：通过。
-- `pytest -q`：860 passed。
+- `pytest -q`：861 passed。
 - `git diff --check`：通过。
 
 ## 剩余 P3

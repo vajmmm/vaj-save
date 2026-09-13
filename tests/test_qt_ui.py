@@ -21,6 +21,7 @@ from vajsave.qt_ui import (
     DRAWER_WIDTH,
     GalleryCanvas,
     LLMSettingsDialog,
+    PlatformButton,
     VajSaveWindow,
     _cover_source_rect,
     _platform_icon,
@@ -133,6 +134,16 @@ def test_platform_icons_use_distinct_official_marks(qt_app):
         assert hidpi.size() == QSize(round(68 * dpr), round(28 * dpr))
         assert hidpi.devicePixelRatio() == dpr
         assert hidpi.deviceIndependentSize().toSize() == QSize(68, 28)
+
+
+def test_platform_buttons_only_show_the_all_label(qt_app):
+    all_button = PlatformButton("all")
+    psp_button = PlatformButton("psp")
+
+    assert all_button.toolButtonStyle() == Qt.ToolButtonStyle.ToolButtonTextUnderIcon
+    assert psp_button.toolButtonStyle() == Qt.ToolButtonStyle.ToolButtonIconOnly
+    assert psp_button.toolTip() == "PSP"
+    assert psp_button.accessibleName() == "PSP"
 
 
 def test_platform_icons_remain_legible_at_100_percent(qt_app):
