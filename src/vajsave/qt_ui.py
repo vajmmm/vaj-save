@@ -84,6 +84,31 @@ _PLATFORM_LOGOS = {
     "gba": "platform-gba.svg",
 }
 _PLATFORM_ICON_CACHE: dict[str, QIcon] = {}
+_ICON_DPR_LEVELS = (1.0, 1.25, 1.5, 2.0, 3.0)
+
+
+def _render_platform_logo(platform: str, svg: bytes, dpr: float) -> QPixmap:
+    """以物理像素渲染一档平台标识，同时保留逻辑尺寸。"""
+    renderer = QSvgRenderer(QByteArray(svg))
+    logical_width, logical_height = 68.0, 28.0
+    canvas = QPixmap(round(logical_width * dpr), round(logical_height * dpr))
+    canvas.setDevicePixelRatio(dpr)
+    canvas.fill(Qt.GlobalColor.transparent)
+    bounds = renderer.viewBoxF()
+    max_width = 26.0 if platform == "switch" else 64.0
+    scale = min(max_width / bounds.width(), 24.0 / bounds.height())
+    target = QRectF(
+        (logical_width - bounds.width() * scale) / 2.0,
+        (logical_height - bounds.height() * scale) / 2.0,
+        bounds.width() * scale,
+        bounds.height() * scale,
+    )
+    painter = QPainter(canvas)
+    renderer.render(painter, target)
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+    painter.fillRect(QRectF(0, 0, logical_width, logical_height), QColor(SWITCH["muted_strong"]))
+    painter.end()
+    return canvas
 
 
 def _platform_icon(platform: str) -> QIcon:
@@ -96,26 +121,37 @@ def _platform_icon(platform: str) -> QIcon:
         return icon
 
     svg = resources.files("vajsave.data").joinpath(_PLATFORM_LOGOS[platform]).read_bytes()
-    renderer = QSvgRenderer(QByteArray(svg))
-    canvas = QPixmap(68, 28)
-    canvas.fill(Qt.GlobalColor.transparent)
-    bounds = renderer.viewBoxF()
-    max_width = 26.0 if platform == "switch" else 64.0
-    scale = min(max_width / bounds.width(), 24.0 / bounds.height())
-    target = QRectF(
-        (68.0 - bounds.width() * scale) / 2.0,
-        (28.0 - bounds.height() * scale) / 2.0,
-        bounds.width() * scale,
-        bounds.height() * scale,
-    )
-    painter = QPainter(canvas)
-    renderer.render(painter, target)
-    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-    painter.fillRect(canvas.rect(), QColor(SWITCH["muted_strong"]))
-    painter.end()
-    icon = QIcon(canvas)
+    icon = QIcon()
+    for dpr in _ICON_DPR_LEVELS:
+        icon.addPixmap(_render_platform_logo(platform, svg, dpr))
     _PLATFORM_ICON_CACHE[platform] = icon
     return icon
+
+
+def _cover_source_rect(pixmap: QPixmap, target: QRectF) -> QRectF:
+    """返回居中 cover-crop 的原图区域，避免先缩小再由高 DPI 放大。"""
+    source_width = float(pixmap.width())
+    source_height = float(pixmap.height())
+    source_ratio = source_width / source_height
+    target_ratio = target.width() / target.height()
+    if source_ratio > target_ratio:
+        crop_width = source_height * target_ratio
+        return QRectF((source_width - crop_width) / 2.0, 0, crop_width, source_height)
+    crop_height = source_width / target_ratio
+    return QRectF(0, (source_height - crop_height) / 2.0, source_width, crop_height)
+
+
+def _scaled_pixmap_for_dpr(
+    pixmap: QPixmap,
+    logical_size: QSize,
+    dpr: float,
+    aspect_mode: Qt.AspectRatioMode = Qt.AspectRatioMode.KeepAspectRatio,
+) -> QPixmap:
+    """为固定尺寸控件生成与当前屏幕 DPR 匹配的位图。"""
+    physical_size = QSize(round(logical_size.width() * dpr), round(logical_size.height() * dpr))
+    scaled = pixmap.scaled(physical_size, aspect_mode, Qt.TransformationMode.SmoothTransformation)
+    scaled.setDevicePixelRatio(dpr)
+    return scaled
 
 
 def _fmt_time(value: Optional[str]) -> str:
@@ -352,6 +388,7 @@ class GalleryCanvas(QWidget):
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         painter.fillRect(event.rect(), QColor(SWITCH["fog_canvas"]))
         if not self.entries:
             painter.setPen(QColor(SWITCH["muted_strong"]))
@@ -419,14 +456,7 @@ class GalleryCanvas(QWidget):
         if pixmap is not None:
             painter.save()
             painter.setClipPath(self._rounded_path(cover_rect, 3))
-            scaled = pixmap.scaled(
-                int(cover_rect.width()), int(cover_rect.height()),
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            sx = max(0, (scaled.width() - int(cover_rect.width())) // 2)
-            sy = max(0, (scaled.height() - int(cover_rect.height())) // 2)
-            painter.drawPixmap(cover_rect.toRect(), scaled, QRectF(sx, sy, cover_rect.width(), cover_rect.height()).toRect())
+            painter.drawPixmap(cover_rect, pixmap, _cover_source_rect(pixmap, cover_rect))
             painter.restore()
         else:
             painter.fillPath(self._rounded_path(cover_rect, 3), QColor(SWITCH["panel_alt"]))
@@ -726,7 +756,7 @@ class DetailDrawer(QFrame):
         if pixmap.isNull():
             self.cover.setPixmap(_icon("fa6s.image", SWITCH["muted_strong"]).pixmap(52, 52))
         else:
-            self.cover.setPixmap(pixmap.scaled(self.cover.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            self.cover.setPixmap(_scaled_pixmap_for_dpr(pixmap, self.cover.size(), self.devicePixelRatioF()))
         needs_binding = result.status == STATUS_AMBIGUOUS or result.status not in (STATUS_RESOLVED, STATUS_PARTIAL)
         self.warning.setVisible(needs_binding)
         self.warning_title.setText("多个 ROM 候选" if result.status == STATUS_AMBIGUOUS else "未绑定 ROM")

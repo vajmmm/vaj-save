@@ -8,13 +8,22 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRectF, QSize, Qt
+from PySide6.QtGui import QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from vajsave.app_state import AppState
 from vajsave.models import SaveEntry, ScanResult, VolumeInfo
-from vajsave.qt_ui import DRAWER_WIDTH, GalleryCanvas, VajSaveWindow, _platform_icon
+from vajsave.qt_ui import (
+    DRAWER_WIDTH,
+    GalleryCanvas,
+    VajSaveWindow,
+    _cover_source_rect,
+    _platform_icon,
+    _render_platform_logo,
+    _scaled_pixmap_for_dpr,
+)
 from vajsave.volume import FakeVolumeProvider
 
 
@@ -108,6 +117,11 @@ def test_platform_icons_use_distinct_official_marks(qt_app):
         cache_keys.append(pixmap.cacheKey())
     assert len(set(cache_keys)) == 7
 
+    hidpi = _platform_icon("switch").pixmap(QSize(68, 28), 1.5)
+    assert hidpi.size() == QSize(102, 42)
+    assert hidpi.devicePixelRatio() == 1.5
+    assert hidpi.deviceIndependentSize().toSize() == QSize(68, 28)
+
 
 def test_platform_logo_assets_are_packaged():
     from importlib import resources
@@ -117,3 +131,35 @@ def test_platform_logo_assets_are_packaged():
         asset = data.joinpath(f"platform-{platform}.svg")
         assert asset.is_file()
         assert b"<svg" in asset.read_bytes()
+
+
+@pytest.mark.parametrize("dpr", (1.0, 1.25, 1.5, 2.0, 3.0))
+def test_platform_logo_renders_at_physical_dpi(qt_app, dpr):
+    from importlib import resources
+
+    svg = resources.files("vajsave.data").joinpath("platform-switch.svg").read_bytes()
+    pixmap = _render_platform_logo("switch", svg, dpr)
+    assert pixmap.width() == round(68 * dpr)
+    assert pixmap.height() == round(28 * dpr)
+    assert pixmap.devicePixelRatio() == dpr
+    assert pixmap.deviceIndependentSize().toSize() == QSize(68, 28)
+
+
+def test_cover_crop_uses_original_pixels(qt_app):
+    portrait = QPixmap(300, 500)
+    source = _cover_source_rect(portrait, QRectF(0, 0, 180, 280))
+    assert source.width() == 300
+    assert source.height() < 500
+    assert source.center() == QRectF(0, 0, 300, 500).center()
+
+
+@pytest.mark.parametrize("dpr", (1.25, 1.5, 2.0))
+def test_detail_cover_scaling_preserves_logical_size(qt_app, dpr):
+    source = QPixmap(600, 900)
+    scaled = _scaled_pixmap_for_dpr(source, QSize(116, 196), dpr)
+    assert scaled.devicePixelRatio() == dpr
+    assert scaled.width() <= round(116 * dpr)
+    assert scaled.height() <= round(196 * dpr)
+    logical = scaled.deviceIndependentSize()
+    assert logical.width() <= 116
+    assert logical.height() <= 196
