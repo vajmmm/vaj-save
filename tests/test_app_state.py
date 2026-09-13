@@ -1080,6 +1080,23 @@ def test_startup_burst_settles_on_removable_drive():
     assert state.current_mount == Path("F:\\")
 
 
+def test_watch_event_can_defer_auto_scan_to_ui_worker():
+    calls = []
+
+    def recorded_scan(path):
+        calls.append(Path(path))
+        return _stub_scan(path)
+
+    usb = _drives()[3]
+    state = AppState(provider=FakeVolumeProvider([]), scan_fn=recorded_scan)
+
+    state.apply_watch_event("appeared", usb, auto_select=False)
+
+    assert calls == []
+    assert state.current_mount is None
+    assert state.mount_selection_candidate() == usb
+
+
 def test_user_selection_survives_later_removable_arrival():
     state = _drive_state(_drives()[:3])
     state.refresh_volumes()

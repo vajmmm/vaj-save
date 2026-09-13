@@ -976,6 +976,11 @@ class VajSaveWindow(QMainWindow):
         self._drawer_animation: Optional[QPropertyAnimation] = None
         self._callback_bridge = _QtCallbackBridge(self)
         self._artwork_loader = ArtworkLoader(self._callback_bridge.dispatch.emit)
+        self._device_loader = ArtworkLoader(
+            self._callback_bridge.dispatch.emit, max_workers=1
+        )
+        self._device_scan_generation = 0
+        self._device_scan_target: Optional[Path] = None
         self._enrichment_attempted: set[str] = set()
         self._list_generation = 0
         self.setWindowTitle("vaj-save")
@@ -984,7 +989,6 @@ class VajSaveWindow(QMainWindow):
         self._build_ui()
         self._wire_events()
         self._apply_style()
-        self.state.refresh_volumes()
         self.refresh_all()
         self.state.start_watch()
         self.poll_timer = QTimer(self)
@@ -1265,11 +1269,75 @@ class VajSaveWindow(QMainWindow):
         self.drawer.set_cover_path(cover_path)
 
     def _select_initial_device(self) -> None:
-        if self.state.ensure_mount_selected() is not None:
-            self.refresh_all()
+        candidate = self.state.mount_selection_candidate()
+        if candidate is not None:
+            self._request_mount_scan(candidate.mount_point, auto=True)
 
     def _poll_state(self) -> None:
-        if self.state.drain_events():
+        if not self.state.drain_events(auto_select=False):
+            return
+        mounted = {Path(volume.mount_point) for volume in self.state.volumes}
+        if (
+            self._device_scan_target is not None
+            and self._device_scan_target not in mounted
+        ):
+            self._cancel_pending_device_scan()
+        candidate = self.state.mount_selection_candidate()
+        if candidate is not None:
+            self._request_mount_scan(candidate.mount_point, auto=True)
+        elif self._device_scan_target is None:
+            self.refresh_all()
+
+    def _cancel_pending_device_scan(self) -> None:
+        """使已在后台运行的扫描结果失效；文件系统调用本身不强制中断。"""
+        self._device_scan_generation += 1
+        self._device_scan_target = None
+
+    def _request_mount_scan(
+        self, mount_point, *, auto: bool = False, force: bool = False
+    ) -> None:
+        """在单工作线程扫描设备，并只在主线程提交最新结果。"""
+        path = Path(mount_point)
+        if self._device_scan_target == path:
+            return
+        if (
+            not force
+            and self.state.current_mount == path
+            and self.state.current_result is not None
+        ):
+            return
+
+        self._device_scan_generation += 1
+        generation = self._device_scan_generation
+        self._device_scan_target = path
+        self._enrichment_attempted.clear()
+        self._selected = None
+        self._versions = []
+        self._selected_snapshot = None
+        self.hide_drawer()
+        self.state.begin_mount_scan(path, auto=auto)
+        self.refresh_all()
+
+        def task():
+            return self.state.prepare_mount_scan(path)
+
+        def completed(prepared) -> None:
+            if generation != self._device_scan_generation:
+                return
+            self._device_scan_target = None
+            if prepared is None:
+                self.state.status_text = f"扫描失败: {path}"
+                self.refresh_all()
+                return
+            self.state.apply_prepared_mount_scan(prepared)
+            self.refresh_all()
+
+        started = self._device_loader.submit(
+            ("device-scan", generation), task, completed
+        )
+        if not started:
+            self._device_scan_target = None
+            self.state.status_text = f"无法启动扫描: {path}"
             self.refresh_all()
 
     def _search_changed(self, text: str) -> None:
@@ -1379,14 +1447,20 @@ class VajSaveWindow(QMainWindow):
     def _refresh_devices(self) -> None:
         self._enrichment_attempted.clear()
         self.state.refresh_volumes()
-        self.state.ensure_mount_selected()
-        self.refresh_all()
+        if self.state.current_mount is not None:
+            self._request_mount_scan(self.state.current_mount, force=True)
+            return
+        candidate = self.state.mount_selection_candidate()
+        if candidate is not None:
+            self._request_mount_scan(candidate.mount_point, auto=True)
+        else:
+            self.refresh_all()
 
     def _add_device(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "添加设备或存档目录")
         if path:
-            self.state.select_custom_path(path)
-            self.refresh_all()
+            custom_path = self.state.register_custom_path(path)
+            self._request_mount_scan(custom_path)
 
     def _choose_device(self) -> None:
         self.state.refresh_volumes()
@@ -1404,10 +1478,12 @@ class VajSaveWindow(QMainWindow):
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
         if dialog.exec() and listing.currentItem():
-            self.state.select_mount(listing.currentItem().data(Qt.ItemDataRole.UserRole))
-            self.refresh_all()
+            self._request_mount_scan(
+                listing.currentItem().data(Qt.ItemDataRole.UserRole)
+            )
 
     def _browse_library(self) -> None:
+        self._cancel_pending_device_scan()
         self.state.set_library_mode(not self.state.library_mode)
         self.refresh_all()
 
@@ -1519,6 +1595,8 @@ class VajSaveWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self.poll_timer.stop()
+        self._cancel_pending_device_scan()
+        self._device_loader.shutdown(wait=False)
         self._artwork_loader.shutdown(wait=False)
         self.state.stop_watch(timeout=0.5)
         super().closeEvent(event)

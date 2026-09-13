@@ -3,7 +3,7 @@ import queue
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
@@ -129,6 +129,18 @@ BACKUP_STATUS_LABELS = {
     "changed": "有变化",
     "unchanged": "已备份",
 }
+
+
+@dataclass(frozen=True)
+class PreparedMountScan:
+    """后台扫描产生、等待由 UI 主线程原子提交的结果。"""
+
+    mount_point: Path
+    result: ScanResult
+    backup_statuses: Dict[str, SaveBackupStatus]
+    status_warnings: Tuple[str, ...]
+    status_counts: Dict[str, int]
+    status_text: str
 
 
 def _build_status_text(result: ScanResult, counts: Optional[Dict[str, int]] = None) -> str:
@@ -1023,13 +1035,24 @@ class AppState:
         if self.library_mode:
             self.library_entries()  # populates statuses without hashing device files
             return self.backup_status_counts()
-        self._backup_statuses = {}
+        entries = self.all_saves()
+        statuses, status_warnings, counts = self._calculate_device_statuses(entries)
+        self._backup_statuses = statuses
+        self.warnings.extend(status_warnings)
+        return counts
+
+    def _calculate_device_statuses(
+        self, entries: List[SaveEntry]
+    ) -> Tuple[Dict[str, SaveBackupStatus], List[str], Dict[str, int]]:
+        """计算设备存档状态，不修改 AppState，供后台扫描安全调用。"""
+        statuses: Dict[str, SaveBackupStatus] = {}
+        status_warnings: List[str] = []
         catalog = load_catalog(self.library_root)
         pending: List[SaveEntry] = []
-        for entry in self.all_saves():
+        for entry in entries:
             game = catalog.games.get(game_key(entry))
             if not game or not game.versions:
-                self._backup_statuses[entry.path] = classify_save_status(entry, catalog, digest=None)
+                statuses[entry.path] = classify_save_status(entry, catalog, digest=None)
             else:
                 pending.append(entry)
         if pending:
@@ -1046,17 +1069,20 @@ class AppState:
             for entry in pending:
                 digest, err = by_path[entry.path]
                 if err is not None:
-                    self.warnings.append(
+                    status_warnings.append(
                         f"计算存档哈希失败: {entry.display_name or entry.path}: {err}"
                     )
-                    self._backup_statuses[entry.path] = classify_save_status(
+                    statuses[entry.path] = classify_save_status(
                         entry, catalog, hash_error=True
                     )
                 else:
-                    self._backup_statuses[entry.path] = classify_save_status(
+                    statuses[entry.path] = classify_save_status(
                         entry, catalog, digest=digest
                     )
-        return self.backup_status_counts()
+        counts = {"new": 0, "changed": 0, "unchanged": 0}
+        for status in statuses.values():
+            counts[status.status] = counts.get(status.status, 0) + 1
+        return statuses, status_warnings, counts
 
     def set_search_query(self, query: str) -> None:
         self.search_query = query or ""
@@ -1257,21 +1283,24 @@ class AppState:
                 self.volumes.append(volume)
         return self.volumes
 
-    def select_mount(self, mount_point: Union[Path, str], auto: bool = False) -> ScanResult:
-        """Select a volume or path to scan and update current result.
-
-        ``auto`` marks a selection the app made on the user's behalf; only those
-        may later be replaced by a better device (see ``ensure_mount_selected``).
-        """
+    def begin_mount_scan(self, mount_point: Union[Path, str], auto: bool = False) -> Path:
+        """在主线程切换到待扫描设备，并清除上一设备的展示状态。"""
         path = Path(mount_point)
-        # Leaving library mode or picking a different device is a source change:
-        # drop any platform filter so the new source cannot look falsely empty.
         if self.library_mode or self.current_mount != path:
             self.selected_platform = "all"
         self.library_mode = False
         self.current_mount = path
         self._auto_selected_mount = auto
         self._identity_resolver = None
+        self.current_result = None
+        self._backup_statuses = {}
+        self.warnings = []
+        self.status_text = f"正在扫描: {path}"
+        return path
+
+    def prepare_mount_scan(self, mount_point: Union[Path, str]) -> PreparedMountScan:
+        """扫描并计算备份状态；本方法不修改 UI 可见状态，可在工作线程运行。"""
+        path = Path(mount_point)
         try:
             res = self.scan_fn(path)
         except Exception as e:
@@ -1282,14 +1311,39 @@ class AppState:
                 saves=[],
                 warnings=[f"扫描异常: {e}"],
             )
-        self.current_result = res
-        self.warnings = list(res.warnings)
-        self.refresh_backup_statuses()
-        self.status_text = _build_status_text(res, counts=self.backup_status_counts())
-        return res
+        statuses, status_warnings, counts = self._calculate_device_statuses(
+            list(res.saves)
+        )
+        return PreparedMountScan(
+            mount_point=path,
+            result=res,
+            backup_statuses=statuses,
+            status_warnings=tuple(status_warnings),
+            status_counts=counts,
+            status_text=_build_status_text(res, counts=counts),
+        )
 
-    def select_custom_path(self, path: Union[Path, str]) -> ScanResult:
-        """Select an arbitrary folder from file dialog and scan it."""
+    def apply_prepared_mount_scan(self, prepared: PreparedMountScan) -> ScanResult:
+        """在主线程一次性提交后台扫描结果。"""
+        self.current_mount = prepared.mount_point
+        self.current_result = prepared.result
+        self._identity_resolver = None
+        self._backup_statuses = dict(prepared.backup_statuses)
+        self.warnings = [*prepared.result.warnings, *prepared.status_warnings]
+        self.status_text = prepared.status_text
+        return prepared.result
+
+    def select_mount(self, mount_point: Union[Path, str], auto: bool = False) -> ScanResult:
+        """Select a volume or path synchronously and update current result.
+
+        ``auto`` marks a selection the app made on the user's behalf; only those
+        may later be replaced by a better device (see ``ensure_mount_selected``).
+        """
+        path = self.begin_mount_scan(mount_point, auto=auto)
+        return self.apply_prepared_mount_scan(self.prepare_mount_scan(path))
+
+    def register_custom_path(self, path: Union[Path, str]) -> Path:
+        """把用户选择的目录加入设备列表，但不立即扫描。"""
         custom_path = Path(path)
         exists_in_volumes = any(v.mount_point == custom_path for v in self.volumes)
         if not exists_in_volumes:
@@ -1301,6 +1355,11 @@ class AppState:
                     is_removable=False,
                 )
             )
+        return custom_path
+
+    def select_custom_path(self, path: Union[Path, str]) -> ScanResult:
+        """Select an arbitrary folder from file dialog and scan it."""
+        custom_path = self.register_custom_path(path)
         return self.select_mount(custom_path)
 
     def preferred_volume(self) -> Optional[VolumeInfo]:
@@ -1316,14 +1375,8 @@ class AppState:
             return None
         return min(removable, key=_mount_sort_key)
 
-    def ensure_mount_selected(self) -> Optional[VolumeInfo]:
-        """Pick a default device when none is chosen, or upgrade an automatic choice.
-
-        Called after enumerating volumes so a just-attached USB stick or handheld
-        on a high drive letter (F:) is preferred over built-in C:/D:/E: drives.
-        A device the user picked themselves is never replaced, and while the user
-        is browsing the local library the source is left alone entirely.
-        """
+    def mount_selection_candidate(self) -> Optional[VolumeInfo]:
+        """返回当前应该自动扫描的设备，但不执行扫描。"""
         if self.library_mode:
             return None
         preferred = self.preferred_volume()
@@ -1334,10 +1387,25 @@ class AppState:
                 return None
             if Path(preferred.mount_point) == Path(self.current_mount):
                 return None
+        return preferred
+
+    def ensure_mount_selected(self) -> Optional[VolumeInfo]:
+        """Pick a default device when none is chosen, or upgrade an automatic choice.
+
+        Called after enumerating volumes so a just-attached USB stick or handheld
+        on a high drive letter (F:) is preferred over built-in C:/D:/E: drives.
+        A device the user picked themselves is never replaced, and while the user
+        is browsing the local library the source is left alone entirely.
+        """
+        preferred = self.mount_selection_candidate()
+        if preferred is None:
+            return None
         self.select_mount(preferred.mount_point, auto=True)
         return preferred
 
-    def apply_watch_event(self, event_type: str, volume: VolumeInfo) -> None:
+    def apply_watch_event(
+        self, event_type: str, volume: VolumeInfo, *, auto_select: bool = True
+    ) -> None:
         """Handle volume appearance or disappearance."""
         v_mount = Path(volume.mount_point)
         if event_type == "appeared":
@@ -1350,8 +1418,12 @@ class AppState:
             # Re-evaluate instead of accepting whichever volume arrived first, so
             # the startup burst of events settles on the preferred device.
             before = self.current_mount
-            self.ensure_mount_selected()
-            if self.current_mount == before:
+            if auto_select:
+                self.ensure_mount_selected()
+            if (
+                (not auto_select and self.current_mount != v_mount)
+                or (auto_select and self.current_mount == before)
+            ):
                 self.status_text = f"发现新设备: {volume.name}"
 
         elif event_type == "disappeared":
@@ -1364,11 +1436,12 @@ class AppState:
                 self.warnings = []
                 self.status_text = f"卷 {volume.name} 已卸载"
                 # Fall back to another attached device instead of showing nothing.
-                self.ensure_mount_selected()
+                if auto_select:
+                    self.ensure_mount_selected()
             else:
                 self.status_text = f"设备/卷已拔出: {volume.name}"
 
-    def drain_events(self) -> int:
+    def drain_events(self, *, auto_select: bool = True) -> int:
         """Process all queued watch events on the main thread."""
         count = 0
         while True:
@@ -1376,7 +1449,7 @@ class AppState:
                 event_type, volume = self.event_queue.get_nowait()
             except queue.Empty:
                 break
-            self.apply_watch_event(event_type, volume)
+            self.apply_watch_event(event_type, volume, auto_select=auto_select)
             count += 1
         return count
 

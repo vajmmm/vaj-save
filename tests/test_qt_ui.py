@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -95,6 +96,104 @@ def test_qt_window_uses_reference_dimensions_and_overlay(qt_app, qt_state):
         assert window.gallery.canvas.columns == 4
         assert window.drawer.isVisible()
     finally:
+        window.close()
+
+
+def test_initial_device_scan_keeps_qt_event_loop_responsive(
+    qt_app, tmp_path: Path, monkeypatch
+):
+    mount = tmp_path / "slow-device"
+    mount.mkdir()
+    volume = VolumeInfo("慢速存储卡", mount, True)
+    started = threading.Event()
+    release = threading.Event()
+    worker_threads = []
+    result = ScanResult(root_path=str(mount), platform="vita", saves=[])
+
+    def slow_scan(_path):
+        worker_threads.append(threading.get_ident())
+        started.set()
+        release.wait(timeout=3)
+        return result
+
+    state = AppState(
+        provider=FakeVolumeProvider([volume]),
+        scan_fn=slow_scan,
+        library_root=tmp_path / "library",
+    )
+    state.refresh_volumes()
+    monkeypatch.setattr(state, "start_watch", lambda *args, **kwargs: None)
+    monkeypatch.setattr(state, "stop_watch", lambda *args, **kwargs: None)
+    window = VajSaveWindow(state)
+    try:
+        window.show()
+        QTest.qWait(180)
+        assert started.is_set()
+        assert worker_threads != [threading.get_ident()]
+        assert "正在扫描" in window.status_text.text()
+
+        delivered = []
+        QTimer.singleShot(0, lambda: delivered.append(True))
+        QTest.qWait(50)
+        assert delivered == [True]
+        assert state.current_result is None
+
+        release.set()
+        for _ in range(30):
+            QTest.qWait(20)
+            if state.current_result is not None:
+                break
+        assert state.current_result is result
+    finally:
+        release.set()
+        window.close()
+
+
+def test_stale_background_scan_cannot_replace_new_device(
+    qt_app, tmp_path: Path, monkeypatch
+):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    first_started = threading.Event()
+    release_first = threading.Event()
+
+    def scan_fn(path):
+        path = Path(path)
+        if path == first:
+            first_started.set()
+            release_first.wait(timeout=3)
+        return ScanResult(root_path=str(path), platform=path.name, saves=[])
+
+    state = AppState(
+        provider=FakeVolumeProvider([]),
+        scan_fn=scan_fn,
+        library_root=tmp_path / "library",
+    )
+    monkeypatch.setattr(state, "start_watch", lambda *args, **kwargs: None)
+    monkeypatch.setattr(state, "stop_watch", lambda *args, **kwargs: None)
+    window = VajSaveWindow(state)
+    try:
+        window._request_mount_scan(first)
+        for _ in range(20):
+            QTest.qWait(10)
+            if first_started.is_set():
+                break
+        assert first_started.is_set()
+
+        window._request_mount_scan(second)
+        release_first.set()
+        for _ in range(60):
+            QTest.qWait(20)
+            if state.current_result is not None:
+                break
+
+        assert state.current_mount == second
+        assert state.current_result is not None
+        assert state.current_result.root_path == str(second)
+    finally:
+        release_first.set()
         window.close()
 
 
