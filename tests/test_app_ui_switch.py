@@ -725,21 +725,20 @@ def test_canvas_button_heights_and_measured_width(tk_root):
 # --- docs / preview consistency ---------------------------------------------
 
 
-def test_design_and_agents_match_quiet_list_language():
+def test_design_and_agents_match_gallery_language():
     design = (PROJECT_ROOT / "DESIGN.md").read_text(encoding="utf-8")
     agents = (PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8")
-    assert "瓦片" not in design
-    assert "药丸" not in design
-    assert "status pill" not in design.lower()
-    assert "单列" in design
-    assert "单列" in agents or "列表" in agents
+    for term in ("响应式", "画廊", "陈列架", "详情抽屉"):
+        assert term in design
+    assert "画廊" in agents
+    assert "详情抽屉" in agents
 
 
-def test_ui_preview_has_no_tile_vocabulary():
+def test_ui_preview_uses_gallery_and_shelf_vocabulary():
     preview = (PROJECT_ROOT / "scripts" / "ui_preview.py").read_text(encoding="utf-8")
-    assert "TILE_" not in preview
-    assert "tile_face" not in preview
-    assert "grid_columns" not in preview
+    assert "GALLERY_" in preview
+    assert "SHELF_" in preview
+    assert "grid_columns" in preview
 
 
 # --- default device presentation / other-device entry -----------------------
