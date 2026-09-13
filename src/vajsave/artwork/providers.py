@@ -120,6 +120,81 @@ def libretro_title_candidates(title: str) -> Tuple[str, ...]:
     return tuple(ordered[:_MAX_TITLE_CANDIDATES])
 
 
+# PSP save folders often contain a short product code plus DATA/profile
+# suffixes instead of the retail title used by libretro. These aliases are
+# deliberately curated to real Named_Boxarts entries; an ID that is not listed
+# here still follows the normal title and directory-listing fallbacks.
+# Keys are normalized alphanumeric stems so ULJM05800DAT can use the same
+# entry as ULJM05800 without duplicating every save-data suffix.
+PSP_TITLE_ALIASES: dict[str, Tuple[str, ...]] = {
+    "NPJH001420001": ("Yu-Gi-Oh! ARC-V Tag Force Special (Japan)",),
+    "NPJH50040": ("Persona 3 Portable (Japan)",),
+    "NPJH50045001": ("Metal Gear Solid - Peace Walker (Japan) (v1.02)",),
+    "NPJH50239": ("Dead or Alive - Paradise (USA) (En,Ja,Fr,De)",),
+    "NPJH50263": ("Ace Combat - Joint Assault (USA)",),
+    "UCAS40063": (
+        "LocoRoco (USA) (En,Ja,Fr,De,Es,It,Nl,Pt,Sv,No,Da,Fi,Zh,Ko,Ru)",
+    ),
+    "UCAS40193": ("Patapon (USA)",),
+    "UCAS40198": ("God of War - Chains of Olympus (USA)",),
+    "ULJM05101": ("Valkyrie Profile - Lenneth (USA)",),
+    "ULJM05155": ("Ys - Napishtim no Hako (Japan) (v1.03) (Tokubetsuban)",),
+    "ULJM05156": ("Monster Hunter Portable 2nd (Japan) (v1.01)",),
+    "ULJM05254": ("Crisis Core - Final Fantasy VII (Japan, Asia)",),
+    "ULJM05500": ("Monster Hunter Portable 2nd G (Japan) (v1.03)",),
+    "ULJM05505": ("Ninja Katsugeki - Tenchu San Portable (Japan) (v1.01)",),
+    "ULJM05600": ("Kingdom Hearts - Birth by Sleep (USA) (En,Fr,Es)",),
+    "ULJM05800": ("Monster Hunter Portable 3rd (Japan) (v1.02)",),
+    "ULJS00107": ("Dragon Ball Z - Shin Budokai 2 (Japan) (v1.02)",),
+    "ULJS00394": ("Grand Knights History (Japan) (v1.01)",),
+    "ULUS10154": ("Metal Slug Anthology (USA)",),
+    "ULUS10466": ("Tekken 6 (USA) (En,Fr,De,Es,It,Ru)",),
+}
+
+
+def _normalize_psp_title_id(value: object) -> str:
+    """Normalize a PSP product code for exact or prefix alias lookup."""
+    return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
+
+
+def _psp_aliases_for_id(title_id: object) -> Tuple[str, ...]:
+    key = _normalize_psp_title_id(title_id)
+    if not key:
+        return ()
+    aliases = PSP_TITLE_ALIASES.get(key)
+    if aliases is not None:
+        return aliases
+    # Save-data directories append a stable product stem with arbitrary
+    # profile/data words. Choose the longest matching stem to avoid a shorter
+    # entry winning if the table later gains related products.
+    prefixes = [stem for stem in PSP_TITLE_ALIASES if key.startswith(stem)]
+    if not prefixes:
+        return ()
+    return PSP_TITLE_ALIASES[max(prefixes, key=len)]
+
+
+def psp_title_candidates(title: str, title_id: Optional[str] = None) -> Tuple[str, ...]:
+    """Return PSP-specific aliases followed by generic title candidates.
+
+    A curated Title ID alias is tried first because it maps a save folder to a
+    real libretro retail filename without relying on translated SFO text. The
+    ordinary title candidates remain as a fallback for unlisted games and for
+    users with a custom artwork provider.
+    """
+    ordered: list[str] = []
+
+    def add(value: str) -> None:
+        cleaned = " ".join(str(value or "").split()).strip().rstrip(".…")
+        if cleaned and cleaned not in ordered:
+            ordered.append(cleaned)
+
+    for alias in _psp_aliases_for_id(title_id):
+        add(alias)
+    for candidate in libretro_title_candidates(title):
+        add(candidate)
+    return tuple(ordered)
+
+
 @dataclass(frozen=True)
 class Artwork:
     """A resolved, ready-to-fetch artwork location."""

@@ -43,7 +43,9 @@ from vajsave.artwork import (
 from vajsave.artwork.providers import (
     ArtworkProvider,
     LIBRETRO_SYSTEM_NAMES,
+    PSP_TITLE_ALIASES,
     libretro_title_candidates,
+    psp_title_candidates,
 )
 from vajsave.metadata import GameMetadata
 from vajsave.models import SaveEntry
@@ -170,6 +172,21 @@ def test_libretro_title_candidates_checkpoint_shouting_and_regions():
     collapsed = libretro_title_candidates("Kid Icarus  Uprising")
     assert "Kid Icarus Uprising" in collapsed
     assert "Kid Icarus Uprising (USA)" in collapsed
+
+
+def test_psp_title_candidates_put_curated_title_id_alias_first():
+    candidates = psp_title_candidates(
+        "游☆戏☆王ARC-V TAG FORCE SPECIAL", "NPJH001420001"
+    )
+    assert candidates[0] == PSP_TITLE_ALIASES["NPJH001420001"][0]
+    assert candidates[0] == "Yu-Gi-Oh! ARC-V Tag Force Special (Japan)"
+    assert "游☆戏☆王ARC-V TAG FORCE SPECIAL" in candidates
+    # Data/profile suffixes share the longest matching product stem.
+    assert psp_title_candidates("怪物猎人携带版３ｒｄ", "ULJM05800DAT")[0] == (
+        "Monster Hunter Portable 3rd (Japan) (v1.02)"
+    )
+    # Unknown IDs retain the ordinary display-title fallback unchanged.
+    assert psp_title_candidates("Persona 4", "ULJM99999")[0] == "Persona 4"
 
 
 def test_base_provider_is_inert():
@@ -637,6 +654,66 @@ def test_ensure_cover_for_title_downloads_psp_boxart(tmp_path: Path):
     assert calls and "Sony%20-%20PlayStation%20Portable" in calls[0]
     assert "Monster%20Hunter%20Portable%203rd" in calls[0]
     assert cache.manifest()["psp:ULJM05800"]["remote_url"] == calls[0]
+
+
+def test_ensure_cover_for_title_uses_psp_title_id_alias_before_listing(
+    tmp_path: Path,
+):
+    """A translated PSP SFO title can still resolve through its product code."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="psp", name="游☆戏☆王ARC-V TAG FORCE SPECIAL")
+    calls = []
+
+    def opener(url, timeout=None):
+        calls.append(url)
+        if "Yu-Gi-Oh!" in url:
+            return FakeResponse(png_bytes())
+        if url.endswith("/Named_Boxarts/"):
+            raise AssertionError("a curated alias should avoid the listing request")
+        return FakeResponse(b"missing", status=404)
+
+    service = ArtworkService(cache=cache, downloader=ArtworkDownloader(urlopen=opener))
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="psp",
+        title="游☆戏☆王ARC-V TAG FORCE SPECIAL",
+        title_id="NPJH001420001",
+        identity_key="psp:NPJH001420001",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_DOWNLOADED
+    assert calls and "Yu-Gi-Oh!" in calls[0]
+    assert not any(url.endswith("/Named_Boxarts/") for url in calls)
+    assert cache.manifest()["psp:NPJH001420001"]["canonical_title"] == (
+        "Yu-Gi-Oh! ARC-V Tag Force Special (Japan)"
+    )
+
+
+def test_artwork_service_reuses_non_empty_listing_per_provider_platform(
+    tmp_path: Path,
+):
+    """One service run fetches a provider directory index at most once."""
+    listing = (
+        '<a href="Game%20(USA).png">Game (USA).png</a>'
+        '<a href="Other%20(USA).png">Other (USA).png</a>'
+    ).encode()
+    calls = []
+
+    def opener(url, timeout=None):
+        calls.append((url, timeout))
+        return FakeResponse(listing)
+
+    service = ArtworkService(
+        cache=CoverCache(tmp_path / "lib" / COVER_CACHE_DIR),
+        downloader=ArtworkDownloader(urlopen=opener),
+    )
+    provider = service.providers[0]
+    first = service._listing_for(provider, "psp", timeout=20)
+    second = service._listing_for(provider, "psp", timeout=20)
+    assert first == ("Game (USA).png", "Other (USA).png")
+    assert second == first
+    assert len(calls) == 1
 
 
 def test_expand_3ds_checkpoint_id_and_eshop_name_cleanup():

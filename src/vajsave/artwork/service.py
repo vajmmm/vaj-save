@@ -23,6 +23,7 @@ the cache.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Sequence, Tuple, Union
@@ -43,6 +44,7 @@ from .providers import (
     ArtworkProvider,
     LibretroThumbnailProvider,
     libretro_title_candidates,
+    psp_title_candidates,
 )
 from .title_ids import fetch_3dsdb_catalog, load_catalog, store_catalog, title_candidates_for_id
 
@@ -160,6 +162,11 @@ class ArtworkService:
             self.providers: List[ArtworkProvider] = [LibretroThumbnailProvider()]
         else:
             self.providers = list(providers)
+        # A provider's directory listing is immutable for the lifetime of one
+        # service run. Reusing it avoids one multi-entry PSP scan issuing the
+        # same multi-megabyte request for every unresolved save.
+        self._listing_cache: dict[Tuple[str, str], Tuple[str, ...]] = {}
+        self._listing_cache_lock = threading.Lock()
 
     # -- provider selection --------------------------------------------------
 
@@ -269,8 +276,9 @@ class ArtworkService:
         box cover is downloaded and cached first.
 
         Checkpoint / SFO titles often miss the No-Intro filename on the first
-        try, so :func:`libretro_title_candidates` walks a short list of
-        whitespace, case and region variants until one download succeeds.
+        try, so PSP Title IDs use :func:`psp_title_candidates` (curated aliases
+        first, then a short list of whitespace, case and region variants) until
+        one download succeeds.
         3DS Checkpoint short IDs (``0x00306``) are expanded to Title IDs and
         looked up in the cached 3dsdb eShop list first.  When every candidate
         404s the provider's ``Named_Boxarts`` directory listing is consulted and
@@ -292,7 +300,10 @@ class ArtworkService:
         names = []
         if plat == "3ds" and title_id:
             names.extend(self._3ds_names_for_title_id(title_id))
-        names.extend(libretro_title_candidates(title))
+        if plat == "psp":
+            names.extend(psp_title_candidates(title, title_id))
+        else:
+            names.extend(libretro_title_candidates(title))
         seen = set()
         for candidate in names:
             if candidate in seen:
@@ -341,19 +352,28 @@ class ArtworkService:
                 continue
         if provider is None:
             return None
-        listing_url = provider.boxart_listing_url(platform)
         timeout = max(float(getattr(self.downloader, "timeout", 5) or 5), 20.0)
-        filenames = fetch_boxart_listing(
-            self.downloader._urlopen, listing_url, timeout=timeout
-        )
+        filenames = self._listing_for(provider, platform, timeout=timeout)
         if not filenames:
             return None
         matched = None
-        for query in names:
-            matched = unique_boxart_match(filenames, query)
-            if matched:
-                break
+        # A more specific query may identify a concatenated retail token (for
+        # example "3 (Try) G" -> "3G"), while a later, shorter candidate can
+        # now resolve a neighbouring title deterministically. Give the precise
+        # concatenation pool a chance first when the optional chooser is
+        # enabled; without a chooser the normal strict match remains the
+        # deterministic fallback.
+        has_concatenation = any(
+            concatenation_boxart_candidates(filenames, query) for query in names
+        )
+        if has_concatenation:
+            matched = self._choose_listing_with_llm(filenames, names)
         if not matched:
+            for query in names:
+                matched = unique_boxart_match(filenames, query)
+                if matched:
+                    break
+        if not matched and not has_concatenation:
             # Deterministic matching is exhausted. The optional LLM is offered
             # concatenation hits first, then the strict ambiguous pools, then
             # the looser word-overlap pools; region variants were already
@@ -381,6 +401,39 @@ class ArtworkService:
         if stored is None:
             return None
         return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
+
+    def _listing_for(
+        self,
+        provider: ArtworkProvider,
+        platform: str,
+        *,
+        timeout: float,
+    ) -> Tuple[str, ...]:
+        """Fetch and cache one provider/platform directory listing.
+
+        Only a non-empty listing is retained. A transient offline response can
+        therefore be retried later in the same service lifetime, while all
+        successful scans share the first parsed tuple.
+        """
+        provider_name = str(getattr(provider, "name", "") or provider.__class__.__name__)
+        plat = str(platform or "").strip().lower()
+        key = (provider_name, plat)
+        with self._listing_cache_lock:
+            cached = self._listing_cache.get(key)
+            if cached is not None:
+                return cached
+            try:
+                listing_url = provider.boxart_listing_url(plat)
+            except Exception:  # noqa: BLE001 - one provider must not break fallback
+                return ()
+            if not listing_url:
+                return ()
+            filenames = fetch_boxart_listing(
+                self.downloader._urlopen, listing_url, timeout=timeout
+            )
+            if filenames:
+                self._listing_cache[key] = filenames
+            return filenames
 
     def _choose_listing_with_llm(
         self, filenames: Tuple[str, ...], names: List[str]

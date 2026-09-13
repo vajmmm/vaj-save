@@ -4,7 +4,8 @@ The libretro thumbnail server is an Apache autoindex: when a generated candidate
 filename 404s, the directory page already lists every real file name.  Instead of
 fanning out into more guessed variants, :func:`unique_boxart_match` accepts a
 listing entry only when it is unambiguous: several region/language variants of
-**one** normalised title resolve to the USA release, while two genuinely
+**one** normalised title resolve to the preferred retail release (USA first,
+then a deterministic revision/language tie-break), while two genuinely
 different titles stay rejected rather than picked arbitrarily.  When even that
 strict matcher cannot line up a candidate, :func:`concatenation_boxart_candidates`
 offers the precise subset whose words the query joins into one token (``3 G``
@@ -114,6 +115,20 @@ def _contains(haystack: Tuple[str, ...], needle: Tuple[str, ...]) -> bool:
 _REGION_PREFERENCE = {"USA": 0, "World": 1, "Europe": 2, "Japan": 3}
 _UNKNOWN_REGION_RANK = 5
 _UNREGIONED_RANK = 9
+_VERSION_TAG_RE = re.compile(r"^v\d+(?:[._-]\d+)*$", re.IGNORECASE)
+_NON_RETAIL_TAG_WORDS: FrozenSet[str] = frozenset(
+    {
+        "beta",
+        "demo",
+        "kiosk",
+        "promo",
+        "proto",
+        "prototype",
+        "sample",
+        "unl",
+        "unlicensed",
+    }
+)
 
 
 def _base_title_key(name: str) -> str:
@@ -126,6 +141,28 @@ def _region_rank(name: str) -> Tuple[int, int]:
     if region is None:
         return (1, _UNREGIONED_RANK)
     return (0, _REGION_PREFERENCE.get(region, _UNKNOWN_REGION_RANK))
+
+
+def _release_variant_rank(name: str) -> Tuple[int, int, int, int, str]:
+    """Rank revisions of one title so equal-region entries remain deterministic.
+
+    Libretro listings commonly contain a base dump beside revisions, demos, or
+    language variants. Once :func:`_base_title_key` proves that all entries are
+    the same game, a normal retail release is safer than a revision; remaining
+    ties use the fewest tags, shortest name, and normalized lexical order.
+    """
+    tags = [match.group(1).strip() for match in _PAREN_RE.finditer(_strip_png(name))]
+    non_retail = 0
+    versioned = 0
+    for tag in tags:
+        compact = re.sub(r"\s+", "", tag.lower())
+        if _VERSION_TAG_RE.fullmatch(compact):
+            versioned = 1
+        normalized = normalize_boxart_name(tag)
+        if set(normalized.split()).intersection(_NON_RETAIL_TAG_WORDS):
+            non_retail = 1
+    normalized_name = normalize_boxart_name(name)
+    return (non_retail, versioned, len(tags), len(str(name)), normalized_name)
 
 
 def _matching_entries(filenames: Sequence[str], query: Any) -> list:
@@ -147,13 +184,17 @@ def _matching_entries(filenames: Sequence[str], query: Any) -> list:
     return matches
 
 
-def _resolve_unique_match(matches: Sequence[str]) -> Optional[str]:
+def _resolve_unique_match(
+    matches: Sequence[str], query: Any = None
+) -> Optional[str]:
     """Reduce a set of matches to one pick, or ``None`` when genuinely ambiguous.
 
     A single entry wins outright. Several entries are accepted only when they
-    are all region/language variants of **one** normalised title; the USA
-    release is then preferred. Two different titles (or two equally-ranked
-    region variants) stay unresolved.
+    are all region/language/revision variants of **one** normalised title; the
+    USA retail release is then preferred. Two different titles stay unresolved;
+    same-region variants use a deterministic revision/language tie-break when
+    the query names the complete base title. A short prefix must not preempt a
+    more specific candidate.
     """
     if not matches:
         return None
@@ -162,10 +203,16 @@ def _resolve_unique_match(matches: Sequence[str]) -> Optional[str]:
     keys = {_base_title_key(name) for name in matches}
     if len(keys) != 1 or "" in keys:
         return None
-    ranked = sorted(matches, key=_region_rank)
-    best_rank = _region_rank(ranked[0])
-    if sum(1 for name in matches if _region_rank(name) == best_rank) != 1:
-        return None
+    region_ranks = [_region_rank(name) for name in matches]
+    best_region = min(region_ranks)
+    if region_ranks.count(best_region) > 1 and query is not None:
+        base_tokens = _tokens(next(iter(keys)))
+        if not base_tokens or not set(base_tokens).issubset(_tokens(query)):
+            return None
+    ranked = sorted(
+        matches,
+        key=lambda name: (_region_rank(name), _release_variant_rank(name)),
+    )
     return ranked[0]
 
 
@@ -179,11 +226,11 @@ def unique_boxart_match(
     or a region/language suffix still matches the bare Checkpoint title.
 
     When several entries match, they are accepted only when they are all
-    region/language variants of **one** normalised title; the USA release is
-    then preferred.  Two genuinely different titles (a shared fragment such as
-    ``Super``) stay ambiguous and return ``None``.
+    region/language/revision variants of **one** normalised title; the USA
+    retail release is then preferred.  Two genuinely different titles (a shared
+    fragment such as ``Super``) stay ambiguous and return ``None``.
     """
-    return _resolve_unique_match(_matching_entries(filenames, query))
+    return _resolve_unique_match(_matching_entries(filenames, query), query)
 
 
 def ambiguous_boxart_matches(
@@ -200,7 +247,7 @@ def ambiguous_boxart_matches(
     matches = _matching_entries(filenames, query)
     if len(matches) < 2:
         return ()
-    if _resolve_unique_match(matches) is not None:
+    if _resolve_unique_match(matches, query) is not None:
         return ()
     return tuple(matches)
 

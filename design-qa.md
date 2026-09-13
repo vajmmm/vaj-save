@@ -60,6 +60,7 @@
 
 - 首轮发现 P2：PSP 提供的横向素材被强制填入竖向卡盒，画面被中心裁切，封面主体和文字均不可辨。
 - 修复：下载缓存新增可解码及宽高校验，横图在写入前直接拒绝；旧缓存命中前再次校验，因此历史横图会自动视为未命中。用户本地或存档内横图也只保留在原存档中，不再作为画廊或详情封面；程序会继续尝试竖版盒装封面，失败时显示中性占位；PSP 盒装图在画廊中完整缩放，避免因卡片比例差异裁掉上下内容；GBA 盒型也统一为竖版比例。
+- 修复：PSP Title ID 先映射到官方 Named_Boxarts 零售标题，兼容汉化 SFO 与 DATA/PROFILE 后缀；同一运行内复用目录索引，并对同游戏的地区、语言和修订版本做稳定选择；数据源确实没有的条目继续显示中性占位。
 - 对比证据：`build/ui-preview/qt-psp-orientation-comparison.png`，左侧为用户提供的 PSP 横图问题截图，右侧为当前统一竖版画廊；方向处理由 `tests/test_artwork.py` 与 `tests/test_qt_ui.py` 覆盖。
 - 复核结果：所有封面来源均不再展示横向资源，未发现剩余 P0、P1 或 P2 方向问题。
 
@@ -82,7 +83,7 @@
 - 已验证：平台筛选、搜索、排序、仅显示更新、单选、Ctrl/Command 多选、Shift 连选、方向键、回车主操作、抽屉关闭、版本选择、备注提交、监听切换。
 - 已检查运行时截图；Qt offscreen 渲染无界面异常。
 - `python -m py_compile src/vajsave/qt_ui.py src/vajsave/app.py scripts/ui_preview.py`：通过。
-- `pytest -q`：873 passed。
+- `pytest -q`：877 passed。
 - `git diff --check`：通过。
 
 ## 剩余 P3

@@ -136,6 +136,37 @@ def test_unique_boxart_match_prefers_usa_among_same_title_regions():
     assert unique_boxart_match(names, "Mario Kart") == "Mario Kart 7 (USA).png"
 
 
+def test_unique_boxart_match_prefers_retail_when_same_region_has_revisions():
+    """Same-title revision/language variants are no longer left unresolved.
+
+    This mirrors PSP listings where a base USA dump sits beside a v1.xx
+    revision, or where two USA language sets are available.
+    """
+    doa = (
+        "Dead or Alive - Paradise (USA) (v1.01).png",
+        "Dead or Alive - Paradise (USA) (En,Ja,Fr,De).png",
+    )
+    assert (
+        unique_boxart_match(doa, "Dead or Alive Paradise")
+        == "Dead or Alive - Paradise (USA) (En,Ja,Fr,De).png"
+    )
+    assert ambiguous_boxart_matches(doa, "Dead or Alive Paradise") == ()
+
+    metal_slug = (
+        "Metal Slug Anthology (USA) (v1.03).png",
+        "Metal Slug Anthology (USA).png",
+    )
+    assert unique_boxart_match(metal_slug, "Metal Slug Anthology") == (
+        "Metal Slug Anthology (USA).png"
+    )
+
+    tekken = (
+        "Tekken 6 (USA) (En,Ja,Fr,De,Es,It,Ko,Ru).png",
+        "Tekken 6 (USA) (En,Fr,De,Es,It,Ru).png",
+    )
+    assert unique_boxart_match(tekken, "Tekken 6") == tekken[1]
+
+
 def test_ambiguous_boxart_matches_only_for_genuinely_conflicting_titles():
     """Region variants of one title are resolved deterministically (USA) and
     must *not* be handed to the optional LLM; only two genuinely different

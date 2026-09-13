@@ -51,6 +51,10 @@ U 盘，以及以 USB 大容量存储（UMS）方式直连的掌机（Hekate UMS
    `identity_key` / `provider` / `canonical_title` / `remote_url` / `local_path` / `updated_at`）。
    缓存有效命中时**完全不走网络**；下载失败（404 / 超时 / 离线 / 内容不完整 / 非图片）会静默跳过，
    **不会**污染缓存，也不会顶替已有的本地封面。横向下载素材同样不会写入缓存。
+   PSP 存档会优先用内置的 Title ID 别名表把 PARAM.SFO / 存档目录编号映射到官方零售标题，
+   兼容汉化标题、DATA / PROFILE 等后缀；未收录的编号仍按存档标题和目录索引回退。
+   同一游戏在官方目录中同时存在多个地区、语言或修订版时，会优先美国正式版，再以稳定规则选择
+   无修订、非演示版的文件；不同游戏不会被强行猜测。一次运行中的目录索引会复用，避免批量扫描重复下载同一页面。
 3. **存档目录内的内嵌图标**（扫描设备时自动发现，只读，不做整盘递归）：
    - 先按固定名单匹配（大小写不敏感，优先级从高到低）：`icon0.*` → `icon.*` → `pic1.*` → `thumb.*` → `preview.*` → `folder.*` → `cover.*` → `banner.*` → `boxart.*`，扩展名支持 `png` `jpg` `jpeg` `webp` `bmp` `gif`
    - 例：PSP `SAVEDATA/<游戏>/ICON0.PNG`、Vita `.../savedata/<游戏>/sce_sys/icon0.png`

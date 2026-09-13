@@ -52,6 +52,8 @@ from .providers import (
     Artwork,
     ArtworkProvider,
     LibretroThumbnailProvider,
+    PSP_TITLE_ALIASES,
+    psp_title_candidates,
     sanitize_libretro_filename,
 )
 from .service import (
@@ -77,6 +79,8 @@ __all__ = [
     "ArtworkRef",
     "LIBRETRO_THUMBNAIL_BASE",
     "LIBRETRO_SYSTEM_NAMES",
+    "PSP_TITLE_ALIASES",
+    "psp_title_candidates",
     "sanitize_libretro_filename",
     "ArtworkDownloader",
     "DEFAULT_TIMEOUT",
