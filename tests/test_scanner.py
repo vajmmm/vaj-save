@@ -58,6 +58,56 @@ def test_vita_savedata_with_sfo(tmp_path: Path, vita_sfo_bytes: bytes):
     assert entry.display_name == "Persona 4 Golden"
 
 
+def test_vita_savedata_uses_matching_app_metadata(
+    tmp_path: Path, vita_sfo_bytes: bytes
+):
+    """A save with only a Title ID inherits its installed app title and icon."""
+    save_dir = tmp_path / "user" / "00" / "savedata" / "PCSE00120"
+    save_sys = save_dir / "sce_sys"
+    save_sys.mkdir(parents=True)
+    (save_sys / "param.sfo").write_bytes(
+        build_sfo({"TITLE_ID": "PCSE00120", "CATEGORY": "gd"})
+    )
+    (save_dir / "savedata.bin").write_bytes(b"vita_save")
+
+    app_sys = tmp_path / "app" / "PCSE00120" / "sce_sys"
+    app_sys.mkdir(parents=True)
+    (app_sys / "param.sfo").write_bytes(vita_sfo_bytes)
+    icon = app_sys / "icon0.png"
+    icon.write_bytes(b"installed_app_icon")
+
+    result = scan(tmp_path)
+
+    assert len(result.saves) == 1
+    entry = result.saves[0]
+    assert entry.title_id == "PCSE00120"
+    assert entry.display_name == "Persona 4 Golden"
+    assert entry.cover_path == str(icon)
+
+
+def test_vita_savedata_uses_matching_appmeta_metadata(
+    tmp_path: Path, vita_sfo_bytes: bytes
+):
+    """The appmeta sibling is also a valid title/icon fallback."""
+    save_dir = tmp_path / "ux0" / "user" / "00" / "savedata" / "PCSG00100"
+    save_dir.mkdir(parents=True)
+    (save_dir / "savedata.bin").write_bytes(b"vita_save")
+
+    appmeta = tmp_path / "ux0" / "appmeta" / "PCSG00100"
+    appmeta.mkdir(parents=True)
+    (appmeta / "param.sfo").write_bytes(vita_sfo_bytes)
+    icon = appmeta / "icon0.png"
+    icon.write_bytes(b"appmeta_icon")
+
+    result = scan(tmp_path)
+
+    assert len(result.saves) == 1
+    entry = result.saves[0]
+    assert entry.title_id == "PCSG00100"
+    assert entry.display_name == "Persona 4 Golden"
+    assert entry.cover_path == str(icon)
+
+
 def test_vita_adrenaline_multi_source(tmp_path: Path, psp_sfo_bytes: bytes, vita_sfo_bytes: bytes):
     # Vita native save under ux0/user/00/savedata
     vita_save = tmp_path / "ux0" / "user" / "00" / "savedata" / "PCSE00120" / "sce_sys"
