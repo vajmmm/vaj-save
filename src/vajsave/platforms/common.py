@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import FrozenSet, Iterable, Iterator, List, Optional, Set, Tuple
+from typing import Dict, FrozenSet, Iterable, Iterator, List, Optional, Set, Tuple
 
 # How many extra directory levels above a known layout prefix are allowed
 # (e.g. backup/ or outer/inner/ wrapping JKSV or switch/Checkpoint/saves).
@@ -15,24 +18,75 @@ MAX_WRAPPER_DEPTH = 2
 MAX_SAVE_SCAN_DEPTH = 4
 
 
-def is_safe_path(path: Path, root_resolved: Path) -> bool:
-    """Ensure path does not escape the resolved root via symlinks."""
+@dataclass
+class _ScanCache:
+    """Memoized filesystem queries for one complete device scan."""
+
+    directory_entries: Dict[Path, Tuple[Path, ...]] = field(default_factory=dict)
+    resolved_paths: Dict[Path, Optional[Path]] = field(default_factory=dict)
+    safe_paths: Dict[Tuple[Path, Path], bool] = field(default_factory=dict)
+
+
+_ACTIVE_SCAN_CACHE: ContextVar[Optional[_ScanCache]] = ContextVar(
+    "vajsave_active_scan_cache", default=None
+)
+
+
+@contextmanager
+def scan_cache() -> Iterator[None]:
+    """Share read-only path results across all platform scanners in one scan."""
+    token = _ACTIVE_SCAN_CACHE.set(_ScanCache())
+    try:
+        yield
+    finally:
+        _ACTIVE_SCAN_CACHE.reset(token)
+
+
+def _resolve_path(path: Path) -> Optional[Path]:
+    cache = _ACTIVE_SCAN_CACHE.get()
+    if cache is not None and path in cache.resolved_paths:
+        return cache.resolved_paths[path]
     try:
         resolved = path.resolve()
-        return resolved.is_relative_to(root_resolved)
     except Exception:
-        return False
+        resolved = None
+    if cache is not None:
+        cache.resolved_paths[path] = resolved
+    return resolved
+
+
+def is_safe_path(path: Path, root_resolved: Path) -> bool:
+    """Ensure path does not escape the resolved root via symlinks."""
+    cache = _ACTIVE_SCAN_CACHE.get()
+    cache_key = (path, root_resolved)
+    if cache is not None and cache_key in cache.safe_paths:
+        return cache.safe_paths[cache_key]
+    try:
+        resolved = _resolve_path(path)
+        result = resolved is not None and resolved.is_relative_to(root_resolved)
+    except Exception:
+        result = False
+    if cache is not None:
+        cache.safe_paths[cache_key] = result
+    return result
 
 
 def safe_iterdir(path: Path, warnings: List[str]) -> List[Path]:
     """Safely list directory contents, catching permission/OS errors."""
+    cache = _ACTIVE_SCAN_CACHE.get()
+    if cache is not None and path in cache.directory_entries:
+        return list(cache.directory_entries[path])
     try:
         if not path.is_dir():
-            return []
-        return sorted(list(path.iterdir()))
+            entries: Tuple[Path, ...] = ()
+        else:
+            entries = tuple(sorted(path.iterdir()))
     except (PermissionError, FileNotFoundError, OSError) as e:
         warnings.append(f"Cannot access directory {path}: {e}")
-        return []
+        entries = ()
+    if cache is not None:
+        cache.directory_entries[path] = entries
+    return list(entries)
 
 
 def iter_save_files(
@@ -72,10 +126,7 @@ def iter_save_files(
 
 
 def resolved_key(path: Path) -> Optional[Path]:
-    try:
-        return path.resolve()
-    except Exception:
-        return None
+    return _resolve_path(path)
 
 
 def find_pattern_dirs(

@@ -337,6 +337,38 @@ def test_directory_access_error(monkeypatch, tmp_path: Path):
     assert any("Simulated permission denied" in w for w in result.warnings)
 
 
+def test_scan_cache_reuses_directory_and_path_queries(monkeypatch, tmp_path: Path):
+    from vajsave.platforms import common
+
+    calls = {"iterdir": 0, "resolve": 0}
+    original_iterdir = Path.iterdir
+    original_resolve = Path.resolve
+
+    def counted_iterdir(path):
+        calls["iterdir"] += 1
+        return original_iterdir(path)
+
+    def counted_resolve(path, *args, **kwargs):
+        calls["resolve"] += 1
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "iterdir", counted_iterdir)
+    monkeypatch.setattr(Path, "resolve", counted_resolve)
+    root_resolved = original_resolve(tmp_path)
+    warnings = []
+
+    with common.scan_cache():
+        assert common.safe_iterdir(tmp_path, warnings) == common.safe_iterdir(
+            tmp_path, warnings
+        )
+        assert common.resolved_key(tmp_path) == common.resolved_key(tmp_path)
+        assert common.is_safe_path(tmp_path, root_resolved)
+        assert common.is_safe_path(tmp_path, root_resolved)
+
+    assert calls["iterdir"] == 1
+    assert calls["resolve"] == 1
+
+
 def test_scan_psp_savedata_directory_directly(tmp_path: Path, psp_sfo_bytes: bytes):
     """User selected PSP/SAVEDATA (not card root) should still yield PSP saves."""
     savedata = tmp_path / "PSP" / "SAVEDATA"

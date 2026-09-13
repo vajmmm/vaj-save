@@ -13,6 +13,7 @@ from .platforms.common import (
     find_pattern_dirs,
     is_safe_path,
     resolved_key,
+    scan_cache,
     safe_iterdir,
 )
 
@@ -158,16 +159,17 @@ def scan(root_path: Union[Path, str]) -> ScanResult:
         gba.scan_gba,
         nds.scan_nds,
     )
-    for scan_fn in scanners:
-        scan_fn(
-            root,
-            root_resolved,
-            warnings,
-            sources,
-            saves,
-            seen_source_roots,
-            seen_save_paths,
-        )
+    with scan_cache():
+        for scan_fn in scanners:
+            scan_fn(
+                root,
+                root_resolved,
+                warnings,
+                sources,
+                saves,
+                seen_source_roots,
+                seen_save_paths,
+            )
 
     if not sources:
         platform = "unknown"
