@@ -31,6 +31,7 @@ from .library import (
     hash_tree,  # tests monkeypatch vajsave.app_state.hash_tree
 )
 from .library_actions import LibraryActions
+from .library_import import import_snapshot_zip as _import_snapshot_zip
 from .metadata import GameMetadata, GameMetadataResolver
 from .models import SaveEntry, ScanResult, VolumeInfo
 from .platforms.catalog import PLATFORM_LABELS, PLATFORM_ORDER
@@ -383,6 +384,26 @@ class AppState:
 
     def export_version_zip(self, snapshot: Snapshot, zip_path: Union[Path, str]) -> Optional[Path]:
         return self.library_actions.export_version_zip(snapshot, zip_path)
+
+    def import_snapshot_zip(
+        self,
+        zip_path: Union[Path, str],
+        *,
+        attach_game_id: Optional[str] = None,
+        new_platform: Optional[str] = None,
+        new_title_id: Optional[str] = None,
+        new_display_name: Optional[str] = None,
+        new_slot: Optional[str] = None,
+    ) -> BackupResult:
+        return _import_snapshot_zip(
+            self.library_root,
+            Path(zip_path),
+            attach_game_id=attach_game_id,
+            new_platform=new_platform,
+            new_title_id=new_title_id,
+            new_display_name=new_display_name,
+            new_slot=new_slot,
+        )
 
     def grouped_saves(self) -> List[Tuple[str, List[SaveEntry]]]:
         return self.library_actions.grouped_saves()
