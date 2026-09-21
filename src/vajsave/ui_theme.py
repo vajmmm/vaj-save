@@ -73,6 +73,8 @@ PLATFORM_COLORS: Dict[str, str] = {
     "switch": "#ff3c28",
     "3ds": "#ffd60a",
     "nds": "#bf5af2",
+    "gb": "#9aa56a",
+    "gbc": "#ff6b8a",
     "gba": "#30d158",
 }
 

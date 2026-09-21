@@ -8,7 +8,7 @@ from typing import Callable, List, Optional, Sequence, Set, Union
 from .device_registry import BoundSource
 from .models import SaveEntry, SaveSource, ScanResult
 from .covers import find_embedded_cover
-from .platforms import gba, nds, psp, switch, threeds, vita
+from .platforms import gb, gba, gbc, nds, psp, switch, threeds, vita
 from .platforms.common import (
     ScanProgress,
     collect_unique_dirs,
@@ -107,6 +107,11 @@ def _detected_platforms(base: Path) -> Set[str]:
     ):
         detected.add("nds")
 
+    if any(has_dir(rel) for rel in ("roms/gb", "EDGB", "GBOS")):
+        detected.add("gb")
+    if any(has_dir(rel) for rel in ("roms/gbc", "EDGB", "GBOS")):
+        detected.add("gbc")
+
     return detected
 
 
@@ -187,6 +192,12 @@ def guess_platform(root: Union[Path, str]) -> Optional[str]:
     ):
         return "nds"
 
+    # Game Boy / Game Boy Color (EverDrive GB, roms/gb, roms/gbc).
+    if has_dir("roms/gb") or has_dir("EDGB") or has_dir("GBOS"):
+        return "gb"
+    if has_dir("roms/gbc"):
+        return "gbc"
+
     return None
 
 
@@ -195,8 +206,10 @@ PLATFORM_PROGRESS_LABELS = {
     "vita": "PS Vita",
     "switch": "Switch",
     "3ds": "3DS",
-    "gba": "GBA",
     "nds": "NDS",
+    "gb": "GB",
+    "gbc": "GBC",
+    "gba": "GBA",
 }
 
 
@@ -294,8 +307,10 @@ def _scan_root(
         ("vita", vita.scan_vita),
         ("switch", switch.scan_switch),
         ("3ds", threeds.scan_threeds),
-        ("gba", gba.scan_gba),
         ("nds", nds.scan_nds),
+        ("gb", gb.scan_gb),
+        ("gbc", gbc.scan_gbc),
+        ("gba", gba.scan_gba),
     )
     bound_list = [item for item in (bound_sources or ()) if item is not None]
     if bound_list:

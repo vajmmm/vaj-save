@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import List, Set
 
 from ..models import SaveEntry, SaveSource
+from .cartridge_files import SAVER_ROM_EXTENSIONS, classify_saver_platform, collect_rom_stems
 from .common import (
     collect_unique_dirs,
     find_pattern_dirs,
@@ -30,6 +31,8 @@ def _add_file_save(
     seen_save_paths: Set[Path],
     source_root: Path,
     description: str,
+    platform: str = "gba",
+    source_platform: str | None = None,
 ) -> None:
     if not path.is_file() or not is_safe_path(path, root_resolved):
         return
@@ -43,7 +46,7 @@ def _add_file_save(
         sources.append(
             SaveSource(
                 source_id=source_id,
-                platform="gba",
+                platform=source_platform or platform,
                 description=description,
                 root_path=str(source_root),
             )
@@ -52,7 +55,7 @@ def _add_file_save(
     seen_save_paths.add(file_key)
     saves.append(
         SaveEntry(
-            platform="gba",
+            platform=platform,
             source_id=source_id,
             display_name=display_name,
             path=str(path),
@@ -62,6 +65,7 @@ def _add_file_save(
 
 def _scan_ezflash_saver(
     saver_dir: Path,
+    scan_root: Path,
     root_resolved: Path,
     warnings: List[str],
     sources: List[SaveSource],
@@ -69,7 +73,11 @@ def _scan_ezflash_saver(
     seen_source_roots: Set[Path],
     seen_save_paths: Set[Path],
 ) -> None:
+    rom_stems = collect_rom_stems(
+        scan_root, root_resolved, warnings, SAVER_ROM_EXTENSIONS
+    )
     for item in iter_save_files(saver_dir, root_resolved, warnings, frozenset({".sav"})):
+        platform = classify_saver_platform(item.stem, rom_stems)
         _add_file_save(
             path=item,
             source_id="gba_ezflash",
@@ -81,6 +89,8 @@ def _scan_ezflash_saver(
             seen_save_paths=seen_save_paths,
             source_root=saver_dir,
             description="GBA EZ-Flash SAVER directory",
+            platform=platform,
+            source_platform="gba",
         )
 
 
@@ -194,11 +204,25 @@ def scan_gba(
         find_pattern_dirs(root, ("SAVER",), root_resolved, warnings, wrapper_depth)
     ):
         _scan_ezflash_saver(
-            saver_dir, root_resolved, warnings, sources, saves, seen_source_roots, seen_save_paths
+            saver_dir,
+            root,
+            root_resolved,
+            warnings,
+            sources,
+            saves,
+            seen_source_roots,
+            seen_save_paths,
         )
     if root.name == "SAVER":
         _scan_ezflash_saver(
-            root, root_resolved, warnings, sources, saves, seen_source_roots, seen_save_paths
+            root,
+            root,
+            root_resolved,
+            warnings,
+            sources,
+            saves,
+            seen_source_roots,
+            seen_save_paths,
         )
 
     # EverDrive Mini/X5: GBASYS/SAVE/*.{sav,srm,fla,eep}

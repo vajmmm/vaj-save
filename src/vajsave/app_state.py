@@ -80,7 +80,12 @@ class AppState:
         self.scan_fn: Callable[[Union[Path, str]], ScanResult] = scan_fn or scan
         self.backend: Optional[StorageBackend] = backend
         self.library_root: Path = self._resolve_library_root(library_root)
-        self.gba_rom_dir, self.nds_rom_dir = self._resolve_rom_dirs()
+        (
+            self.gba_rom_dir,
+            self.nds_rom_dir,
+            self.gb_rom_dir,
+            self.gbc_rom_dir,
+        ) = self._resolve_rom_dirs()
         self.libretro_dir: Optional[Path] = self._resolve_libretro_dir()
         self._identity_resolver: Optional[GameIdentityResolver] = None
         self._metadata_service: Optional[GameMetadataResolver] = None
@@ -179,12 +184,16 @@ class AppState:
         return Path(text).expanduser() if text else None
 
     @staticmethod
-    def _resolve_rom_dirs() -> Tuple[Optional[Path], Optional[Path]]:
-        """Read the persisted GBA/NDS ROM directories (invalid values -> None)."""
+    def _resolve_rom_dirs() -> Tuple[
+        Optional[Path], Optional[Path], Optional[Path], Optional[Path]
+    ]:
+        """Read the persisted cartridge ROM directories (invalid values -> None)."""
         config = SettingsStore().load()
         return (
             AppState._coerce_dir(config.get("gba_rom_dir")),
             AppState._coerce_dir(config.get("nds_rom_dir")),
+            AppState._coerce_dir(config.get("gb_rom_dir")),
+            AppState._coerce_dir(config.get("gbc_rom_dir")),
         )
 
     @staticmethod
@@ -202,8 +211,16 @@ class AppState:
         self,
         gba_rom_dir: object = _UNSET,
         nds_rom_dir: object = _UNSET,
+        *,
+        gb_rom_dir: object = _UNSET,
+        gbc_rom_dir: object = _UNSET,
     ) -> Tuple[Optional[Path], Optional[Path]]:
-        return self.enrichment.set_rom_dirs(gba_rom_dir=gba_rom_dir, nds_rom_dir=nds_rom_dir)
+        return self.enrichment.set_rom_dirs(
+            gba_rom_dir=gba_rom_dir,
+            nds_rom_dir=nds_rom_dir,
+            gb_rom_dir=gb_rom_dir,
+            gbc_rom_dir=gbc_rom_dir,
+        )
 
     def _build_identity_resolver(self) -> GameIdentityResolver:
         return self.enrichment._build_identity_resolver()

@@ -103,6 +103,8 @@ _PLATFORM_LOGOS = {
     "switch": "platform-switch.svg",
     "3ds": "platform-3ds.svg",
     "nds": "platform-nds.svg",
+    "gb": "platform-gb.svg",
+    "gbc": "platform-gbc.svg",
     "gba": "platform-gba.svg",
 }
 _PLATFORM_ICON_CACHE: dict[str, QIcon] = {}

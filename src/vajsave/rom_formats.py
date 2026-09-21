@@ -16,6 +16,8 @@ from typing import Dict, Tuple
 ROM_EXTENSIONS: Dict[str, Tuple[str, ...]] = {
     "gba": (".gba", ".agb"),
     "nds": (".nds", ".ids"),
+    "gb": (".gb",),
+    "gbc": (".gbc",),
 }
 
 
