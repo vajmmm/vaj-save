@@ -9,11 +9,14 @@ from .models import SaveEntry, SaveSource, ScanResult
 from .covers import find_embedded_cover
 from .platforms import gba, nds, psp, switch, threeds, vita
 from .platforms.common import (
+    ScanProgress,
     collect_unique_dirs,
+    emit_scan_progress,
     find_pattern_dirs,
     is_safe_path,
     resolved_key,
     scan_cache,
+    scan_progress_callback,
     safe_iterdir,
 )
 
@@ -186,8 +189,26 @@ def guess_platform(root: Union[Path, str]) -> Optional[str]:
     return None
 
 
-def scan(root_path: Union[Path, str]) -> ScanResult:
+PLATFORM_PROGRESS_LABELS = {
+    "psp": "PSP",
+    "vita": "PS Vita",
+    "switch": "Switch",
+    "3ds": "3DS",
+    "gba": "GBA",
+    "nds": "NDS",
+}
+
+
+def scan(
+    root_path: Union[Path, str],
+    progress: Optional[Callable[[ScanProgress], None]] = None,
+) -> ScanResult:
     """Scan a root directory (e.g. mounted USB volume or SD card) and list saves."""
+    with scan_progress_callback(progress):
+        return _scan_root(root_path)
+
+
+def _scan_root(root_path: Union[Path, str]) -> ScanResult:
     root = Path(root_path)
     warnings: List[str] = []
 
@@ -232,7 +253,14 @@ def scan(root_path: Union[Path, str]) -> ScanResult:
     # fingerprint. Unknown paths retain the broad wrapper-compatible behaviour.
     scanners = [item for item in all_scanners if not detected or item[0] in detected]
     with scan_cache():
-        for platform_id, scan_fn in scanners:
+        total = len(scanners)
+        for index, (platform_id, scan_fn) in enumerate(scanners, start=1):
+            label = PLATFORM_PROGRESS_LABELS.get(platform_id, platform_id)
+            emit_scan_progress(
+                f"正在扫描 {label}… 已发现 {len(saves)} 个存档",
+                index - 1,
+                total,
+            )
             args = (
                 root,
                 root_resolved,
@@ -243,6 +271,11 @@ def scan(root_path: Union[Path, str]) -> ScanResult:
                 seen_save_paths,
             )
             scan_fn(*args, standard_root=bool(detected))
+            emit_scan_progress(
+                f"正在扫描 {label}… 已发现 {len(saves)} 个存档",
+                index,
+                total,
+            )
 
     if not sources:
         platform = "unknown"

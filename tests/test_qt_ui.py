@@ -630,3 +630,51 @@ def test_library_mode_skips_cover_enrichment(qt_app, qt_state, monkeypatch):
     finally:
         window.close()
 
+
+def test_scan_progress_bar_hidden_until_scan_starts(qt_app, qt_state):
+    window = VajSaveWindow(qt_state)
+    try:
+        window.show()
+        QTest.qWait(30)
+        bar = window.scan_progress
+        assert bar.objectName() == "scanProgress"
+        assert bar.isHidden()
+    finally:
+        window.close()
+
+
+def test_scan_progress_bar_visible_during_slow_scan(qt_app, tmp_path: Path, monkeypatch):
+    mount = tmp_path / "slow-device"
+    mount.mkdir()
+    volume = VolumeInfo("慢速存储卡", mount, True)
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_scan(_path):
+        started.set()
+        release.wait(timeout=3)
+        return ScanResult(root_path=str(mount), platform="vita", saves=[])
+
+    state = AppState(
+        provider=FakeVolumeProvider([volume]),
+        scan_fn=slow_scan,
+        library_root=tmp_path / "library",
+    )
+    monkeypatch.setattr(state, "start_watch", lambda *args, **kwargs: None)
+    monkeypatch.setattr(state, "stop_watch", lambda *args, **kwargs: None)
+    window = VajSaveWindow(state)
+    try:
+        window.show()
+        window._request_mount_scan(mount)
+        for _ in range(40):
+            QTest.qWait(20)
+            if started.is_set():
+                break
+        assert started.is_set()
+        window._sync_scan_progress()
+        assert window.scan_progress.isVisible()
+        assert "正在扫描" in window.status_text.text()
+    finally:
+        release.set()
+        window.close()
+

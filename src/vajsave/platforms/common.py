@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, FrozenSet, Iterable, Iterator, List, Optional, Set, Tuple
+from typing import Callable, Dict, FrozenSet, Iterable, Iterator, List, Optional, Set, Tuple
 
 # How many extra directory levels above a known layout prefix are allowed
 # (e.g. backup/ or outer/inner/ wrapping JKSV or switch/Checkpoint/saves).
@@ -16,6 +16,46 @@ MAX_WRAPPER_DEPTH = 2
 # enough for a ``category/game/`` layout, shallow enough that a pathological tree
 # cannot turn one scan into an unbounded walk.
 MAX_SAVE_SCAN_DEPTH = 4
+
+
+@dataclass(frozen=True)
+class ScanProgress:
+    """Latest scan/hash progress snapshot for the status bar."""
+
+    message: str
+    current: int = 0
+    total: int = 0
+
+
+_PROGRESS_CB: ContextVar[Optional[Callable[[ScanProgress], None]]] = ContextVar(
+    "vajsave_scan_progress_cb", default=None
+)
+
+IDLE_SCAN_PROGRESS = ScanProgress(message="", current=0, total=0)
+
+
+def emit_scan_progress(message: str, current: int = 0, total: int = 0) -> None:
+    callback = _PROGRESS_CB.get()
+    if callback is None:
+        return
+    try:
+        callback(ScanProgress(message=message, current=current, total=total))
+    except Exception:
+        return
+
+
+@contextmanager
+def scan_progress_callback(
+    callback: Optional[Callable[[ScanProgress], None]],
+) -> Iterator[None]:
+    if callback is None:
+        yield
+        return
+    token = _PROGRESS_CB.set(callback)
+    try:
+        yield
+    finally:
+        _PROGRESS_CB.reset(token)
 
 
 @dataclass

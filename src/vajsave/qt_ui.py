@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -1067,11 +1068,18 @@ class VajSaveWindow(QMainWindow):
         self.status_device.setObjectName("statusDevice")
         self.status_text = QLabel("准备好了，插上掌机或打开文件夹就可以开始")
         self.status_text.setObjectName("statusText")
+        self.scan_progress = QProgressBar()
+        self.scan_progress.setObjectName("scanProgress")
+        self.scan_progress.setTextVisible(False)
+        self.scan_progress.setFixedWidth(160)
+        self.scan_progress.setFixedHeight(7)
+        self.scan_progress.hide()
         self.watch = _button("监听已开启", "fa6s.circle", checkable=True)
         self.watch.setChecked(True)
         self.watch.setObjectName("watchButton")
         status_row.addWidget(self.status_device)
         status_row.addWidget(self.status_text, 1)
+        status_row.addWidget(self.scan_progress)
         status_row.addWidget(self.watch)
         outer.addWidget(status)
 
@@ -1144,6 +1152,8 @@ class VajSaveWindow(QMainWindow):
             #versionTable::item:selected {{ background: {SWITCH['selected']}; color: {SWITCH['ink']}; }}
             #bottomBar {{ background: {CONTROL_WHITE}; border-top: 1px solid {SWITCH['border_soft']}; }}
             #statusDevice, #statusText, #watchButton {{ font-size: 11px; }}
+            #scanProgress {{ background: {SWITCH['surface_alt']}; border: 0; border-radius: 4px; }}
+            #scanProgress::chunk {{ background: {SWITCH['accent']}; border-radius: 4px; }}
         """)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
@@ -1224,6 +1234,20 @@ class VajSaveWindow(QMainWindow):
         self.dock.set_device(name, connected or self.state.library_mode)
         self.status_device.setText(f"●  {name}")
         self.status_text.setText(self.state.status_text)
+        self._sync_scan_progress()
+
+    def _sync_scan_progress(self) -> None:
+        progress = self.state.scan_progress()
+        if not progress.message:
+            self.scan_progress.hide()
+            return
+        self.scan_progress.show()
+        if progress.total <= 0:
+            self.scan_progress.setRange(0, 0)
+        else:
+            self.scan_progress.setRange(0, progress.total)
+            self.scan_progress.setValue(max(0, min(progress.current, progress.total)))
+        self.status_text.setText(progress.message)
 
     def _schedule_cover_enrichment(
         self, saves: list[SaveEntry], generation: int
@@ -1286,6 +1310,7 @@ class VajSaveWindow(QMainWindow):
             self._request_mount_scan(candidate.mount_point, auto=True)
 
     def _poll_state(self) -> None:
+        self._sync_scan_progress()
         if not self.state.drain_events(auto_select=False):
             return
         mounted = {Path(volume.mount_point) for volume in self.state.volumes}

@@ -11,6 +11,7 @@ from ..models import SaveEntry, SaveSource
 from ..sfo import parse_sfo
 from .common import (
     collect_unique_dirs,
+    emit_scan_progress,
     find_pattern_dirs,
     is_safe_path,
     resolved_key,
@@ -252,11 +253,16 @@ def _scan_vita_native_dir(
             root_path=str(vita_dir),
         )
     )
-    for item in safe_iterdir(vita_dir, warnings):
-        if not item.is_dir() or not is_safe_path(item, root_resolved):
-            continue
+    candidates = [
+        item
+        for item in safe_iterdir(vita_dir, warnings)
+        if item.is_dir() and is_safe_path(item, root_resolved)
+    ]
+    total = len(candidates)
+    for index, item in enumerate(candidates, start=1):
         item_key = resolved_key(item)
         if item_key is None or item_key in seen_save_paths:
+            emit_scan_progress(f"正在扫描 PS Vita… {index}/{total}", index, total)
             continue
         sfo_path = _find_vita_param_sfo(item, root_resolved, warnings)
         sfo_data = parse_sfo(sfo_path) if sfo_path else {}
@@ -282,6 +288,7 @@ def _scan_vita_native_dir(
                 cover_path=str(cover_path) if cover_path is not None else None,
             )
         )
+        emit_scan_progress(f"正在扫描 PS Vita… {index}/{total}", index, total)
 
 
 def _scan_vita_exported_dir(

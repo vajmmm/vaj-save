@@ -2,7 +2,7 @@ import os
 import queue
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
@@ -75,6 +75,7 @@ from .remote_ftp import (
     preset_keys,
     presets,
 )
+from .platforms.common import IDLE_SCAN_PROGRESS, ScanProgress
 from .scanner import scan
 from .volume import MountedVolumeProvider, VolumeProvider, watch_volumes
 
@@ -263,6 +264,8 @@ class AppState:
         self.current_result: Optional[ScanResult] = None
         self._auto_selected_mount: bool = False
         self.status_text: str = "就绪"
+        self._progress_lock = threading.Lock()
+        self._scan_progress: ScanProgress = IDLE_SCAN_PROGRESS
         self.warnings: List[str] = []
         # Browse source: False = the selected device, True = the local library
         # catalog (cross-platform, one row per game).
@@ -1074,8 +1077,21 @@ class AppState:
                     return item.path, None, exc
 
             workers = min(2, len(pending))
+            self.report_scan_progress(
+                ScanProgress(f"正在核对备份 0/{len(pending)}", 0, len(pending))
+            )
+            hashed: List[Tuple[str, Optional[str], Optional[BaseException]]] = []
             with ThreadPoolExecutor(max_workers=workers) as pool:
-                hashed = list(pool.map(_hash_one, pending))
+                futures = [pool.submit(_hash_one, item) for item in pending]
+                done = 0
+                for future in as_completed(futures):
+                    hashed.append(future.result())
+                    done += 1
+                    self.report_scan_progress(
+                        ScanProgress(
+                            f"正在核对备份 {done}/{len(pending)}", done, len(pending)
+                        )
+                    )
             by_path = {path: (digest, err) for path, digest, err in hashed}
             for entry in pending:
                 digest, err = by_path[entry.path]
@@ -1294,6 +1310,30 @@ class AppState:
                 self.volumes.append(volume)
         return self.volumes
 
+    def report_scan_progress(self, progress: ScanProgress) -> None:
+        """Record latest scan/hash progress; safe to call from a worker thread."""
+        with self._progress_lock:
+            self._scan_progress = progress
+            if progress.message:
+                self.status_text = progress.message
+
+    def scan_progress(self) -> ScanProgress:
+        with self._progress_lock:
+            return self._scan_progress
+
+    def clear_scan_progress(self) -> None:
+        with self._progress_lock:
+            self._scan_progress = IDLE_SCAN_PROGRESS
+
+    def _invoke_scan(self, path: Path) -> ScanResult:
+        def on_progress(item: ScanProgress) -> None:
+            self.report_scan_progress(item)
+
+        try:
+            return self.scan_fn(path, progress=on_progress)
+        except TypeError:
+            return self.scan_fn(path)
+
     def begin_mount_scan(self, mount_point: Union[Path, str], auto: bool = False) -> Path:
         """在主线程切换到待扫描设备，并清除上一设备的展示状态。"""
         path = Path(mount_point)
@@ -1306,14 +1346,14 @@ class AppState:
         self.current_result = None
         self._backup_statuses = {}
         self.warnings = []
-        self.status_text = f"正在扫描: {path}"
+        self.report_scan_progress(ScanProgress(message="正在扫描…", current=0, total=0))
         return path
 
     def prepare_mount_scan(self, mount_point: Union[Path, str]) -> PreparedMountScan:
         """扫描并计算廉价备份状态（不计算哈希）；可在工作线程运行。"""
         path = Path(mount_point)
         try:
-            res = self.scan_fn(path)
+            res = self._invoke_scan(path)
         except Exception as e:
             res = ScanResult(
                 root_path=str(path),
@@ -1400,6 +1440,7 @@ class AppState:
         self.status_text = _build_status_text(
             self.current_result, counts=self.backup_status_counts()
         )
+        self.clear_scan_progress()
         return True
 
     def select_mount(self, mount_point: Union[Path, str], auto: bool = False) -> ScanResult:

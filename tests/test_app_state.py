@@ -1984,3 +1984,52 @@ def test_apply_backup_statuses_noop_when_current_result_differs(tmp_path: Path, 
     assert state.apply_backup_statuses(prepared) is False
 
 
+def test_prepare_mount_scan_records_progress(tmp_path: Path, psp_sfo_bytes: bytes):
+    root = tmp_path / "PSP_VOL"
+    _psp_save_tree(root, "ULJM05800", b"data", psp_sfo_bytes)
+    state = AppState(library_root=tmp_path / "lib")
+    state.begin_mount_scan(root)
+    assert "正在扫描" in state.scan_progress().message
+    state.prepare_mount_scan(root)
+    progress = state.scan_progress()
+    assert "PSP" in progress.message or "存档" in progress.message
+    assert progress.total >= 1
+
+
+def test_prepare_backup_statuses_reports_hash_progress(
+    tmp_path: Path, psp_sfo_bytes: bytes
+):
+    root = tmp_path / "PSP_VOL"
+    save_dir = _psp_save_tree(root, "ULJM05800", b"same", psp_sfo_bytes)
+    lib = tmp_path / "lib"
+    entry = SaveEntry(
+        platform="psp",
+        source_id="psp",
+        display_name="Monster Hunter Portable 3rd",
+        path=str(save_dir),
+        title_id="ULJM05800",
+    )
+    backup_save(entry, lib, datetime(2026, 1, 1, 10, 0, 0))
+    state = AppState(library_root=lib)
+    state.begin_mount_scan(root)
+    prepared = state.prepare_mount_scan(root)
+    state.apply_prepared_mount_scan(prepared)
+    state.prepare_backup_statuses(prepared.result.saves)
+    progress = state.scan_progress()
+    assert "核对备份" in progress.message
+    assert progress.current == progress.total
+    assert progress.total >= 1
+
+
+def test_invoke_scan_without_progress_kwarg(tmp_path: Path):
+    root = tmp_path / "VOL"
+    root.mkdir()
+    state = AppState(
+        library_root=tmp_path / "lib",
+        scan_fn=lambda path: ScanResult(root_path=str(path), platform="unknown", saves=[]),
+    )
+    state.begin_mount_scan(root)
+    prepared = state.prepare_mount_scan(root)
+    assert prepared.result.root_path == str(root)
+
+

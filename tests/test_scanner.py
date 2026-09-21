@@ -1215,3 +1215,24 @@ def test_nds_sibling_walk_skips_nintendo_and_system_dirs(
     assert "nintendo" not in iterdir_names
     assert "contents" not in iterdir_names
 
+
+def test_scan_reports_vita_progress(tmp_path: Path, vita_sfo_bytes: bytes):
+    for index in range(1, 4):
+        title_id = f"PCSE0000{index}"
+        sce_sys = tmp_path / "user" / "00" / "savedata" / title_id / "sce_sys"
+        sce_sys.mkdir(parents=True)
+        (sce_sys / "param.sfo").write_bytes(vita_sfo_bytes)
+
+    events = []
+
+    def on_progress(item):
+        events.append(item)
+
+    result = scan(tmp_path, progress=on_progress)
+    assert len(result.saves) == 3
+    assert events
+    assert any("PS Vita" in event.message for event in events)
+    detailed = [event for event in events if "/" in event.message and event.total >= 3]
+    assert detailed
+    assert detailed[-1].current == detailed[-1].total
+
