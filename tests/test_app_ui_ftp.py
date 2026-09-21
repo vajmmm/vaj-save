@@ -14,6 +14,7 @@ import pytest
 from vajsave.app_ui import build_app
 from vajsave.app_state import AppState
 from vajsave.ftp_fetch import ftp_cache_root
+from vajsave.library import load_app_config
 from vajsave.volume import FakeVolumeProvider
 
 from conftest import checkpoint_ftp_tree, fake_client_factory
@@ -158,3 +159,43 @@ def test_dialog_reports_pull_failure_without_selecting_cache(tk_root, tmp_path):
         assert "permission denied" in app.warning_label_var.get()
     finally:
         _dispose(app, tk_root)
+
+
+def test_remember_password_writes_ftp_password_only_when_flag_true(tmp_path):
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    state.configure_ftp(host="10.0.0.1", password="s3cret", remember_password=True)
+
+    saved = load_app_config()
+    assert saved.get("ftp_remember_password") is True
+    assert saved.get("ftp_password") == "s3cret"
+    assert state.ftp_remember_password is True
+    assert state._ftp_password == "s3cret"
+
+    state.configure_ftp(password="s3cret", remember_password=False)
+    saved = load_app_config()
+    assert saved.get("ftp_remember_password") is False
+    assert "ftp_password" not in saved
+    assert state.ftp_remember_password is False
+    assert state._ftp_password == "s3cret"
+
+
+def test_configure_ftp_default_keeps_password_in_memory_only(tmp_path):
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    state.configure_ftp(host="10.0.0.1", user="ftp", password="no-store")
+
+    saved = load_app_config()
+    assert "ftp_password" not in saved
+    assert saved.get("ftp_remember_password") in (False, None)
+    assert state._ftp_password == "no-store"
+    assert state.ftp_host == "10.0.0.1"
+
+
+def test_remembered_password_reloads_on_new_appstate(tmp_path):
+    first = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    first.configure_ftp(host="192.168.1.50", password="keep-me", remember_password=True)
+
+    fresh = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    assert fresh.ftp_remember_password is True
+    assert fresh._ftp_password == "keep-me"
+    assert fresh.current_ftp_preset().password == "keep-me"
+    assert fresh.ftp_host == "192.168.1.50"

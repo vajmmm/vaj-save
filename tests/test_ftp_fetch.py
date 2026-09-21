@@ -128,11 +128,15 @@ def test_failed_pull_keeps_previous_cache_intact(tmp_path: Path):
     assert good.ok
     saved_file = good.path / "3ds" / "Checkpoint" / "saves" / "0x011C4 Pokemon Moon" / "slot0" / "main"
 
+    changed = checkpoint_ftp_tree()
+    changed["switch"]["Checkpoint"]["saves"]["0100000000010000 Super Mario Odyssey"]["slot0"][
+        "main"
+    ] = b"ODYSSEY-SAVE-CHANGED"
     bad = pull_preset(
         _checkpoint_profile(),
         cache_root,
         client_factory=fake_client_factory(
-            checkpoint_ftp_tree(),
+            changed,
             fail_paths={"/switch/Checkpoint/saves/0100000000010000 Super Mario Odyssey/slot0/main"},
             error_message="connection reset",
         ),
@@ -662,3 +666,234 @@ def test_commit_failure_restores_previous_cache(tmp_path: Path, monkeypatch):
     # The previous complete cache was restored and no staging tree survived.
     assert saved.read_bytes() == b"MOON-SAVE"
     assert list(cache_root.glob(".*staging*")) == []
+
+
+# -- incremental skip list ---------------------------------------------------
+
+
+def _simple_profile() -> FtpProfile:
+    return FtpProfile(key="checkpoint", label="Checkpoint", path="/")
+
+
+def _retr_paths(client) -> list:
+    return [cmd[1] for cmd in client.commands if isinstance(cmd, tuple) and cmd[0] == "RETR"]
+
+
+class _CancelToken:
+    def __init__(self) -> None:
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+
+class _CancelAfterDownload(FakeRemoteFtpClient):
+    """Cancel the pull after ``after`` successful downloads."""
+
+    def __init__(self, tree, token, *, after: int = 1, **kwargs):
+        super().__init__(tree, **kwargs)
+        self.token = token
+        self.after = after
+        self._downloads = 0
+
+    def download(self, remote_path, local_path):
+        written = super().download(remote_path, local_path)
+        self._downloads += 1
+        if self._downloads >= self.after:
+            self.token.cancel()
+        return written
+
+
+def test_should_reuse_matches_size_and_mtime():
+    from vajsave.ftp_manifest import should_reuse
+
+    recorded = {"size": 8, "modified": "20260101120000"}
+    assert should_reuse(8, "20260101120000", recorded) is True
+    assert should_reuse(9, "20260101120000", recorded) is False
+    assert should_reuse(8, "20260102120000", recorded) is False
+    assert should_reuse(8, "20260101120000", None) is False
+
+
+def test_should_reuse_size_only_when_listing_mtime_missing():
+    from vajsave.ftp_manifest import should_reuse
+
+    # Both sides empty: size match is enough.
+    assert should_reuse(4, "", {"size": 4, "modified": ""}) is True
+    # LIST has no mtime: size-only heuristic still skips the download.
+    assert should_reuse(4, "", {"size": 4, "modified": "20260101120000"}) is True
+    assert should_reuse(5, "", {"size": 4, "modified": ""}) is False
+
+
+def test_manifest_round_trip_and_corrupt_file_is_empty(tmp_path: Path):
+    from vajsave.ftp_manifest import MANIFEST_NAME, load_manifest, save_manifest
+
+    cache = tmp_path / "checkpoint"
+    assert load_manifest(cache) == {}
+    files = {"game.sav": {"size": 4, "modified": "20260101120000"}}
+    assert save_manifest(cache, files) is True
+    assert (cache / MANIFEST_NAME).is_file()
+    assert load_manifest(cache) == files
+
+    (cache / MANIFEST_NAME).write_text("{not-json", encoding="utf-8")
+    assert load_manifest(cache) == {}
+
+
+def test_unchanged_file_is_copied_from_cache_not_downloaded(tmp_path: Path):
+    cache_root = ftp_cache_root(tmp_path / "lib")
+    tree = {"game.sav": b"SAVE"}
+    factory = fake_client_factory(tree, modified={"/game.sav": "20260101120000"})
+
+    first = pull_preset(_simple_profile(), cache_root, client_factory=factory)
+    assert first.ok
+    assert _retr_paths(factory.clients[0]) == ["/game.sav"]
+    from vajsave.ftp_manifest import MANIFEST_NAME, load_manifest
+
+    recorded = load_manifest(first.path)
+    assert recorded["game.sav"]["size"] == 4
+    assert recorded["game.sav"]["modified"] == "20260101120000"
+    assert (first.path / MANIFEST_NAME).is_file()
+
+    second = pull_preset(_simple_profile(), cache_root, client_factory=factory)
+    assert second.ok
+    assert _retr_paths(factory.clients[1]) == []
+    assert (second.path / "game.sav").read_bytes() == b"SAVE"
+    assert load_manifest(second.path)["game.sav"]["size"] == 4
+
+
+def test_size_change_downloads_again(tmp_path: Path):
+    cache_root = ftp_cache_root(tmp_path / "lib")
+    tree = {"game.sav": b"SAVE"}
+    factory = fake_client_factory(tree, modified={"/game.sav": "20260101120000"})
+    first = pull_preset(_simple_profile(), cache_root, client_factory=factory)
+    assert first.ok
+
+    tree["game.sav"] = b"SAVE!!"
+    second = pull_preset(_simple_profile(), cache_root, client_factory=factory)
+    assert second.ok
+    assert _retr_paths(factory.clients[1]) == ["/game.sav"]
+    assert (second.path / "game.sav").read_bytes() == b"SAVE!!"
+    from vajsave.ftp_manifest import load_manifest
+
+    assert load_manifest(second.path)["game.sav"]["size"] == 6
+
+
+def test_listing_without_mtime_skips_download_when_size_matches(tmp_path: Path):
+    cache_root = ftp_cache_root(tmp_path / "lib")
+    tree = {"game.sav": b"SAVE"}
+    first = pull_preset(
+        _simple_profile(),
+        cache_root,
+        client_factory=fake_client_factory(tree, modified={"/game.sav": "20260101120000"}),
+    )
+    assert first.ok
+
+    factory = fake_client_factory(tree)  # LIST has no mtime
+    second = pull_preset(_simple_profile(), cache_root, client_factory=factory)
+    assert second.ok
+    assert _retr_paths(factory.clients[0]) == []
+    assert (second.path / "game.sav").read_bytes() == b"SAVE"
+
+
+def test_failed_repull_keeps_old_tree_and_manifest(tmp_path: Path):
+    cache_root = ftp_cache_root(tmp_path / "lib")
+    tree = {"keep.sav": b"OLD", "gone.sav": b"X"}
+    good = pull_preset(
+        _simple_profile(), cache_root, client_factory=fake_client_factory(tree)
+    )
+    assert good.ok
+    from vajsave.ftp_manifest import load_manifest
+
+    recorded = load_manifest(good.path)
+    assert "keep.sav" in recorded
+
+    tree["gone.sav"] = b"XX"
+    bad = pull_preset(
+        _simple_profile(),
+        cache_root,
+        client_factory=fake_client_factory(
+            tree, fail_paths={"/gone.sav"}, error_message="connection reset"
+        ),
+    )
+    assert bad.ok is False
+    assert (good.path / "keep.sav").read_bytes() == b"OLD"
+    assert load_manifest(good.path) == recorded
+    assert list(cache_root.glob(".*staging*")) == []
+
+
+def test_cancelled_pull_keeps_old_tree_and_manifest(tmp_path: Path):
+    cache_root = ftp_cache_root(tmp_path / "lib")
+    tree = {"a.sav": b"AAA", "b.sav": b"BBB"}
+    good = pull_preset(
+        _simple_profile(), cache_root, client_factory=fake_client_factory(tree)
+    )
+    assert good.ok
+    from vajsave.ftp_manifest import load_manifest
+
+    recorded = load_manifest(good.path)
+    token = _CancelToken()
+    # Larger files force a download so cancel can fire mid-transfer.
+    changed = {"a.sav": b"aaaa", "b.sav": b"bbbb"}
+
+    def factory(profile):
+        client = _CancelAfterDownload(changed, token, after=1)
+        factory.clients.append(client)
+        return client
+
+    factory.clients = []
+    cancelled = pull_preset(_simple_profile(), cache_root, client_factory=factory, token=token)
+    assert cancelled.ok is False
+    assert "取消" in cancelled.error
+    assert (good.path / "a.sav").read_bytes() == b"AAA"
+    assert (good.path / "b.sav").read_bytes() == b"BBB"
+    assert load_manifest(good.path) == recorded
+    assert list(cache_root.glob(".*staging*")) == []
+
+
+def test_copy_failure_falls_back_to_download(tmp_path: Path, monkeypatch):
+    import shutil
+
+    import vajsave.ftp_fetch as ftp_fetch
+
+    cache_root = ftp_cache_root(tmp_path / "lib")
+    tree = {"game.sav": b"SAVE"}
+    first = pull_preset(
+        _simple_profile(), cache_root, client_factory=fake_client_factory(tree)
+    )
+    assert first.ok
+
+    real_copy = shutil.copy2
+
+    def boom(src, dst, *args, **kwargs):
+        raise OSError("copy blocked")
+
+    monkeypatch.setattr(ftp_fetch.shutil, "copy2", boom)
+    factory = fake_client_factory(tree)
+    second = pull_preset(_simple_profile(), cache_root, client_factory=factory)
+    assert second.ok
+    assert _retr_paths(factory.clients[0]) == ["/game.sav"]
+    assert (second.path / "game.sav").read_bytes() == b"SAVE"
+    monkeypatch.setattr(ftp_fetch.shutil, "copy2", real_copy)
+
+
+def test_remote_delete_is_not_copied_into_new_cache(tmp_path: Path):
+    cache_root = ftp_cache_root(tmp_path / "lib")
+    tree = {"keep.sav": b"KEEP", "drop.sav": b"DROP"}
+    first = pull_preset(
+        _simple_profile(), cache_root, client_factory=fake_client_factory(tree)
+    )
+    assert first.ok
+    assert (first.path / "drop.sav").is_file()
+
+    tree.pop("drop.sav")
+    second = pull_preset(
+        _simple_profile(), cache_root, client_factory=fake_client_factory(tree)
+    )
+    assert second.ok
+    assert (second.path / "keep.sav").read_bytes() == b"KEEP"
+    assert not (second.path / "drop.sav").exists()
+    from vajsave.ftp_manifest import load_manifest
+
+    assert "drop.sav" not in load_manifest(second.path)

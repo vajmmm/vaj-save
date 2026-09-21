@@ -86,11 +86,12 @@ class FtpSession:
         user: Optional[object] = None,
         password: Optional[str] = None,
         preset_key: Optional[str] = None,
+        remember_password: Optional[bool] = None,
     ) -> FtpProfile:
         """Update FTP connection settings.
 
-        ``host``/``port``/``user`` are persisted; the password is intentionally
-        kept in memory only so it is never written to ``config.json``.
+        ``host``/``port``/``user`` are persisted. The password is written to
+        ``config.json`` only when ``ftp_remember_password`` is true.
         """
         app = self.app
         if preset_key is not None:
@@ -103,12 +104,19 @@ class FtpSession:
                 app.ftp_port = parsed
         if user is not None:
             app.ftp_user = str(user).strip()
+        if remember_password is not None:
+            app.ftp_remember_password = bool(remember_password)
         if password is not None:
             app._ftp_password = str(password)
         config = app.settings.load()
         config["ftp_host"] = app.ftp_host
         config["ftp_port"] = app.ftp_port
         config["ftp_user"] = app.ftp_user
+        config["ftp_remember_password"] = bool(app.ftp_remember_password)
+        if app.ftp_remember_password:
+            config["ftp_password"] = app._ftp_password
+        else:
+            config.pop("ftp_password", None)
         app.settings.save(config)
         return self.current_ftp_preset()
 
@@ -129,7 +137,7 @@ class FtpSession:
         app.volumes.append(volume)
         return volume
 
-    def pull_ftp_saves(self) -> FtpPullResult:
+    def pull_ftp_saves(self, token: object = None) -> FtpPullResult:
         """Pull the active preset into its cache and scan it as a device.
 
         A failed pull is reported as a warning and leaves the current device
@@ -141,6 +149,7 @@ class FtpSession:
             profile,
             ftp_cache_root(app.library_root),
             client_factory=app._ftp_client_factory,
+            token=token,
         )
         if not result.ok or result.path is None:
             message = result.error or "未知错误"
