@@ -5,8 +5,9 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Union
 
+from .device_registry import bound_sources_from_result, device_key_for
 from .library import (
     SaveBackupStatus,
     classify_save_status,
@@ -99,14 +100,74 @@ class ScanSession:
         with self.app._progress_lock:
             self.app._scan_progress = IDLE_SCAN_PROGRESS
 
-    def _invoke_scan(self, path: Path) -> ScanResult:
+    def _volume_extra(self, path: Path) -> Optional[Dict[str, Any]]:
+        for volume in self.app.volumes:
+            try:
+                if Path(volume.mount_point) == path:
+                    return volume.extra
+            except OSError:
+                continue
+        return None
+
+    def _volume_label(self, path: Path) -> str:
+        for volume in self.app.volumes:
+            try:
+                if Path(volume.mount_point) == path:
+                    return volume.name or path.name or str(path)
+            except OSError:
+                continue
+        return path.name or str(path)
+
+    def _invoke_scan(
+        self,
+        path: Path,
+        *,
+        bound_sources: Sequence[Any] | None = None,
+    ) -> ScanResult:
         def on_progress(item: ScanProgress) -> None:
             self.report_scan_progress(item)
 
-        try:
-            return self.app.scan_fn(path, progress=on_progress)
-        except TypeError:
-            return self.app.scan_fn(path)
+        attempts = []
+        if bound_sources:
+            attempts.append(
+                lambda: self.app.scan_fn(
+                    path, progress=on_progress, bound_sources=bound_sources
+                )
+            )
+        attempts.append(lambda: self.app.scan_fn(path, progress=on_progress))
+        attempts.append(lambda: self.app.scan_fn(path))
+        last_error: Optional[TypeError] = None
+        for attempt in attempts:
+            try:
+                return attempt()
+            except TypeError as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        raise TypeError("scan_fn rejected all call conventions")
+
+    def _commit_bindings(
+        self,
+        path: Path,
+        result: ScanResult,
+        *,
+        key: str,
+        refresh: bool,
+    ) -> None:
+        registry = self.app.device_registry
+        sources = bound_sources_from_result(path, result)
+        label = self._volume_label(path)
+        existing = registry.get(key)
+        if refresh and existing:
+            present = {item.relative_root: item for item in registry.usable_sources(key, path)}
+            for item in sources:
+                present[item.relative_root] = item
+            registry.record(key, label=label, sources=list(present.values()), merge=True)
+            pruned = registry.usable_sources(key, path)
+            if len(pruned) != len(registry.get(key)):
+                registry.record(key, label=label, sources=pruned, merge=False)
+        else:
+            registry.record(key, label=label, sources=sources, merge=False)
 
     def begin_mount_scan(self, mount_point: Union[Path, str], auto: bool = False) -> Path:
         """在主线程切换到待扫描设备，并清除上一设备的展示状态。"""
@@ -124,11 +185,18 @@ class ScanSession:
         self.report_scan_progress(ScanProgress(message="正在扫描…", current=0, total=0))
         return path
 
-    def prepare_mount_scan(self, mount_point: Union[Path, str]) -> PreparedMountScan:
+    def prepare_mount_scan(
+        self, mount_point: Union[Path, str], *, refresh: bool = False
+    ) -> PreparedMountScan:
         """扫描并计算廉价备份状态（不计算哈希）；可在工作线程运行。"""
         path = Path(mount_point)
+        extra = self._volume_extra(path)
+        key = device_key_for(path, extra)
+        bound = None
+        if key and not refresh:
+            bound = self.app.device_registry.usable_sources(key, path) or None
         try:
-            res = self._invoke_scan(path)
+            res = self._invoke_scan(path, bound_sources=bound)
         except Exception as e:
             res = ScanResult(
                 root_path=str(path),
@@ -137,6 +205,9 @@ class ScanSession:
                 saves=[],
                 warnings=[f"扫描异常: {e}"],
             )
+        else:
+            if key and bound is None:
+                self._commit_bindings(path, res, key=key, refresh=refresh)
         catalog = load_catalog(self.app.library_root)
         statuses: Dict[str, SaveBackupStatus] = {}
         for entry in res.saves:
@@ -277,14 +348,17 @@ class ScanSession:
         self.clear_scan_progress()
         return True
 
-    def select_mount(self, mount_point: Union[Path, str], auto: bool = False) -> ScanResult:
+    def select_mount(
+        self, mount_point: Union[Path, str], auto: bool = False, refresh: bool = False
+    ) -> ScanResult:
         """Select a volume or path synchronously and update current result.
 
         ``auto`` marks a selection the app made on the user's behalf; only those
         may later be replaced by a better device (see ``ensure_mount_selected``).
+        ``refresh`` ignores stored bindings and full-scans, then merges roots.
         """
         path = self.begin_mount_scan(mount_point, auto=auto)
-        prepared_scan = self.prepare_mount_scan(path)
+        prepared_scan = self.prepare_mount_scan(path, refresh=refresh)
         self.apply_prepared_mount_scan(prepared_scan)
         prepared_statuses = self.prepare_backup_statuses(prepared_scan.result.saves)
         self.apply_backup_statuses(prepared_statuses)

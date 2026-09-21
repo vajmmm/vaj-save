@@ -996,7 +996,7 @@ class VajSaveWindow(QMainWindow):
         self.poll_timer.setInterval(250)
         self.poll_timer.timeout.connect(self._poll_state)
         self.poll_timer.start()
-        QTimer.singleShot(80, self._select_initial_device)
+        QTimer.singleShot(0, self._select_initial_device)
 
     def _build_ui(self) -> None:
         shell = QWidget()
@@ -1356,7 +1356,7 @@ class VajSaveWindow(QMainWindow):
         self.refresh_all()
 
         def scan_task():
-            return self.state.prepare_mount_scan(path)
+            return self.state.prepare_mount_scan(path, refresh=force)
 
         def scan_completed(prepared) -> None:
             if generation != self._device_scan_generation:

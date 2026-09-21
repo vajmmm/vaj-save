@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, List, Optional, Tuple, Union
 
 from .models import VolumeInfo
 from .volume import watch_volumes
+from .volume_id import volume_id_for
 
 if TYPE_CHECKING:
     from .app_state import AppState
@@ -60,6 +61,14 @@ class DeviceSession:
                 for existing in app.volumes
             ):
                 app.volumes.append(volume)
+        for volume in app.volumes:
+            extra = dict(volume.extra or {})
+            if extra.get("volume_id") or extra.get("ftp") or extra.get("custom"):
+                continue
+            volume_id = volume_id_for(volume.mount_point, extra)
+            if volume_id:
+                extra["volume_id"] = volume_id
+                volume.extra = extra
         return app.volumes
 
     def register_custom_path(self, path: Union[Path, str]) -> Path:
@@ -74,6 +83,7 @@ class DeviceSession:
                     name=f"文件夹: {name}",
                     mount_point=custom_path,
                     is_removable=False,
+                    extra={"custom": True},
                 )
             )
         return custom_path

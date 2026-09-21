@@ -2,6 +2,7 @@ import os
 import stat
 from pathlib import Path
 import pytest
+from vajsave.device_registry import BoundSource
 from vajsave.scanner import scan, guess_platform
 from conftest import build_sfo
 
@@ -1235,4 +1236,25 @@ def test_scan_reports_vita_progress(tmp_path: Path, vita_sfo_bytes: bytes):
     detailed = [event for event in events if "/" in event.message and event.total >= 3]
     assert detailed
     assert detailed[-1].current == detailed[-1].total
+
+
+def test_bound_sources_scans_only_given_directories(tmp_path: Path, psp_sfo_bytes: bytes):
+    save_dir = tmp_path / "PSP" / "SAVEDATA" / "ULJM05800"
+    save_dir.mkdir(parents=True)
+    (save_dir / "PARAM.SFO").write_bytes(psp_sfo_bytes)
+    (save_dir / "DATA.BIN").write_bytes(b"psp")
+    saver = tmp_path / "SAVER"
+    saver.mkdir()
+    (saver / "decoy.sav").write_bytes(b"gba")
+
+    bound = scan(
+        tmp_path,
+        bound_sources=[BoundSource("psp", "psp", "PSP/SAVEDATA")],
+    )
+    assert {entry.platform for entry in bound.saves} == {"psp"}
+    assert not any(entry.platform == "gba" for entry in bound.saves)
+
+    full = scan(tmp_path)
+    platforms = {entry.platform for entry in full.saves}
+    assert platforms == {"psp", "gba"}
 

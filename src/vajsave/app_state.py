@@ -15,6 +15,7 @@ from .artwork import (
     normalize_protocol,
 )
 from .backend import StorageBackend
+from .device_registry import DeviceRegistry
 from .device_session import DeviceSession
 from .enrichment import UNSET as _UNSET
 from .enrichment import Enrichment
@@ -129,6 +130,7 @@ class AppState:
         self._watch_thread: Optional[threading.Thread] = None
         self._stop_event: Optional[threading.Event] = None
 
+        self.device_registry = DeviceRegistry(self.settings.config_dir() / "devices.json")
         self.devices = DeviceSession(self)
         self.scans = ScanSession(self)
         self.library_actions = LibraryActions(self)
@@ -418,8 +420,10 @@ class AppState:
     def begin_mount_scan(self, mount_point: Union[Path, str], auto: bool = False) -> Path:
         return self.scans.begin_mount_scan(mount_point, auto=auto)
 
-    def prepare_mount_scan(self, mount_point: Union[Path, str]) -> PreparedMountScan:
-        return self.scans.prepare_mount_scan(mount_point)
+    def prepare_mount_scan(
+        self, mount_point: Union[Path, str], refresh: bool = False
+    ) -> PreparedMountScan:
+        return self.scans.prepare_mount_scan(mount_point, refresh=refresh)
 
     def apply_prepared_mount_scan(self, prepared: PreparedMountScan) -> ScanResult:
         return self.scans.apply_prepared_mount_scan(prepared)
@@ -432,8 +436,10 @@ class AppState:
     def apply_backup_statuses(self, prepared: PreparedBackupStatuses) -> bool:
         return self.scans.apply_backup_statuses(prepared)
 
-    def select_mount(self, mount_point: Union[Path, str], auto: bool = False) -> ScanResult:
-        return self.scans.select_mount(mount_point, auto=auto)
+    def select_mount(
+        self, mount_point: Union[Path, str], auto: bool = False, refresh: bool = False
+    ) -> ScanResult:
+        return self.scans.select_mount(mount_point, auto=auto, refresh=refresh)
 
     def register_custom_path(self, path: Union[Path, str]) -> Path:
         return self.devices.register_custom_path(path)

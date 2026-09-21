@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Set, Tuple, Un
 
 from .models import VolumeInfo
 from .scanner import guess_platform
+from .volume_id import format_windows_serial
 
 try:  # pragma: no cover - platform dependent
     import ctypes
@@ -13,6 +14,11 @@ try:  # pragma: no cover - platform dependent
 except Exception:  # pragma: no cover - ctypes is stdlib, but stay defensive
     ctypes = None  # type: ignore[assignment]
     _create_unicode_buffer = None  # type: ignore[assignment]
+
+# Captured at import so tests can patch ``vajsave.volume.ctypes`` without
+# losing ``c_uint32`` / ``byref`` needed to read the volume serial DWORD.
+_C_UINT32 = getattr(ctypes, "c_uint32", None) if ctypes is not None else None
+_BYREF = getattr(ctypes, "byref", None) if ctypes is not None else None
 
 # GetDriveTypeW return codes.
 DRIVE_UNKNOWN = 0
@@ -31,16 +37,20 @@ _DRIVE_TYPE_TEXT = {
 }
 
 
-def _read_volume_label(kernel32: Any, root_path: str) -> str:
-    """Read a volume label through ``GetVolumeInformationW``, never raising."""
+def _read_volume_identity(kernel32: Any, root_path: str) -> Tuple[str, Optional[str]]:
+    """Read label + serial DWORD through ``GetVolumeInformationW``, never raising."""
     try:
         buffer = _create_unicode_buffer(261)
+        holder = _C_UINT32(0) if _C_UINT32 is not None else None
+        serial_arg = _BYREF(holder) if holder is not None and _BYREF is not None else None
         kernel32.GetVolumeInformationW(
-            root_path, buffer, len(buffer), None, None, None, None, 0
+            root_path, buffer, len(buffer), serial_arg, None, None, None, 0
         )
-        return buffer.value or ""
+        label = buffer.value or ""
+        volume_id = format_windows_serial(int(holder.value)) if holder is not None else None
+        return label, volume_id
     except Exception:
-        return ""
+        return "", None
 
 
 def _enumerate_windows_drives(kernel32: Any) -> List[VolumeInfo]:
@@ -70,7 +80,7 @@ def _enumerate_windows_drives(kernel32: Any) -> List[VolumeInfo]:
         if drive_type not in _KEPT_DRIVE_TYPES:
             continue
 
-        label = _read_volume_label(kernel32, root_path)
+        label, volume_id = _read_volume_identity(kernel32, root_path)
         stripped = label.strip()
         if stripped:
             name = f"{letter}: {stripped}"
@@ -82,12 +92,16 @@ def _enumerate_windows_drives(kernel32: Any) -> List[VolumeInfo]:
         except Exception:
             continue
 
+        extra: Dict[str, Any] = {"drive_type": drive_type, "label": label}
+        if volume_id:
+            extra["volume_id"] = volume_id
+
         entries.append(
             (drive_type, letter, VolumeInfo(
                 name=name,
                 mount_point=mount_point,
                 is_removable=(drive_type == DRIVE_REMOVABLE),
-                extra={"drive_type": drive_type, "label": label},
+                extra=extra,
             ))
         )
 

@@ -373,6 +373,8 @@ def scan_vita(
             ),
         ]
     )
+    if root.name.lower() == "savedata":
+        vita_dirs = collect_unique_dirs([*vita_dirs, root])
     for vita_dir in vita_dirs:
         _scan_vita_native_dir(
             vita_dir,
@@ -400,6 +402,8 @@ def scan_vita(
             ),
         ]
     )
+    if root.name.lower() == "savegames":
+        vexp_dirs = collect_unique_dirs([*vexp_dirs, root])
     for vexp_dir in vexp_dirs:
         _scan_vita_exported_dir(
             vexp_dir,

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, List, Optional, Set, Union
+from typing import Callable, List, Optional, Sequence, Set, Union
 
+from .device_registry import BoundSource
 from .models import SaveEntry, SaveSource, ScanResult
 from .covers import find_embedded_cover
 from .platforms import gba, nds, psp, switch, threeds, vita
@@ -199,16 +200,64 @@ PLATFORM_PROGRESS_LABELS = {
 }
 
 
+def _bound_dir(root: Path, relative_root: str) -> Optional[Path]:
+    rel = (relative_root or "").strip().replace("\\", "/")
+    if not rel or rel == ".":
+        return root
+    parts = Path(rel).parts
+    if not parts or ".." in parts:
+        return None
+    return root.joinpath(*parts)
+
+
+def _run_bound_scanner(
+    scan_fn: Callable[..., None],
+    root: Path,
+    root_resolved: Path,
+    warnings: List[str],
+    sources: List[SaveSource],
+    saves: List[SaveEntry],
+    seen_source_roots: Set[Path],
+    seen_save_paths: Set[Path],
+    bound_items: Sequence[BoundSource],
+) -> None:
+    """Run one platform scanner only against the bound relative directories."""
+    for item in bound_items:
+        bound_dir = _bound_dir(root, item.relative_root)
+        if bound_dir is None or not _path_is_dir(bound_dir):
+            continue
+        scan_fn(
+            bound_dir,
+            root_resolved,
+            warnings,
+            sources,
+            saves,
+            seen_source_roots,
+            seen_save_paths,
+            standard_root=True,
+        )
+
+
 def scan(
     root_path: Union[Path, str],
     progress: Optional[Callable[[ScanProgress], None]] = None,
+    *,
+    bound_sources: Sequence[BoundSource] | None = None,
 ) -> ScanResult:
-    """Scan a root directory (e.g. mounted USB volume or SD card) and list saves."""
+    """Scan a root directory (e.g. mounted USB volume or SD card) and list saves.
+
+    ``bound_sources=None`` preserves the full-scan behaviour. A non-empty list
+    runs only the matching platform scanners against those relative directories
+    so the rest of the volume is not walked.
+    """
     with scan_progress_callback(progress):
-        return _scan_root(root_path)
+        return _scan_root(root_path, bound_sources=bound_sources)
 
 
-def _scan_root(root_path: Union[Path, str]) -> ScanResult:
+def _scan_root(
+    root_path: Union[Path, str],
+    bound_sources: Sequence[BoundSource] | None = None,
+) -> ScanResult:
     root = Path(root_path)
     warnings: List[str] = []
 
@@ -248,10 +297,17 @@ def _scan_root(root_path: Union[Path, str]) -> ScanResult:
         ("gba", gba.scan_gba),
         ("nds", nds.scan_nds),
     )
-    detected = _detected_platforms(root)
-    # Recognised device roots use only scanners backed by an explicit shallow
-    # fingerprint. Unknown paths retain the broad wrapper-compatible behaviour.
-    scanners = [item for item in all_scanners if not detected or item[0] in detected]
+    bound_list = [item for item in (bound_sources or ()) if item is not None]
+    if bound_list:
+        allowed = {item.platform for item in bound_list}
+        scanners = [item for item in all_scanners if item[0] in allowed]
+        standard_root = True
+    else:
+        detected = _detected_platforms(root)
+        # Recognised device roots use only scanners backed by an explicit shallow
+        # fingerprint. Unknown paths retain the broad wrapper-compatible behaviour.
+        scanners = [item for item in all_scanners if not detected or item[0] in detected]
+        standard_root = bool(detected)
     with scan_cache():
         total = len(scanners)
         for index, (platform_id, scan_fn) in enumerate(scanners, start=1):
@@ -261,16 +317,29 @@ def _scan_root(root_path: Union[Path, str]) -> ScanResult:
                 index - 1,
                 total,
             )
-            args = (
-                root,
-                root_resolved,
-                warnings,
-                sources,
-                saves,
-                seen_source_roots,
-                seen_save_paths,
-            )
-            scan_fn(*args, standard_root=bool(detected))
+            if bound_list:
+                _run_bound_scanner(
+                    scan_fn,
+                    root,
+                    root_resolved,
+                    warnings,
+                    sources,
+                    saves,
+                    seen_source_roots,
+                    seen_save_paths,
+                    [item for item in bound_list if item.platform == platform_id],
+                )
+            else:
+                scan_fn(
+                    root,
+                    root_resolved,
+                    warnings,
+                    sources,
+                    saves,
+                    seen_source_roots,
+                    seen_save_paths,
+                    standard_root=standard_root,
+                )
             emit_scan_progress(
                 f"正在扫描 {label}… 已发现 {len(saves)} 个存档",
                 index,

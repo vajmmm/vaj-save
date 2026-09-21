@@ -41,9 +41,15 @@ def _fake_kernel32(drive_specs, failing_type=(), logical_drives_error=False):
                 raise OSError("GetDriveTypeW failed")
             return drive_specs[letter][0]
 
-        def GetVolumeInformationW(self, root, buffer, *args):
+        def GetVolumeInformationW(self, root, buffer, n=0, serial=None, *args):
             letter = root[0].upper()
-            buffer.value = drive_specs[letter][1]
+            spec = drive_specs[letter]
+            buffer.value = spec[1]
+            serial_value = spec[2] if len(spec) > 2 else 0xABCD1234
+            if serial is not None:
+                obj = getattr(serial, "_obj", serial)
+                if hasattr(obj, "value"):
+                    obj.value = serial_value
             return True
 
     return _FakeKernel32()
@@ -149,8 +155,10 @@ def test_enumerate_windows_drives_bitmask_and_volumeinfo():
 
     assert by_letter["F"].extra["drive_type"] == 2
     assert by_letter["F"].extra["label"] == "KINGSTON"
+    assert by_letter["F"].extra["volume_id"] == "win:ABCD1234"
     assert by_letter["C"].extra["drive_type"] == 3
     assert by_letter["C"].extra["label"] == ""
+    assert "usb" not in by_letter["F"].extra
 
 
 def test_enumerate_windows_drives_removable_before_fixed():

@@ -230,7 +230,10 @@ def scan_threeds(
 
     # Encrypted Nintendo 3DS SD container (card root only, no Checkpoint)
     has_3ds_cp = any(s.source_id == "3ds_checkpoint" for s in sources)
-    n3ds_dir = root / "Nintendo 3DS"
+    if root.name == "Nintendo 3DS":
+        n3ds_dir = root
+    else:
+        n3ds_dir = root / "Nintendo 3DS"
     if not has_3ds_cp and n3ds_dir.is_dir() and is_safe_path(n3ds_dir, root_resolved):
         sources.append(
             SaveSource(
