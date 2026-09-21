@@ -4,7 +4,7 @@
 
 ## 目标
 
-在保持只读、不写掌机的前提下，补齐日常使用缺口，并把已经过厚的 `AppState` 拆成可独立测试的服务。完成后用户可以：按版本删除、把 ZIP 导回本地库、看着进度备份并取消、在 GB/GBC 独立机种下管理存档、增量拉取 FTP，以及在 Qt 里使用收藏、ROM 候选、备份有更新、恢复目录记忆和插入后自动备份。
+在保持只读、不写掌机的前提下，补齐日常使用缺口，并把已经过厚的 `AppState` 拆成可独立测试的服务。完成后用户可以：按版本删除、把 ZIP 导回本地库、看着进度备份并取消、在 GB/GBC 独立机种下管理存档、增量拉取 FTP、用卡上的文件系统卷序列号绑定存档根目录以免每次全盘探测，以及在 Qt 里使用收藏、ROM 候选、备份有更新、恢复目录记忆和插入后自动备份。
 
 ## 非目标
 
@@ -14,6 +14,8 @@
 - 把 `qt_ui.py` 里的画廊/货架再拆一遍（只把对话框和任务接线拆走）
 - 系统钥匙串；FTP 密码可选写入 `config.json`
 - 云同步、备份加密
+- 用 USB 读卡器/转接头的硬件 ID 识别设备（同一只转接头插不同卡会撞号）
+- 用卷标或盘符做主标识
 
 ## 约束
 
@@ -36,8 +38,9 @@
 | 服务 | 新文件 | 职责 |
 |------|--------|------|
 | SettingsStore | `src/vajsave/settings_store.py` | 读写 `config.json`：备份库、ROM 目录、libretro、FTP 主机/端口/用户/可选密码、LLM、上次恢复目录、自动备份开关 |
-| DeviceSession | `src/vajsave/device_session.py` | 卷列表、自定义目录、首选可移动设备、热插拔事件应用到卷列表 |
-| ScanSession | `src/vajsave/scan_session.py` | `begin/prepare/apply` 扫描与备份状态哈希 |
+| DeviceSession | `src/vajsave/device_session.py` | 卷列表、自定义目录、首选可移动设备、热插拔、读取卷序列号并交给 DeviceRegistry |
+| DeviceRegistry | `src/vajsave/device_registry.py` | 卷序列号 → 相对存档根目录的持久绑定 |
+| ScanSession | `src/vajsave/scan_session.py` | `begin/prepare/apply` 扫描与备份状态哈希；命中绑定则只扫已知目录 |
 | LibraryActions | `src/vajsave/library_actions.py` | 备份、恢复、导出、删除游戏/版本、导入 ZIP、备注、收藏、可见列表过滤所需的目录读写 |
 | FtpSession | `src/vajsave/ftp_session.py` | 预设、配置、增量拉取 |
 | Enrichment | `src/vajsave/enrichment.py` | 身份、元数据、封面、LLM 消歧 |
@@ -237,7 +240,72 @@ Libretro：
 
 ---
 
-## 6. FTP 增量与记住密码
+## 6. 设备卷绑定
+
+识别的是 **卡上的文件系统**，不是 USB 转接头。同一张 TF/SD 换读卡器或走机内 UMS，序列号不变；同一只转接头换另一张卡，序列号不同。
+
+### 标识
+
+`src/vajsave/volume_id.py` 只负责读号，失败返回 `None`，不抛给 UI。
+
+| 系统 | 来源 |
+|------|------|
+| Windows | `GetVolumeInformationW` 的卷序列号（现有枚举已调用该 API，补读 DWORD，格式 `win:{8位十六进制}`） |
+| macOS | 卷 UUID（`getattrlist` ATTR_VOL_UUID，失败则忽略绑定） |
+| Linux | 该挂载点的文件系统 UUID（`findmnt -n -o UUID`，失败则忽略绑定） |
+
+没有稳定序列号 → 这次仍全量扫描，不写绑定。不用卷标、盘符、USB VID/PID 凑弱指纹。
+
+自定义文件夹（「添加设备」）用解析后的绝对路径当键，前缀 `path:`。FTP 缓存用 `ftp:{preset_key}`，不走卷号。
+
+### 存储
+
+与 `config.json` 同级的 `devices.json`（`SettingsStore` 的配置目录，由 `DeviceRegistry` 读写）：
+
+```json
+{
+  "format": "vaj-save-devices",
+  "format_version": 1,
+  "devices": {
+    "win:ABCD1234": {
+      "label": "SWITCH SD",
+      "updated_at": "2026-09-21T12:00:00",
+      "sources": [
+        {
+          "platform": "switch",
+          "source_id": "switch_checkpoint",
+          "relative_root": "switch/Checkpoint/saves"
+        }
+      ]
+    }
+  }
+}
+```
+
+`relative_root` 相对挂载根，POSIX 斜杠。写入前验证相对路径不含 `..`。原子写，损坏则当空表。
+
+### 扫描
+
+第一次（或无绑定 / 绑定目录全部失踪）：现有全量扫描。成功后把 `ScanResult.sources` 转成相对路径写入该卷记录。一条卷可有多个 source（Vita + Adrenaline PSP）。
+
+之后插入同一张卡：
+
+1. 读卷序列号
+2. 绑定里至少有一个 `mount / relative_root` 仍是目录
+3. `scan(root, bound_sources=...)` 只跑这些目录对应的平台扫描器，枚举其中存档（新游戏会出现）
+4. 跳过其它机种的全盘探测
+
+「刷新设备」：忽略绑定做全量扫描，用新的 source 列表 **合并** 进该卷记录（不删仍存在的旧目录；目录已不存在的条目丢掉）。
+
+`scanner.scan` 增加可选参数 `bound_sources: Sequence[BoundSource] | None = None`。缺省行为与现在完全一致。
+
+### 与恢复目标
+
+`suggested_restore_dir` 优先用当前卷绑定里、与该存档 `platform`/`source_id` 匹配且仍存在的 `relative_root`，再回退到规格第 8 节的机种默认路径和 `last_restore_dir`。
+
+---
+
+## 7. FTP 增量与记住密码
 
 ### 增量
 
@@ -277,7 +345,7 @@ FTP 对话框增加「记住密码」。
 
 ---
 
-## 7. Qt 接线与恢复目标
+## 8. Qt 接线与恢复目标
 
 从 `qt_ui.py` 抽出 `src/vajsave/qt_dialogs.py`：设置、FTP、LLM、帮助、设备选择、无清单 ZIP 导入。窗口类只组布局和转发。
 
@@ -306,14 +374,15 @@ Dock：本地库模式显示「导入 ZIP」。平台按钮含 GB/GBC。
 
 `AppState.suggested_restore_dir(entry) -> Path | None`：
 
-1. 当前挂载存在且非本地库模式时，按机种找已存在的目录：PSP `PSP/SAVEDATA`，Vita `user/00/savedata` 或 `ux0/user/00/savedata`，Switch Checkpoint / JKSV，3DS Checkpoint / JKSV/Saves，GBA `SAVER` 或 `GBASYS/SAVE`，NDS `roms/nds/saves`，GB `roms/gb/saves`，GBC `roms/gbc/saves`
-2. 否则用 `last_restore_dir`（仍存在时）
+1. 当前挂载有卷绑定且非本地库模式时，用匹配该存档机种/source 且仍存在的相对根目录
+2. 否则按机种找已存在的目录：PSP `PSP/SAVEDATA`，Vita `user/00/savedata` 或 `ux0/user/00/savedata`，Switch Checkpoint / JKSV，3DS Checkpoint / JKSV/Saves，GBA `SAVER` 或 `GBASYS/SAVE`，NDS `roms/nds/saves`，GB `roms/gb/saves`，GBC `roms/gbc/saves`
+3. 否则用 `last_restore_dir`（仍存在时）
 
 文件对话框从该路径打开。恢复成功后写入 `last_restore_dir`。确认框保留：「将所选版本复制到指定文件夹？不会写入掌机。」
 
 ---
 
-## 8. 错误处理
+## 9. 错误处理
 
 | 情况 | 行为 |
 |------|------|
@@ -325,10 +394,13 @@ Dock：本地库模式显示「导入 ZIP」。平台按钮含 GB/GBC。
 | FTP 中途失败/取消 | 旧缓存保留 |
 | GB 扫描权限错误 | 写入 `ScanResult.warnings`，不抛到 UI |
 | 记住的 FTP 密码读失败 | 视为未记住，对话框留空 |
+| 读不到卷序列号 | 全量扫描，不写 `devices.json` |
+| 绑定目录全部失踪 | 全量扫描，扫描成功后重写该卷记录 |
+| `devices.json` 损坏 | 当作空表，下一次成功扫描再写 |
 
 ---
 
-## 9. 测试
+## 10. 测试
 
 TDD：每个新模块先写失败测试。
 
@@ -339,16 +411,21 @@ TDD：每个新模块先写失败测试。
 - `test_platforms_gb.py` / `test_platforms_gbc.py`：roms 布局、同名 sav、SAVER 按 ROM 后缀分流、无 ROM 的 SAVER 仍为 GBA
 - `test_ftp_fetch.py` 增量：未改文件不调 download、改 size 会下载、失败保留旧树、取消保留旧树
 - `test_app_state.py`：记住密码开关、恢复目录建议、自动备份默认关
+- `test_device_registry.py`：相对路径往返、拒绝 `..`、损坏文件当空表、合并刷新、目录失踪则全量
+- `test_volume_id.py`：Windows 序列号格式、读失败为 None；不把 USB 适配器信息写入键
+- `test_scanner.py`：`bound_sources` 只扫描给定目录且缺省参数行为不变
 - Qt：对话框浏览按钮与候选绑定用现有 Qt 测试风格，能无显示环境跑的才加
 
 ---
 
-## 10. 文件清单
+## 11. 文件清单
 
 新建：
 
 - `src/vajsave/settings_store.py`
 - `src/vajsave/device_session.py`
+- `src/vajsave/device_registry.py`
+- `src/vajsave/volume_id.py`
 - `src/vajsave/scan_session.py`
 - `src/vajsave/library_actions.py`
 - `src/vajsave/ftp_session.py`
@@ -375,6 +452,7 @@ TDD：每个新模块先写失败测试。
 - `src/vajsave/ftp_fetch.py`
 - `src/vajsave/remote_ftp.py`（如需从 LIST 带出 size/modified）
 - `src/vajsave/scanner.py`
+- `src/vajsave/volume.py`（Windows 枚举把卷序列号写入 `VolumeInfo.extra["volume_id"]`）
 - `src/vajsave/rom_formats.py`
 - `src/vajsave/identity/roms.py`（GB 头偏移）
 - `src/vajsave/identity/resolver.py`
@@ -386,15 +464,16 @@ TDD：每个新模块先写失败测试。
 
 ---
 
-## 11. 实现顺序
+## 12. 实现顺序
 
 1. 拆分 AppState（行为不变，全量测试绿）
-2. `delete_snapshot` + 抽屉按钮
-3. ZIP 清单导出 / 导入
-4. `jobs` + `backup_jobs` + 备份有更新 + 进度取消
-5. GB/GBC 扫描、身份、Dock、设置
-6. FTP 增量 + 记住密码 + 后台进度
-7. 收藏 / ROM 候选 / 设置浏览 / 菜单 / 恢复目录 / 自动备份
-8. README / DESIGN / 帮助文案
+2. 卷序列号 + `DeviceRegistry` + 绑定扫描（`scanner.scan(..., bound_sources=)`）
+3. `delete_snapshot` + 抽屉按钮
+4. ZIP 清单导出 / 导入
+5. `jobs` + `backup_jobs` + 备份有更新 + 进度取消
+6. GB/GBC 扫描、身份、Dock、设置
+7. FTP 增量 + 记住密码 + 后台进度
+8. 收藏 / ROM 候选 / 设置浏览 / 菜单 / 恢复目录（含绑定根） / 自动备份
+9. README / DESIGN / 帮助文案
 
-每步可单独测试。Qt 接线集中在步骤 2、3、4、7，避免每步都改 `qt_ui.py` 的同一大段。
+每步可单独测试。Qt 接线集中在步骤 3、4、5、8，避免每步都改 `qt_ui.py` 的同一大段。
