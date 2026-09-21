@@ -13,11 +13,11 @@ import pytest
 from PySide6.QtCore import QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QImage, QPainter, QPixmap
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton
+from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QLineEdit, QPushButton
 
 from vajsave.app_state import AppState
 from vajsave.artwork import ArtworkResolution, PLACEHOLDER, SOURCE_DOWNLOADED
-from vajsave.library import Snapshot, backup_save, load_keep_last
+from vajsave.library import backup_save
 from vajsave.metadata import GameMetadata
 from vajsave.models import SaveEntry, ScanResult, VolumeInfo
 from vajsave.qt_ui import (
@@ -676,5 +676,193 @@ def test_scan_progress_bar_visible_during_slow_scan(qt_app, tmp_path: Path, monk
         assert "正在扫描" in window.status_text.text()
     finally:
         release.set()
+        window.close()
+
+
+def test_drawer_omits_dead_view_all_link(qt_app, qt_state):
+    window = VajSaveWindow(qt_state)
+    try:
+        labels = [widget.text() for widget in window.drawer.findChildren(QLabel)]
+        assert "查看全部" not in labels
+        assert window.drawer.delete_version.text() == "删除此版本"
+        assert window.drawer.star.objectName() == "starButton"
+    finally:
+        window.close()
+
+
+def test_topbar_exposes_starred_filter_and_backup_updated(qt_app, qt_state):
+    window = VajSaveWindow(qt_state)
+    try:
+        assert window.starred_only.text() == "只看收藏"
+        assert window.backup_updated.text() == "备份有更新"
+        assert window.cancel_job.text() == "取消"
+        assert window.cancel_job.isHidden()
+        window.starred_only.click()
+        assert qt_state.starred_only is True
+    finally:
+        window.close()
+
+
+def test_dock_import_zip_visible_only_in_library_mode(qt_app, qt_state):
+    window = VajSaveWindow(qt_state)
+    try:
+        assert window.dock.import_zip.isHidden()
+        qt_state.set_library_mode(True)
+        window.refresh_all()
+        assert not window.dock.import_zip.isHidden()
+        assert window.dock.import_zip.text() == "导入 ZIP"
+    finally:
+        window.close()
+
+
+def test_main_settings_exposes_auto_backup_gb_gbc_and_browse(qt_app, qt_state):
+    window = VajSaveWindow(qt_state)
+    found = {}
+
+    def inspect_dialog():
+        dialog = QApplication.activeModalWidget()
+        found["auto"] = dialog.findChild(QCheckBox, "autoBackupOnInsert")
+        found["gb"] = dialog.findChild(QLineEdit, "gbRomDirectory")
+        found["gbc"] = dialog.findChild(QLineEdit, "gbcRomDirectory")
+        found["browse"] = [
+            button for button in dialog.findChildren(QPushButton) if button.text() == "浏览…"
+        ]
+        dialog.reject()
+
+    try:
+        QTimer.singleShot(0, inspect_dialog)
+        window._show_settings()
+        assert found["auto"] is not None
+        assert found["auto"].text() == "插入后自动备份有更新的存档"
+        assert found["auto"].isChecked() is False
+        assert found["gb"] is not None
+        assert found["gbc"] is not None
+        assert len(found["browse"]) >= 6
+    finally:
+        window.close()
+
+
+def test_ftp_dialog_exposes_remember_password(qt_app, qt_state):
+    from vajsave.qt_dialogs import FtpDialog
+
+    dialog = FtpDialog(qt_state)
+    box = dialog.findChild(QCheckBox, "rememberFtpPassword")
+    assert box is not None
+    assert box.text() == "记住密码"
+    assert box.isChecked() is False
+
+
+def test_ambiguous_rom_lists_candidates_and_keeps_manual_bind(qt_app, qt_state, monkeypatch):
+    from vajsave.identity import GameIdentity, ambiguous
+
+    entry = qt_state.visible_saves()[0]
+    first = GameIdentity(
+        identity_key="gba:sha1:aa", platform="gba", title="Apotris", rom_path="/roms/Apotris.gba"
+    )
+    second = GameIdentity(
+        identity_key="gba:sha1:bb",
+        platform="gba",
+        title="Apotris (Japan)",
+        rom_path="/roms/Apotris (Japan).gba",
+    )
+    monkeypatch.setattr(
+        qt_state, "resolve_save_identity", lambda _entry: ambiguous((first, second))
+    )
+    window = VajSaveWindow(qt_state)
+    try:
+        window.drawer.set_entry(qt_state, entry)
+        assert not window.drawer.candidates.isHidden()
+        assert window.drawer.candidates.count() == 2
+        assert not window.drawer.bind_candidate.isHidden()
+        assert not window.drawer.manual_rom.isHidden()
+        assert window.drawer.candidates.currentRow() == 0
+    finally:
+        window.close()
+
+
+def test_restore_dialog_starts_at_suggested_dir(qt_app, qt_state, monkeypatch):
+    suggested = Path("/tmp/suggested-restore")
+    monkeypatch.setattr(qt_state, "suggested_restore_dir", lambda _entry: suggested)
+    captured = {}
+
+    def fake_dir(_parent, _title, directory="", *args, **kwargs):
+        captured["directory"] = directory
+        return ""
+
+    monkeypatch.setattr(qt_ui.QFileDialog, "getExistingDirectory", fake_dir)
+    window = VajSaveWindow(qt_state)
+    try:
+        window._selected = qt_state.visible_saves()[0]
+        window._selected_snapshot = object()
+        window._restore()
+        assert captured["directory"] == str(suggested)
+    finally:
+        window.close()
+
+
+def test_auto_backup_runs_after_insert_hash_when_enabled(
+    qt_app, tmp_path: Path, monkeypatch
+):
+    mount = tmp_path / "card"
+    save_path = mount / "save1"
+    save_path.mkdir(parents=True)
+    (save_path / "data.bin").write_bytes(b"payload")
+    entry = SaveEntry(
+        platform="switch",
+        source_id="demo",
+        display_name="Game 1",
+        path=str(save_path),
+        title_id="0100000000000001",
+    )
+    scan_res = ScanResult(root_path=str(mount), platform="switch", saves=[entry])
+    volume = VolumeInfo("测试掌机", mount, True)
+    state = AppState(
+        provider=FakeVolumeProvider([volume]),
+        scan_fn=lambda _path: scan_res,
+        library_root=tmp_path / "library",
+    )
+    state.refresh_volumes()
+    state.set_auto_backup_on_insert(True)
+    called = []
+    monkeypatch.setattr(state, "backup_updated_saves", lambda token=None: called.append(True) or [])
+    monkeypatch.setattr(state, "start_watch", lambda *args, **kwargs: None)
+    monkeypatch.setattr(state, "stop_watch", lambda *args, **kwargs: None)
+    window = VajSaveWindow(state)
+    try:
+        window._request_mount_scan(mount, auto=True)
+        for _ in range(50):
+            QTest.qWait(20)
+            if called:
+                break
+        assert called == [True]
+    finally:
+        window.close()
+
+
+def test_auto_backup_skipped_when_default_off(qt_app, tmp_path: Path, monkeypatch):
+    mount = tmp_path / "card"
+    mount.mkdir()
+    volume = VolumeInfo("测试掌机", mount, True)
+    state = AppState(
+        provider=FakeVolumeProvider([volume]),
+        scan_fn=lambda _path: ScanResult(root_path=str(mount), platform="switch", saves=[]),
+        library_root=tmp_path / "library",
+    )
+    state.refresh_volumes()
+    called = []
+    monkeypatch.setattr(state, "backup_updated_saves", lambda token=None: called.append(True) or [])
+    monkeypatch.setattr(state, "start_watch", lambda *args, **kwargs: None)
+    monkeypatch.setattr(state, "stop_watch", lambda *args, **kwargs: None)
+    window = VajSaveWindow(state)
+    try:
+        window._request_mount_scan(mount, auto=True)
+        for _ in range(30):
+            QTest.qWait(20)
+            if state.current_result is not None and window._device_scan_target is None:
+                break
+        QTest.qWait(40)
+        assert called == []
+        assert state.auto_backup_on_insert is False
+    finally:
         window.close()
 

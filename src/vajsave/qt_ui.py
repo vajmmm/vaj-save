@@ -22,12 +22,8 @@ from PySide6.QtGui import QColor, QFont, QIcon, QKeyEvent, QKeySequence, QLinear
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
-    QCheckBox,
-    QComboBox,
     QDialog,
-    QDialogButtonBox,
     QFileDialog,
-    QFormLayout,
     QFrame,
     QGraphicsDropShadowEffect,
     QGridLayout,
@@ -37,6 +33,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -51,16 +48,19 @@ from PySide6.QtWidgets import (
 from PySide6.QtSvg import QSvgRenderer
 
 from .app_state import PLATFORM_LABELS, PLATFORM_ORDER, AppState
-from .artwork import (
-    LLM_PROTOCOLS,
-    MAX_COVER_ASPECT_RATIO,
-    ArtworkLoader,
-    default_base_url,
-    default_model,
-)
+from .artwork import MAX_COVER_ASPECT_RATIO, ArtworkLoader
 from .identity import STATUS_AMBIGUOUS, STATUS_PARTIAL, STATUS_RESOLVED
-from .library import Snapshot, load_keep_last
-from .models import SaveEntry, VolumeInfo
+from .library import Snapshot
+from .models import SaveEntry
+from .qt_dialogs import (
+    DevicePickerDialog,
+    FtpDialog,
+    LLMSettingsDialog,
+    SettingsDialog,
+    ZipImportDialog,
+    show_help,
+    zip_has_manifest,
+)
 from .rom_formats import supported_extensions
 from .ui_theme import PLATFORM_COLORS, SWITCH, darken, mix
 
@@ -264,6 +264,7 @@ class PlatformDock(QFrame):
     devices_requested = Signal()
     ftp_requested = Signal()
     library_requested = Signal()
+    import_zip_requested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -302,19 +303,30 @@ class PlatformDock(QFrame):
             ("本地存档", "fa6s.folder", self.library_requested),
         )
         for text, icon_name, signal in actions:
-            button = QToolButton()
-            button.setText(text)
-            button.setIcon(_icon(icon_name, SWITCH["muted_strong"], 0.74))
-            button.setIconSize(QSize(15, 15))
-            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setProperty("dockAction", True)
-            button.clicked.connect(signal.emit)
-            layout.addWidget(button)
+            layout.addWidget(self._action_button(text, icon_name, signal))
+        self.import_zip = self._action_button("导入 ZIP", "fa6s.file-zipper", self.import_zip_requested)
+        self.import_zip.setObjectName("importZipDock")
+        self.import_zip.hide()
+        layout.addWidget(self.import_zip)
+
+    @staticmethod
+    def _action_button(text: str, icon_name: str, signal) -> QToolButton:
+        button = QToolButton()
+        button.setText(text)
+        button.setIcon(_icon(icon_name, SWITCH["muted_strong"], 0.74))
+        button.setIconSize(QSize(15, 15))
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setProperty("dockAction", True)
+        button.clicked.connect(signal.emit)
+        return button
 
     def set_current(self, platform: str) -> None:
         if platform in self.buttons:
             self.buttons[platform].setChecked(True)
+
+    def set_library_mode(self, enabled: bool) -> None:
+        self.import_zip.setVisible(enabled)
 
     def set_device(self, text: str, connected: bool) -> None:
         self.device_label.setText(text)
@@ -647,6 +659,9 @@ class DetailDrawer(QFrame):
     export_requested = Signal()
     location_requested = Signal()
     bind_requested = Signal()
+    bind_candidate_requested = Signal()
+    delete_version_requested = Signal()
+    star_toggled = Signal()
     version_changed = Signal(int)
     note_committed = Signal(str)
 
@@ -688,13 +703,24 @@ class DetailDrawer(QFrame):
         self.name = QLabel("未选择游戏")
         self.name.setObjectName("detailName")
         self.name.setWordWrap(True)
+        self.star = QToolButton()
+        self.star.setObjectName("starButton")
+        self.star.setCheckable(True)
+        self.star.setAutoRaise(True)
+        self.star.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.star.setIconSize(QSize(20, 20))
+        self.star.clicked.connect(self.star_toggled)
+        name_row = QHBoxLayout()
+        name_row.setContentsMargins(0, 0, 0, 0)
+        name_row.addWidget(self.name, 1)
+        name_row.addWidget(self.star, 0, Qt.AlignmentFlag.AlignTop)
         self.subtitle = QLabel("")
         self.subtitle.setObjectName("detailSubtitle")
         self.subtitle.setWordWrap(True)
         self.platform = QLabel("Switch")
         self.platform.setObjectName("platformChip")
         self.platform.setFixedHeight(24)
-        identity.addWidget(self.name)
+        identity.addLayout(name_row)
         identity.addWidget(self.subtitle)
         identity.addWidget(self.platform, 0, Qt.AlignmentFlag.AlignLeft)
         identity.addSpacing(7)
@@ -738,8 +764,10 @@ class DetailDrawer(QFrame):
         root.addLayout(secondary)
         self.warning = QFrame()
         self.warning.setObjectName("romWarning")
-        warning_row = QHBoxLayout(self.warning)
-        warning_row.setContentsMargins(14, 10, 12, 10)
+        warning_body = QVBoxLayout(self.warning)
+        warning_body.setContentsMargins(14, 10, 12, 10)
+        warning_body.setSpacing(8)
+        warning_row = QHBoxLayout()
         warning_icon = QLabel()
         warning_icon.setPixmap(_icon("fa6s.triangle-exclamation", WARNING_TEXT).pixmap(24, 24))
         warning_text = QVBoxLayout()
@@ -750,23 +778,38 @@ class DetailDrawer(QFrame):
         self.warning_hint.setWordWrap(True)
         warning_text.addWidget(self.warning_title)
         warning_text.addWidget(self.warning_hint)
-        bind = _button("去绑定")
-        bind.clicked.connect(self.bind_requested)
         warning_row.addWidget(warning_icon)
         warning_row.addLayout(warning_text, 1)
-        warning_row.addWidget(bind)
+        warning_body.addLayout(warning_row)
+        self.candidates = QListWidget()
+        self.candidates.setObjectName("romCandidates")
+        self.candidates.setMaximumHeight(78)
+        warning_body.addWidget(self.candidates)
+        bind_row = QHBoxLayout()
+        bind_row.setSpacing(8)
+        self.bind_candidate = _button("绑定选中项")
+        self.bind_candidate.setObjectName("bindCandidate")
+        self.manual_rom = _button("手动选择 ROM")
+        self.bind_candidate.clicked.connect(self.bind_candidate_requested)
+        self.manual_rom.clicked.connect(self.bind_requested)
+        bind_row.addWidget(self.bind_candidate)
+        bind_row.addWidget(self.manual_rom)
+        bind_row.addStretch(1)
+        warning_body.addLayout(bind_row)
         root.addWidget(self.warning)
         versions_head = QHBoxLayout()
         self.version_title = QLabel("版本历史")
         self.version_title.setObjectName("sectionTitle")
         self.version_count = QLabel("0 个版本")
         self.version_count.setObjectName("sectionMuted")
-        view_all = QLabel("查看全部")
-        view_all.setObjectName("linkLabel")
+        self.delete_version = _button("删除此版本")
+        self.delete_version.setObjectName("deleteVersion")
+        self.delete_version.setFixedHeight(28)
+        self.delete_version.clicked.connect(self.delete_version_requested)
         versions_head.addWidget(self.version_title)
         versions_head.addWidget(self.version_count)
         versions_head.addStretch(1)
-        versions_head.addWidget(view_all)
+        versions_head.addWidget(self.delete_version)
         root.addLayout(versions_head)
         self.versions = QTableWidget(0, 3)
         self.versions.setObjectName("versionTable")
@@ -817,6 +860,10 @@ class DetailDrawer(QFrame):
         self.name.setText(name)
         self.subtitle.setText(subtitle)
         self.subtitle.setVisible(bool(subtitle))
+        self.star.blockSignals(True)
+        self.star.setChecked(state.is_starred(entry))
+        self.star.blockSignals(False)
+        self._sync_star_icon()
         self.platform.setText(PLATFORM_LABELS.get(entry.platform, entry.platform))
         status = state.save_status(entry)
         versions = state.versions_for_entry(entry)
@@ -829,9 +876,27 @@ class DetailDrawer(QFrame):
         self.fields["path"].setToolTip(str(entry.path))
         resolution = state.resolve_save_cover(entry, result=result)
         self.set_cover_path(resolution.path)
-        needs_binding = result.status == STATUS_AMBIGUOUS or result.status not in (STATUS_RESOLVED, STATUS_PARTIAL)
+        ambiguous = result.status == STATUS_AMBIGUOUS and bool(result.candidates)
+        needs_binding = ambiguous or result.status not in (STATUS_RESOLVED, STATUS_PARTIAL)
         self.warning.setVisible(needs_binding)
-        self.warning_title.setText("多个 ROM 候选" if result.status == STATUS_AMBIGUOUS else "未绑定 ROM")
+        self.warning_title.setText("多个 ROM 候选" if ambiguous else "未绑定 ROM")
+        self.warning_hint.setText(
+            "匹配到多个 ROM，选择要绑定的游戏身份。"
+            if ambiguous
+            else "建议绑定对应的游戏 ROM，便于识别游戏版本。"
+        )
+        self.candidates.clear()
+        self.candidates.setVisible(ambiguous)
+        self.bind_candidate.setVisible(ambiguous)
+        if ambiguous:
+            for candidate in result.candidates:
+                label = candidate.title or candidate.identity_key
+                if candidate.rom_path:
+                    label = f"{label}  ·  {Path(candidate.rom_path).name}"
+                item = QListWidgetItem(label)
+                item.setData(Qt.ItemDataRole.UserRole, candidate)
+                self.candidates.addItem(item)
+            self.candidates.setCurrentRow(0)
         self.versions.setRowCount(len(versions))
         for row, snapshot in enumerate(reversed(versions)):
             number = len(versions) - row
@@ -843,6 +908,7 @@ class DetailDrawer(QFrame):
         self.version_count.setText(f"{len(versions)} 个版本")
         if versions:
             self.versions.selectRow(0)
+        self.delete_version.setEnabled(bool(versions))
         self.note.blockSignals(True)
         self.note.setText(state.game_note(entry))
         self.note.blockSignals(False)
@@ -851,6 +917,13 @@ class DetailDrawer(QFrame):
         self.primary.style().unpolish(self.primary)
         self.primary.style().polish(self.primary)
         return list(reversed(versions))
+
+    def _sync_star_icon(self) -> None:
+        filled = self.star.isChecked()
+        color = SWITCH["accent"] if filled else SWITCH["muted_strong"]
+        self.star.setIcon(_icon("fa6s.star" if filled else "mdi.star-outline", color, 0.95))
+        self.star.setToolTip("取消收藏" if filled else "加入收藏")
+        self.star.setAccessibleName(self.star.toolTip())
 
     @staticmethod
     def _entry_size(entry: SaveEntry) -> str:
@@ -876,93 +949,6 @@ class DetailDrawer(QFrame):
         if size >= 1024:
             return f"{size / 1024:.0f} KB"
         return f"{size} B"
-
-
-class LLMSettingsDialog(QDialog):
-    """可选的 LLM 封面消歧设置，完整复用 AppState 的持久化能力。"""
-
-    def __init__(self, state: AppState, loader: ArtworkLoader, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-        self.state = state
-        self.loader = loader
-        self.setWindowTitle("LLM 封面消歧")
-        self.setMinimumWidth(520)
-        form = QFormLayout(self)
-        self.enabled = QCheckBox("启用（仅在封面候选存在歧义时使用）")
-        self.enabled.setChecked(state.llm_cover_enabled)
-        self.protocol = QComboBox()
-        labels = {
-            "openai-completions": "OpenAI 兼容 Chat Completions",
-            "anthropic-messages": "Anthropic Messages",
-        }
-        for value in LLM_PROTOCOLS:
-            self.protocol.addItem(labels.get(value, value), value)
-        self.protocol.setCurrentIndex(max(0, self.protocol.findData(state.llm_protocol)))
-        self.base_url = QLineEdit(state.llm_base_url)
-        self.api_key = QLineEdit(state.llm_api_key)
-        self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self.model = QLineEdit(state.llm_model)
-        form.addRow("", self.enabled)
-        form.addRow("协议", self.protocol)
-        form.addRow("Base URL", self.base_url)
-        form.addRow("API 密钥", self.api_key)
-        form.addRow("模型 ID", self.model)
-        test_row = QHBoxLayout()
-        self.test_button = _button("测试连接", "fa6s.plug-circle-check")
-        self.test_result = QLabel("")
-        self.test_result.setObjectName("sectionMuted")
-        test_row.addWidget(self.test_button)
-        test_row.addWidget(self.test_result, 1)
-        form.addRow("", test_row)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self._save)
-        buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
-        self._last_protocol = self.protocol.currentData()
-        self.protocol.currentIndexChanged.connect(self._protocol_changed)
-        self.test_button.clicked.connect(self._test_connection)
-
-    def _protocol_changed(self) -> None:
-        new_protocol = self.protocol.currentData()
-        old_protocol = self._last_protocol
-        if self.base_url.text().strip().rstrip("/") == default_base_url(old_protocol).rstrip("/"):
-            self.base_url.setText(default_base_url(new_protocol))
-        if self.model.text().strip() == default_model(old_protocol):
-            self.model.setText(default_model(new_protocol))
-        self._last_protocol = new_protocol
-
-    def _values(self) -> dict[str, object]:
-        return {
-            "enabled": self.enabled.isChecked(),
-            "protocol": self.protocol.currentData(),
-            "base_url": self.base_url.text().strip(),
-            "api_key": self.api_key.text().strip(),
-            "model": self.model.text().strip(),
-        }
-
-    def _save(self) -> None:
-        self.state.set_llm_cover(**self._values())
-        self.accept()
-
-    def _test_connection(self) -> None:
-        values = self._values()
-        self.test_button.setEnabled(False)
-        self.test_result.setText("正在测试…")
-
-        def task():
-            return self.state.test_llm_cover(
-                protocol=str(values["protocol"]),
-                base_url=str(values["base_url"]),
-                api_key=str(values["api_key"]),
-                model=str(values["model"]),
-            )
-
-        def completed(result) -> None:
-            self.test_button.setEnabled(True)
-            ok, detail = result if result is not None else (False, "测试失败")
-            self.test_result.setText(("✓ " if ok else "✗ ") + detail)
-
-        self.loader.submit(("llm-probe", id(self)), task, completed)
 
 
 class VajSaveWindow(QMainWindow):
@@ -1018,6 +1004,11 @@ class VajSaveWindow(QMainWindow):
         menu.setIcon(_icon("fa6s.bars", SWITCH["ink"], 0.95))
         menu.setIconSize(QSize(25, 25))
         menu.setFixedSize(42, 42)
+        menu.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu_actions = QMenu(self)
+        menu_actions.addAction("导入 ZIP", self._import_zip)
+        menu_actions.addAction("打开备份库", self._open_library)
+        menu.setMenu(menu_actions)
         brand = QVBoxLayout()
         brand.setSpacing(0)
         brand_name = QLabel("vaj-save")
@@ -1040,9 +1031,22 @@ class VajSaveWindow(QMainWindow):
         self.sort.setFixedHeight(38)
         self.only_updates = _button("仅显示有更新", "fa6s.square", checkable=True)
         self.only_updates.setFixedHeight(38)
+        self.starred_only = _button("只看收藏", "fa6s.star", checkable=True)
+        self.starred_only.setObjectName("starredOnly")
+        self.starred_only.setFixedHeight(38)
+        self.backup_updated = _button("备份有更新", "fa6s.cloud-arrow-up")
+        self.backup_updated.setObjectName("backupUpdated")
+        self.backup_updated.setFixedHeight(38)
         self.settings = _button("设置", "fa6s.gear")
         self.help = _button("帮助", "fa6s.circle-question")
-        for button in (self.sort, self.only_updates, self.settings, self.help):
+        for button in (
+            self.sort,
+            self.only_updates,
+            self.starred_only,
+            self.backup_updated,
+            self.settings,
+            self.help,
+        ):
             top.addWidget(button)
         self.stats = QLabel("已备份 0 款游戏 · 0 个版本")
         self.stats.setObjectName("statsLabel")
@@ -1076,12 +1080,17 @@ class VajSaveWindow(QMainWindow):
         self.scan_progress.setFixedWidth(160)
         self.scan_progress.setFixedHeight(7)
         self.scan_progress.hide()
+        self.cancel_job = _button("取消")
+        self.cancel_job.setObjectName("cancelJobButton")
+        self.cancel_job.setFixedHeight(28)
+        self.cancel_job.hide()
         self.watch = _button("监听已开启", "fa6s.circle", checkable=True)
         self.watch.setChecked(True)
         self.watch.setObjectName("watchButton")
         status_row.addWidget(self.status_device)
         status_row.addWidget(self.status_text, 1)
         status_row.addWidget(self.scan_progress)
+        status_row.addWidget(self.cancel_job)
         status_row.addWidget(self.watch)
         outer.addWidget(status)
 
@@ -1089,15 +1098,19 @@ class VajSaveWindow(QMainWindow):
         self.search.textChanged.connect(self._search_changed)
         self.sort.clicked.connect(self._cycle_sort)
         self.only_updates.clicked.connect(self._toggle_updates)
+        self.starred_only.clicked.connect(self._toggle_starred)
+        self.backup_updated.clicked.connect(self._backup_updated)
         self.settings.clicked.connect(self._show_settings)
         self.help.clicked.connect(self._show_help)
         self.watch.clicked.connect(self._toggle_watch)
+        self.cancel_job.clicked.connect(self.state.cancel_job)
         self.dock.platform_selected.connect(self._select_platform)
         self.dock.refresh_requested.connect(self._refresh_devices)
         self.dock.add_requested.connect(self._add_device)
         self.dock.devices_requested.connect(self._choose_device)
         self.dock.ftp_requested.connect(self._show_ftp)
         self.dock.library_requested.connect(self._browse_library)
+        self.dock.import_zip_requested.connect(self._import_zip)
         self.gallery.selection_changed.connect(self._selection_changed)
         self.gallery.activated.connect(lambda _entry: self._primary_action())
         self.drawer.close_requested.connect(self.hide_drawer)
@@ -1106,6 +1119,9 @@ class VajSaveWindow(QMainWindow):
         self.drawer.export_requested.connect(self._export)
         self.drawer.location_requested.connect(self._open_location)
         self.drawer.bind_requested.connect(self._bind_rom)
+        self.drawer.bind_candidate_requested.connect(self._bind_candidate)
+        self.drawer.delete_version_requested.connect(self._delete_snapshot)
+        self.drawer.star_toggled.connect(self._toggle_star)
         self.drawer.version_changed.connect(self._version_changed)
         self.drawer.note_committed.connect(self._save_note)
 
@@ -1137,8 +1153,8 @@ class VajSaveWindow(QMainWindow):
             #deviceName {{ font-size: 10px; }}
             #galleryView {{ background: {SWITCH['fog_canvas']}; }}
             #detailDrawer {{ background: {SWITCH['fog_panel']}; border: 1px solid {mix(SWITCH['border_soft'], SWITCH['shadow_soft'], 0.35)}; border-radius: 10px 0 0 10px; }}
-            #drawerClose {{ background: transparent; border: 0; padding: 4px; }}
-            #drawerClose:hover {{ background: {SWITCH['surface_alt']}; border-radius: 6px; }}
+            #drawerClose, #starButton {{ background: transparent; border: 0; padding: 4px; }}
+            #drawerClose:hover, #starButton:hover {{ background: {SWITCH['surface_alt']}; border-radius: 6px; }}
             #drawerTitle, #sectionTitle {{ font-size: 15px; font-weight: 700; }}
             #detailName {{ font-size: 17px; font-weight: 700; }}
             #detailSubtitle {{ font-size: 11px; }}
@@ -1228,6 +1244,9 @@ class VajSaveWindow(QMainWindow):
             ),
         )
         self.dock.set_current(self.state.selected_platform)
+        self.dock.set_library_mode(self.state.library_mode)
+        self.starred_only.setChecked(self.state.starred_only)
+        self.backup_updated.setEnabled(not self.state.library_mode and self.state.job_idle())
         stats = self.state.collection_stats()
         self.stats.setText(f"已备份 {stats.get('games', 0)} 款游戏 · {stats.get('versions', 0)} 个版本")
         current = next((v for v in self.state.volumes if Path(v.mount_point) == self.state.current_mount), None)
@@ -1239,8 +1258,14 @@ class VajSaveWindow(QMainWindow):
         self._sync_scan_progress()
 
     def _sync_scan_progress(self) -> None:
-        progress = self.state.scan_progress()
-        if not progress.message:
+        job = self.state.job_progress()
+        scan = self.state.scan_progress()
+        running = not self.state.job_idle()
+        self.cancel_job.setVisible(job.cancellable)
+        self.backup_updated.setEnabled(not self.state.library_mode and not running)
+        self.drawer.primary.setEnabled(not running)
+        progress = job if (job.cancellable or job.message) else scan
+        if not progress.message and not job.cancellable:
             self.scan_progress.hide()
             return
         self.scan_progress.show()
@@ -1249,7 +1274,8 @@ class VajSaveWindow(QMainWindow):
         else:
             self.scan_progress.setRange(0, progress.total)
             self.scan_progress.setValue(max(0, min(progress.current, progress.total)))
-        self.status_text.setText(progress.message)
+        if progress.message:
+            self.status_text.setText(progress.message)
 
     def _schedule_cover_enrichment(
         self, saves: list[SaveEntry], generation: int
@@ -1381,6 +1407,8 @@ class VajSaveWindow(QMainWindow):
                 if backup_statuses is not None:
                     self.state.apply_backup_statuses(backup_statuses)
                     self.refresh_all()
+                    if auto:
+                        self._maybe_auto_backup()
 
             hash_started = self._device_loader.submit(
                 ("device-hash", generation), hash_task, hash_completed
@@ -1416,6 +1444,46 @@ class VajSaveWindow(QMainWindow):
         self.only_updates.setChecked(self.state.hide_unchanged)
         self.refresh_all()
 
+    def _toggle_starred(self) -> None:
+        self.state.toggle_starred_only()
+        self.starred_only.setChecked(self.state.starred_only)
+        self.refresh_all()
+
+    def _toggle_star(self) -> None:
+        if self._selected is None:
+            return
+        self.state.toggle_star(self._selected)
+        self._versions = self.drawer.set_entry(self.state, self._selected)
+        self.status_text.setText(self.state.status_text)
+        if self.state.starred_only:
+            self.refresh_all()
+
+    def _backup_updated(self) -> None:
+        self._run_backup_job(self.state.backup_updated_saves)
+
+    def _maybe_auto_backup(self) -> None:
+        if not self.state.auto_backup_on_insert:
+            return
+        if self.state.library_mode or not self.state.job_idle():
+            return
+        self._run_backup_job(self.state.backup_updated_saves)
+
+    def _run_backup_job(self, runner) -> None:
+        if not self.state.job_idle():
+            return
+
+        def task():
+            return runner()
+
+        def completed(_result) -> None:
+            self.refresh_all()
+            if self._selected is not None:
+                self._versions = self.drawer.set_entry(self.state, self._selected)
+                self._selected_snapshot = self._versions[0] if self._versions else None
+
+        self._device_loader.submit(("library-job",), task, completed)
+        self._sync_scan_progress()
+
     def _selection_changed(self, entries: list[SaveEntry]) -> None:
         if not entries:
             self._selected = None
@@ -1441,17 +1509,23 @@ class VajSaveWindow(QMainWindow):
                 return
             for entry in selected:
                 self.state.delete_library_game(entry)
-        else:
-            self.state.import_selected_saves(selected)
-        self.refresh_all()
-        if self._selected:
-            self._versions = self.drawer.set_entry(self.state, self._selected)
+            self.refresh_all()
+            if self._selected:
+                self._versions = self.drawer.set_entry(self.state, self._selected)
+            return
+        chosen = list(selected)
+        self._run_backup_job(lambda: self.state.import_selected_saves(chosen))
 
     def _restore(self) -> None:
         if self._selected_snapshot is None:
             QMessageBox.information(self, "恢复", "请先选择一个备份版本。")
             return
-        destination = QFileDialog.getExistingDirectory(self, "选择恢复位置")
+        start = ""
+        if self._selected is not None:
+            suggested = self.state.suggested_restore_dir(self._selected)
+            if suggested is not None:
+                start = str(suggested)
+        destination = QFileDialog.getExistingDirectory(self, "选择恢复位置", start)
         if not destination:
             return
         if QMessageBox.question(self, "确认恢复", "将所选版本复制到指定文件夹？不会写入掌机。") != QMessageBox.StandardButton.Yes:
@@ -1495,6 +1569,49 @@ class VajSaveWindow(QMainWindow):
         self._enrichment_attempted.discard(self._selected.path)
         self.refresh_all()
 
+    def _bind_candidate(self) -> None:
+        if self._selected is None:
+            return
+        item = self.drawer.candidates.currentItem()
+        if item is None:
+            QMessageBox.information(self, "ROM 绑定", "先选择一个候选 ROM")
+            return
+        identity = item.data(Qt.ItemDataRole.UserRole)
+        try:
+            self.state.bind_save_identity(self._selected, identity=identity)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "ROM 绑定失败", str(exc))
+            return
+        self._versions = self.drawer.set_entry(self.state, self._selected)
+        self._enrichment_attempted.discard(self._selected.path)
+        self.refresh_all()
+
+    def _delete_snapshot(self) -> None:
+        if self._selected is None or self._selected_snapshot is None:
+            QMessageBox.information(self, "删除此版本", "请先选择一个备份版本。")
+            return
+        last = len(self._versions) == 1
+        message = (
+            "这是该游戏的最后一个版本，删除后整条游戏（封面、备注、收藏）也会一并删除。此操作不可撤销。"
+            if last
+            else "确定删除此版本？此操作不可撤销。"
+        )
+        if QMessageBox.question(self, "删除此版本", message) != QMessageBox.StandardButton.Yes:
+            return
+        result = self.state.delete_library_snapshot(self._selected, self._selected_snapshot)
+        if not result.ok:
+            QMessageBox.warning(self, "删除此版本", "\n".join(result.errors) or "删除失败")
+            return
+        if result.game_removed:
+            self._selected = None
+            self._versions = []
+            self._selected_snapshot = None
+            self.hide_drawer()
+        self.refresh_all()
+        if self._selected is not None:
+            self._versions = self.drawer.set_entry(self.state, self._selected)
+            self._selected_snapshot = self._versions[0] if self._versions else None
+
     def _save_note(self, note: str) -> None:
         if self._selected:
             self.state.set_note(self._selected, note)
@@ -1520,23 +1637,11 @@ class VajSaveWindow(QMainWindow):
 
     def _choose_device(self) -> None:
         self.state.refresh_volumes()
-        dialog = QDialog(self)
-        dialog.setWindowTitle("选择设备")
-        layout = QVBoxLayout(dialog)
-        listing = QListWidget()
-        for volume in self.state.volumes:
-            item = QListWidgetItem(f"{volume.name}\n{volume.mount_point}")
-            item.setData(Qt.ItemDataRole.UserRole, str(volume.mount_point))
-            listing.addItem(item)
-        layout.addWidget(listing)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Open | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-        if dialog.exec() and listing.currentItem():
-            self._request_mount_scan(
-                listing.currentItem().data(Qt.ItemDataRole.UserRole)
-            )
+        dialog = DevicePickerDialog(self.state.volumes, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            mount = dialog.selected_mount()
+            if mount:
+                self._request_mount_scan(mount)
 
     def _browse_library(self) -> None:
         self._cancel_pending_device_scan()
@@ -1552,81 +1657,32 @@ class VajSaveWindow(QMainWindow):
             self.watch.setText("监听已关闭")
 
     def _show_ftp(self) -> None:
-        dialog = QDialog(self)
-        dialog.setWindowTitle("FTP 只读拉取")
-        form = QFormLayout(dialog)
-        preset = QComboBox()
-        profiles = self.state.ftp_presets()
-        for profile in profiles:
-            preset.addItem(profile.label, profile.key)
-        preset.setCurrentIndex(max(0, preset.findData(self.state.ftp_preset_key)))
-        host = QLineEdit(self.state.ftp_host)
-        port = QLineEdit(str(self.state.ftp_port or ""))
-        user = QLineEdit(self.state.ftp_user)
-        password = QLineEdit()
-        password.setEchoMode(QLineEdit.EchoMode.Password)
-        form.addRow("预设", preset)
-        form.addRow("主机", host)
-        form.addRow("端口", port)
-        form.addRow("用户", user)
-        form.addRow("密码", password)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        form.addRow(buttons)
-        if dialog.exec():
-            self.state.configure_ftp(host.text(), port.text(), user.text(), password.text(), preset.currentData())
-            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-            try:
-                result = self.state.pull_ftp_saves()
-            finally:
-                QApplication.restoreOverrideCursor()
-            self.refresh_all()
-            if not result.ok:
-                QMessageBox.warning(self, "FTP 拉取失败", result.error or "未知错误")
+        dialog = FtpDialog(self.state, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        dialog.configure()
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            result = self.state.pull_ftp_saves()
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.refresh_all()
+        if not result.ok:
+            QMessageBox.warning(self, "FTP 拉取失败", result.error or "未知错误")
 
     def _show_settings(self) -> None:
-        dialog = QDialog(self)
-        dialog.setWindowTitle("设置")
-        dialog.setMinimumWidth(560)
-        form = QFormLayout(dialog)
-        library = QLineEdit(str(self.state.library_root))
-        gba = QLineEdit(str(self.state.gba_rom_dir or ""))
-        nds = QLineEdit(str(self.state.nds_rom_dir or ""))
-        libretro = QLineEdit(str(self.state.libretro_dir or ""))
-        libretro.setObjectName("libretroDirectory")
-        keep = QLineEdit(str(load_keep_last(self.state.library_root)))
-        form.addRow("本地备份库", library)
-        form.addRow("GBA ROM 目录", gba)
-        form.addRow("NDS ROM 目录", nds)
-        form.addRow("Libretro 元数据目录", libretro)
-        form.addRow("保留版本数（0 为不限）", keep)
-        llm_entry = _button(
-            "配置…（已启用）" if self.state.llm_cover_enabled else "配置…（未启用）",
-            "fa6s.wand-magic-sparkles",
-        )
-        llm_entry.setObjectName("llmSettingsEntry")
+        dialog = SettingsDialog(self.state, self)
+        dialog.llm_requested.connect(lambda: self._open_llm_from_settings(dialog))
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if not dialog.apply():
+            QMessageBox.warning(self, "设置", "保留版本数必须是非负整数。")
+        self._enrichment_attempted.clear()
+        self.refresh_all()
 
-        def open_llm_settings() -> None:
-            if self._show_llm_settings(dialog):
-                llm_entry.setText(
-                    "配置…（已启用）" if self.state.llm_cover_enabled else "配置…（未启用）"
-                )
-
-        llm_entry.clicked.connect(open_llm_settings)
-        form.addRow("LLM 封面消歧", llm_entry)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        form.addRow(buttons)
-        if dialog.exec():
-            self.state.set_library_root(library.text())
-            self.state.set_rom_dirs(gba.text(), nds.text())
-            self.state.set_libretro_dir(libretro.text())
-            if self.state.set_keep_last(keep.text()) is None:
-                QMessageBox.warning(self, "设置", "保留版本数必须是非负整数。")
-            self._enrichment_attempted.clear()
-            self.refresh_all()
+    def _open_llm_from_settings(self, settings: SettingsDialog) -> None:
+        if self._show_llm_settings(settings):
+            settings.refresh_llm_label()
 
     def _show_llm_settings(self, parent: Optional[QWidget] = None) -> bool:
         dialog = LLMSettingsDialog(self.state, self._artwork_loader, parent or self)
@@ -1641,13 +1697,36 @@ class VajSaveWindow(QMainWindow):
         return saved
 
     def _show_help(self) -> None:
-        QMessageBox.information(
-            self,
-            "帮助",
-            "vaj-save 将掌机存档只读备份到电脑。\n\n"
-            "选择游戏后可备份、恢复到指定文件夹、导出 ZIP、绑定 ROM 或记录备注。\n"
-            "恢复不会直接写回掌机。",
-        )
+        show_help(self)
+
+    def _open_library(self) -> None:
+        ok, message = _open_path(self.state.library_root)
+        self.status_text.setText(message)
+        if not ok:
+            QMessageBox.warning(self, "打开备份库", message)
+
+    def _import_zip(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "导入 ZIP", "", "ZIP 文件 (*.zip)")
+        if not path:
+            return
+        kwargs: dict = {}
+        zip_path = Path(path)
+        if not zip_has_manifest(zip_path):
+            dialog = ZipImportDialog(self.state, self._selected, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            kwargs = dialog.import_kwargs()
+            if not kwargs.get("attach_game_id") and not (
+                kwargs.get("new_platform") and kwargs.get("new_display_name")
+            ):
+                QMessageBox.warning(self, "导入 ZIP", "请选择挂到当前游戏，或填写机种与名称。")
+                return
+        try:
+            self.state.import_snapshot_zip(zip_path, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "导入 ZIP", str(exc))
+            return
+        self.refresh_all()
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self.poll_timer.stop()
@@ -1674,4 +1753,13 @@ def run_app(state: Optional[AppState] = None) -> int:
     return app.exec()
 
 
-__all__ = ["DetailDrawer", "GalleryCanvas", "GalleryView", "LLMSettingsDialog", "PlatformDock", "VajSaveWindow", "build_app", "run_app"]
+__all__ = [
+    "DetailDrawer",
+    "GalleryCanvas",
+    "GalleryView",
+    "LLMSettingsDialog",
+    "PlatformDock",
+    "VajSaveWindow",
+    "build_app",
+    "run_app",
+]

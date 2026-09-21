@@ -41,6 +41,7 @@ from .models import SaveEntry, ScanResult, VolumeInfo
 from .platforms.catalog import PLATFORM_LABELS, PLATFORM_ORDER
 from .platforms.common import IDLE_SCAN_PROGRESS, ScanProgress
 from .remote_ftp import FtpProfile, RemoteFtpClient
+from .restore_targets import remember_restore_dir, suggested_restore_dir as suggest_restore_dir
 from .scan_session import PreparedBackupStatuses, PreparedMountScan, ScanSession
 from .scanner import scan
 from .settings_store import SettingsStore
@@ -125,6 +126,12 @@ class AppState:
         self.llm_model: str = (
             self._coerce_text(ftp_config.get("llm_model"))
             or default_model(self.llm_protocol)
+        )
+        self.auto_backup_on_insert: bool = self._coerce_bool(
+            ftp_config.get("auto_backup_on_insert")
+        )
+        self.last_restore_dir: Optional[Path] = self._coerce_dir(
+            ftp_config.get("last_restore_dir")
         )
 
         self.volumes: List[VolumeInfo] = []
@@ -487,7 +494,21 @@ class AppState:
         return self.library_actions.versions_for_entry(entry)
 
     def restore_version(self, snapshot: Snapshot, destination: Union[Path, str]) -> Optional[Path]:
-        return self.library_actions.restore_version(snapshot, destination)
+        restored = self.library_actions.restore_version(snapshot, destination)
+        if restored is not None:
+            remember_restore_dir(self, Path(destination))
+        return restored
+
+    def suggested_restore_dir(self, entry: SaveEntry) -> Optional[Path]:
+        return suggest_restore_dir(self, entry)
+
+    def set_auto_backup_on_insert(self, enabled: bool) -> bool:
+        self.auto_backup_on_insert = bool(enabled)
+        self.settings.update(auto_backup_on_insert=self.auto_backup_on_insert)
+        return self.auto_backup_on_insert
+
+    def job_idle(self) -> bool:
+        return not self._job_slot.is_running()
 
     def refresh_volumes(self) -> List[VolumeInfo]:
         return self.devices.refresh_volumes()
