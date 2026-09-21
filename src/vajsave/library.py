@@ -947,18 +947,15 @@ def set_game_meta(
     return game
 
 
-def export_snapshot_zip(snapshot: Snapshot, library_root: Path, zip_path: Path) -> Path:
-    import shutil
+def export_snapshot_zip(
+    snapshot: Snapshot,
+    library_root: Path,
+    zip_path: Path,
+    game: Optional[GameRecord] = None,
+) -> Path:
+    from .library_import import export_snapshot_zip as _export_snapshot_zip
 
-    source = snapshot.absolute_path(library_root)
-    if not source.exists():
-        raise FileNotFoundError(f"版本目录不存在: {source}")
-    zip_path = Path(zip_path)
-    if zip_path.suffix.lower() != ".zip":
-        zip_path = zip_path.with_suffix(".zip")
-    base = zip_path.with_suffix("")
-    shutil.make_archive(str(base), "zip", root_dir=source)
-    return Path(str(base) + ".zip")
+    return _export_snapshot_zip(snapshot, library_root, zip_path, game=game)
 
 
 def collection_stats(library_root: Path) -> Dict[str, int]:
