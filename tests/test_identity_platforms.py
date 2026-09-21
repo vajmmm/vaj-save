@@ -60,6 +60,20 @@ def test_psp_corrupt_sfo_does_not_raise(tmp_path: Path):
     assert result.identity_key == "psp:name:monster hunter"
 
 
+def test_psp_scanned_title_id_still_reads_sfo_title(tmp_path: Path):
+    save_dir = tmp_path / "PSP" / "SAVEDATA" / "ULJM05800"
+    save_dir.mkdir(parents=True)
+    (save_dir / "PARAM.SFO").write_bytes(
+        build_sfo({"TITLE": "Monster Hunter Portable 3rd", "TITLE_ID": "ULJM05800"})
+    )
+    result = GameIdentityResolver().resolve(
+        entry("psp", "ULJM05800", save_dir, title_id="ULJM05800")
+    )
+    assert result.is_resolved
+    assert result.identity.title == "Monster Hunter Portable 3rd"
+    assert result.identity.source == "sfo"
+
+
 def test_psp_missing_sfo_uses_scanned_title_id(tmp_path: Path):
     save_dir = tmp_path / "SAVEDATA" / "ULJM05800"
     save_dir.mkdir(parents=True)

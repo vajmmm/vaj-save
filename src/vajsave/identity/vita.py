@@ -27,24 +27,25 @@ def _read_param_sfo(directory):
 
 
 def resolve(entry, ctx):
-    entry_title_id = getattr(entry, "title_id", None)
-    if entry_title_id and str(entry_title_id).strip():
-        title_id = str(entry_title_id).strip()
-        title = getattr(entry, "display_name", None) or title_id
+    scanned_id = str(getattr(entry, "title_id", None) or "").strip()
+    display = str(getattr(entry, "display_name", None) or "").strip()
+    if scanned_id and display and display != scanned_id:
         return resolve_from_title_id(
             entry,
             platform=PLATFORM,
-            title_id=title_id,
-            title=title,
+            title_id=scanned_id,
+            title=display,
             source=SOURCE_METADATA,
             missing_reason="缺少 Vita title_id / PARAM.SFO",
         )
-    sfo_data = _read_param_sfo(entry.path)
+    sfo_data = _read_param_sfo(entry.path) or {}
+    title_id = sfo_data.get("TITLE_ID") or scanned_id or None
+    title = sfo_data.get("TITLE") or display or title_id
     return resolve_from_title_id(
         entry,
         platform=PLATFORM,
-        title_id=sfo_data.get("TITLE_ID"),
-        title=sfo_data.get("TITLE"),
+        title_id=title_id,
+        title=title,
         source=SOURCE_SFO if sfo_data else SOURCE_METADATA,
         missing_reason="缺少 Vita title_id / PARAM.SFO",
     )
