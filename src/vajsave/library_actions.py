@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
 
+from .backup_jobs import run_selected_backups
+from .jobs import CancelToken
 from .library import (
     Catalog,
     GameDeletion,
@@ -388,26 +390,14 @@ class LibraryActions:
             app.status_text = f"已保存到本地 · 内容未变化，沿用版本 {result.snapshot.id}"
         return result.path
 
-    def import_selected_saves(self, entries: List[SaveEntry]) -> List[Path]:
-        """Backup explicit multi-selection; skips nothing the caller passed."""
-        app = self.app
-        copied: List[Path] = []
-        new_count = 0
-        for entry in entries:
-            dest = self.import_save(entry)
-            if dest is not None:
-                copied.append(dest)
-                if app.last_backup and app.last_backup.is_new:
-                    new_count += 1
-        if copied:
-            app.status_text = f"已备份 {len(copied)} 个存档到本地库（新增 {new_count} 个版本）"
-        elif not entries:
-            app.status_text = "当前没有可备份的存档"
-        return copied
+    def import_selected_saves(
+        self, entries: List[SaveEntry], token: CancelToken | None = None
+    ) -> List[Path]:
+        """Backup explicit multi-selection via the cancellable job runner."""
+        return run_selected_backups(self.app, entries, token)
 
     def import_visible_saves(self) -> List[Path]:
-        targets = list(self.visible_saves())
-        return self.import_selected_saves(targets)
+        return self.import_selected_saves(list(self.visible_saves()))
 
     def versions_for_entry(self, entry: SaveEntry) -> List[Snapshot]:
         catalog = load_catalog(self.app.library_root)

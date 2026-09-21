@@ -15,6 +15,8 @@ from .artwork import (
     normalize_protocol,
 )
 from .backend import StorageBackend
+from .backup_jobs import backup_updated_saves as run_backup_updated_saves
+from .backup_jobs import run_selected_backups
 from .device_registry import DeviceRegistry
 from .device_session import DeviceSession
 from .enrichment import UNSET as _UNSET
@@ -22,6 +24,7 @@ from .enrichment import Enrichment
 from .ftp_session import FtpSession, parse_port, resolve_ftp_preset_key
 from .ftp_fetch import FtpPullResult
 from .identity import GameIdentity, GameIdentityResolver, GameIdentityResult
+from .jobs import CancelToken, JobProgress, JobSlot
 from .library import (
     BackupResult,
     GameDeletion,
@@ -117,6 +120,7 @@ class AppState:
         self.status_text: str = "就绪"
         self._progress_lock = threading.Lock()
         self._scan_progress: ScanProgress = IDLE_SCAN_PROGRESS
+        self._job_slot = JobSlot()
         self.warnings: List[str] = []
         self.library_mode: bool = False
         self.selected_platform: str = "all"
@@ -393,11 +397,36 @@ class AppState:
     def import_save(self, entry: SaveEntry) -> Optional[Path]:
         return self.library_actions.import_save(entry)
 
-    def import_selected_saves(self, entries: List[SaveEntry]) -> List[Path]:
-        return self.library_actions.import_selected_saves(entries)
+    def import_selected_saves(
+        self, entries: List[SaveEntry], token: Optional[CancelToken] = None
+    ) -> List[Path]:
+        return run_selected_backups(self, entries, token)
 
     def import_visible_saves(self) -> List[Path]:
-        return self.library_actions.import_visible_saves()
+        return self.import_selected_saves(list(self.visible_saves()))
+
+    def backup_updated_saves(self, token: Optional[CancelToken] = None) -> List[Path]:
+        return run_backup_updated_saves(self, token)
+
+    def cancel_job(self) -> None:
+        self._job_slot.cancel()
+
+    def job_progress(self) -> JobProgress:
+        return self._job_slot.progress()
+
+    def _try_begin_job(self, token: Optional[CancelToken] = None) -> Optional[CancelToken]:
+        started = self._job_slot.try_begin(token)
+        if started is None:
+            self.status_text = "已有任务正在进行"
+        return started
+
+    def _end_job(self, token: Optional[CancelToken] = None) -> None:
+        self._job_slot.end(token)
+
+    def _report_job_progress(self, progress: JobProgress) -> None:
+        self._job_slot.report(progress)
+        if progress.message:
+            self.status_text = progress.message
 
     def versions_for_entry(self, entry: SaveEntry) -> List[Snapshot]:
         return self.library_actions.versions_for_entry(entry)
