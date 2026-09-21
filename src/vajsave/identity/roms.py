@@ -42,6 +42,16 @@ _SKIP_DIR_NAMES = frozenset(
         ".git",
         ".trashes",
         "node_modules",
+        "nintendo",
+        "nintendo 3ds",
+        "atmosphere",
+        "app",
+        "appmeta",
+        "pspemu",
+        "user",
+        "addcont",
+        "patch",
+        "album",
     }
 )
 _MAX_WALK_DEPTH = 6

@@ -1826,3 +1826,32 @@ def test_set_llm_cover_never_duplicates_an_existing_v1(tmp_path: Path, monkeypat
     state.set_llm_cover(base_url="https://api.deepseek.com/v1/")
     assert state.llm_base_url == "https://api.deepseek.com/v1/"
     assert load_app_config()["llm_base_url"] == "https://api.deepseek.com/v1/"
+
+
+def test_vita_mount_does_not_add_card_root_to_rom_index(tmp_path: Path):
+    from vajsave.models import VolumeInfo
+
+    vol = tmp_path / "VitaCard"
+    (vol / "user" / "00" / "savedata" / "PCSE00120").mkdir(parents=True)
+    state = AppState(library_root=tmp_path / "lib")
+    state.volumes = [VolumeInfo(name="VITA", mount_point=vol, is_removable=True)]
+    state.select_mount(vol)
+    resolver = state._build_identity_resolver()
+    gba_roots = resolver.rom_index._roots.get("gba", [])
+    nds_roots = resolver.rom_index._roots.get("nds", [])
+    assert vol not in gba_roots
+    assert vol not in nds_roots
+
+
+def test_savegame_mount_adds_card_root_to_rom_index(tmp_path: Path):
+    from vajsave.models import VolumeInfo
+
+    vol = tmp_path / "GbaCard"
+    (vol / "SAVEGAME").mkdir(parents=True)
+    state = AppState(library_root=tmp_path / "lib")
+    state.volumes = [VolumeInfo(name="GBA", mount_point=vol, is_removable=True)]
+    state.select_mount(vol)
+    resolver = state._build_identity_resolver()
+    gba_roots = resolver.rom_index._roots.get("gba", [])
+    assert vol in gba_roots
+

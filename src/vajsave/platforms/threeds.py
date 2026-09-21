@@ -171,10 +171,19 @@ def scan_threeds(
     saves: List[SaveEntry],
     seen_source_roots: Set[Path],
     seen_save_paths: Set[Path],
+    *,
+    standard_root: bool = False,
 ) -> None:
+    wrapper_depth = 0 if standard_root else 2
     # Checkpoint: .../3ds/Checkpoint/saves
     ds3_cp_dirs = collect_unique_dirs(
-        find_pattern_dirs(root, ("3ds", "Checkpoint", "saves"), root_resolved, warnings)
+        find_pattern_dirs(
+            root,
+            ("3ds", "Checkpoint", "saves"),
+            root_resolved,
+            warnings,
+            wrapper_depth,
+        )
     )
     if root.name.lower() == "saves" and root.parent.name == "Checkpoint":
         if root.parent.parent.name.lower() == "3ds":
@@ -202,7 +211,9 @@ def scan_threeds(
     # JKSM under JKSV/{Saves,ExtData,SysSave}
     jksm_dirs: List[Path] = []
     for cat in _JKSM_CATEGORIES:
-        jksm_dirs.extend(find_pattern_dirs(root, ("JKSV", cat), root_resolved, warnings))
+        jksm_dirs.extend(
+            find_pattern_dirs(root, ("JKSV", cat), root_resolved, warnings, wrapper_depth)
+        )
         # User selected JKSV directly
         if root.name == "JKSV":
             direct = root / cat

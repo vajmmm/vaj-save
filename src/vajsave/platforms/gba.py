@@ -185,10 +185,13 @@ def scan_gba(
     saves: List[SaveEntry],
     seen_source_roots: Set[Path],
     seen_save_paths: Set[Path],
+    *,
+    standard_root: bool = False,
 ) -> None:
+    wrapper_depth = 0 if standard_root else 2
     # EZ-Flash: SAVER/*.sav
     for saver_dir in collect_unique_dirs(
-        find_pattern_dirs(root, ("SAVER",), root_resolved, warnings)
+        find_pattern_dirs(root, ("SAVER",), root_resolved, warnings, wrapper_depth)
     ):
         _scan_ezflash_saver(
             saver_dir, root_resolved, warnings, sources, saves, seen_source_roots, seen_save_paths
@@ -200,7 +203,7 @@ def scan_gba(
 
     # EverDrive Mini/X5: GBASYS/SAVE/*.{sav,srm,fla,eep}
     for save_dir in collect_unique_dirs(
-        find_pattern_dirs(root, ("GBASYS", "SAVE"), root_resolved, warnings)
+        find_pattern_dirs(root, ("GBASYS", "SAVE"), root_resolved, warnings, wrapper_depth)
     ):
         _scan_everdrive_save(
             save_dir, root_resolved, warnings, sources, saves, seen_source_roots, seen_save_paths
@@ -212,7 +215,7 @@ def scan_gba(
 
     # EverDrive Pro: EDGBA/gamedata/<rom>/bram.*
     for gamedata_dir in collect_unique_dirs(
-        find_pattern_dirs(root, ("EDGBA", "gamedata"), root_resolved, warnings)
+        find_pattern_dirs(root, ("EDGBA", "gamedata"), root_resolved, warnings, wrapper_depth)
     ):
         _scan_everdrive_pro_gamedata(
             gamedata_dir, root_resolved, warnings, sources, saves, seen_source_roots, seen_save_paths
@@ -224,7 +227,7 @@ def scan_gba(
 
     # SuperChis / SuperFW: SAVEGAME/*.sav (default). SAVES/*.sav only with .superfw fingerprint.
     for savegame_dir in collect_unique_dirs(
-        find_pattern_dirs(root, ("SAVEGAME",), root_resolved, warnings)
+        find_pattern_dirs(root, ("SAVEGAME",), root_resolved, warnings, wrapper_depth)
     ):
         _scan_sav_folder(
             savegame_dir,
@@ -256,7 +259,7 @@ def scan_gba(
     selected_saves = root.name.upper() == "SAVES"
     if superfw or selected_saves:
         saves_dirs = collect_unique_dirs(
-            find_pattern_dirs(root, ("SAVES",), root_resolved, warnings)
+            find_pattern_dirs(root, ("SAVES",), root_resolved, warnings, wrapper_depth)
         )
         if selected_saves:
             saves_dirs = collect_unique_dirs([*saves_dirs, root])

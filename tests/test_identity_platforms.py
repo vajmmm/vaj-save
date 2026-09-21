@@ -206,3 +206,54 @@ def test_single_resolver_dispatches_every_platform(tmp_path: Path, psp_sfo_bytes
         "3ds:0x011C4",
         "switch:0100000000010000",
     ]
+
+
+def test_vita_and_psp_skip_sfo_and_iterdir_when_title_id_present(
+    monkeypatch, tmp_path: Path, psp_sfo_bytes: bytes, vita_sfo_bytes: bytes
+):
+    resolver = GameIdentityResolver()
+
+    # PSP
+    psp_save = tmp_path / "PSP" / "SAVEDATA" / "ULJM05800"
+    psp_save.mkdir(parents=True)
+    (psp_save / "PARAM.SFO").write_bytes(psp_sfo_bytes)
+
+    original_iterdir = Path.iterdir
+    iterdir_called = []
+
+    def tracked_iterdir(self):
+        iterdir_called.append(self.resolve())
+        return original_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", tracked_iterdir)
+
+    psp_entry = entry("psp", "Monster Hunter", psp_save, title_id="ULJM05800")
+    psp_result = resolver.resolve(psp_entry)
+    assert psp_result.is_resolved
+    assert psp_result.identity.identity_key == "psp:ULJM05800"
+    assert psp_result.identity.source == "metadata"
+    assert psp_save.resolve() not in iterdir_called
+
+    # Vita
+    vita_save = tmp_path / "user" / "00" / "savedata" / "PCSE00120"
+    vita_sce = vita_save / "sce_sys"
+    vita_sce.mkdir(parents=True)
+    (vita_sce / "param.sfo").write_bytes(vita_sfo_bytes)
+
+    from vajsave import sfo
+    original_parse = sfo.parse_sfo
+    parsed_sfos = []
+
+    def tracked_parse(path):
+        parsed_sfos.append(path)
+        return original_parse(path)
+
+    monkeypatch.setattr("vajsave.identity.vita.parse_sfo", tracked_parse)
+
+    vita_entry = entry("vita", "Persona 4 Golden", vita_save, title_id="PCSE00120")
+    vita_result = resolver.resolve(vita_entry)
+    assert vita_result.is_resolved
+    assert vita_result.identity.identity_key == "vita:PCSE00120"
+    assert vita_result.identity.source == "metadata"
+    assert not parsed_sfos
+

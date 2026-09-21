@@ -132,6 +132,7 @@ def _lookup_vita_companion(
     root_resolved: Path,
     warnings: List[str],
     cache: Dict[str, Optional[_VitaCompanionMetadata]],
+    container_cache: Optional[Dict[Path, bool]] = None,
 ) -> Optional[_VitaCompanionMetadata]:
     """Match a save's Title ID to a sibling ``app``/``appmeta`` directory.
 
@@ -146,6 +147,9 @@ def _lookup_vita_companion(
     if cache_key in cache:
         return cache[cache_key]
 
+    if container_cache is None:
+        container_cache = {}
+
     title = ""
     cover_path: Optional[Path] = None
     seen_dirs: Set[Path] = set()
@@ -156,13 +160,19 @@ def _lookup_vita_companion(
             # that its sibling app container is absent. Windows and the usual
             # Vita filesystems already handle case-insensitive lookup here.
             container = ancestor / container_name
-            try:
-                if not container.is_dir() or not is_safe_path(
-                    container, root_resolved
-                ):
-                    continue
-            except OSError:
+            if container in container_cache:
+                container_exists = container_cache[container]
+            else:
+                try:
+                    container_exists = container.is_dir() and is_safe_path(
+                        container, root_resolved
+                    )
+                except OSError:
+                    container_exists = False
+                container_cache[container] = container_exists
+            if not container_exists:
                 continue
+
             companion = _find_casefold_child(
                 container,
                 key,
@@ -202,20 +212,16 @@ def _enrich_vita_entry(
     root_resolved: Path,
     warnings: List[str],
     companion_cache: Dict[str, Optional[_VitaCompanionMetadata]],
+    container_cache: Optional[Dict[Path, bool]] = None,
 ) -> tuple[str, Optional[Path]]:
     """Fill a Vita save's title and cover from its installed app metadata."""
     companion = _lookup_vita_companion(
-        item, title_id, root_resolved, warnings, companion_cache
+        item, title_id, root_resolved, warnings, companion_cache, container_cache
     )
-    if companion is None:
-        return title, None
-
-    # The installed application's SFO is the authoritative retail title when it
-    # exists. Keep the save title only as a fallback for incomplete app metadata.
-    display_name = companion.title or title
-    if companion.cover_path is not None:
+    display_name = companion.title or title if companion is not None else title
+    if companion is not None and companion.cover_path is not None:
         return display_name, companion.cover_path
-    return display_name, find_embedded_cover(item, max_depth=1)
+    return display_name, _find_standard_vita_cover(item, root_resolved)
 
 
 def _scan_vita_native_dir(
@@ -227,6 +233,7 @@ def _scan_vita_native_dir(
     seen_source_roots: Set[Path],
     seen_save_paths: Set[Path],
     companion_cache: Dict[str, Optional[_VitaCompanionMetadata]],
+    container_cache: Optional[Dict[Path, bool]] = None,
 ) -> None:
     key = resolved_key(vita_dir)
     if key is None or key in seen_source_roots:
@@ -248,13 +255,7 @@ def _scan_vita_native_dir(
         item_key = resolved_key(item)
         if item_key is None or item_key in seen_save_paths:
             continue
-        sfo_path = None
-        sce_sys = item / "sce_sys"
-        if sce_sys.is_dir() and is_safe_path(sce_sys, root_resolved):
-            for child in safe_iterdir(sce_sys, warnings):
-                if child.name.lower() == "param.sfo" and child.is_file():
-                    sfo_path = child
-                    break
+        sfo_path = _find_vita_param_sfo(item, root_resolved, warnings)
         sfo_data = parse_sfo(sfo_path) if sfo_path else {}
         title = str(sfo_data.get("TITLE") or item.name).strip()
         title_id = str(sfo_data.get("TITLE_ID") or item.name).strip()
@@ -265,6 +266,7 @@ def _scan_vita_native_dir(
             root_resolved,
             warnings,
             companion_cache,
+            container_cache,
         )
         seen_save_paths.add(item_key)
         saves.append(
@@ -288,6 +290,7 @@ def _scan_vita_exported_dir(
     seen_source_roots: Set[Path],
     seen_save_paths: Set[Path],
     companion_cache: Dict[str, Optional[_VitaCompanionMetadata]],
+    container_cache: Optional[Dict[Path, bool]] = None,
 ) -> None:
     key = resolved_key(vexp_dir)
     if key is None or key in seen_source_roots:
@@ -317,6 +320,7 @@ def _scan_vita_exported_dir(
             root_resolved,
             warnings,
             companion_cache,
+            container_cache,
         )
         seen_save_paths.add(item_key)
         saves.append(
@@ -343,6 +347,7 @@ def scan_vita(
     standard_root: bool = False,
 ) -> None:
     companion_cache: Dict[str, Optional[_VitaCompanionMetadata]] = {}
+    container_cache: Dict[Path, bool] = {}
     wrapper_depth = 0 if standard_root else 2
     vita_dirs = collect_unique_dirs(
         [
@@ -368,6 +373,7 @@ def scan_vita(
             seen_source_roots,
             seen_save_paths,
             companion_cache,
+            container_cache,
         )
 
     vexp_dirs = collect_unique_dirs(
@@ -394,4 +400,5 @@ def scan_vita(
             seen_source_roots,
             seen_save_paths,
             companion_cache,
+            container_cache,
         )

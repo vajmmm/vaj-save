@@ -951,3 +951,170 @@ def test_scan_leaves_cover_unset_without_icon(tmp_path: Path, psp_sfo_bytes: byt
     entry = result.saves[0]
     assert entry.cover_path is None
     assert "cover_path" not in entry.to_dict()
+
+
+def test_switch_device_root_disables_wrapper_walk(monkeypatch, tmp_path: Path):
+    cp_dir = tmp_path / "switch" / "Checkpoint" / "saves" / "0100000000010000 Super Mario Odyssey" / "slot1"
+    cp_dir.mkdir(parents=True)
+    (cp_dir / "save.bin").write_bytes(b"switch_save")
+
+    from vajsave.platforms import switch
+
+    original = switch.find_pattern_dirs
+    depths = []
+
+    def tracked_find(*args, **kwargs):
+        depth = kwargs.get("max_wrapper_depth", args[4] if len(args) > 4 else 2)
+        depths.append(depth)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(switch, "find_pattern_dirs", tracked_find)
+
+    result = scan(tmp_path)
+
+    assert len(result.saves) == 1
+    assert depths and set(depths) == {0}
+
+
+def test_threeds_device_root_disables_wrapper_walk(monkeypatch, tmp_path: Path):
+    cp_dir = tmp_path / "3ds" / "Checkpoint" / "saves" / "0x011C4 Pokemon Moon" / "slot1"
+    cp_dir.mkdir(parents=True)
+    (cp_dir / "main").write_bytes(b"3ds_save")
+
+    from vajsave.platforms import threeds
+
+    original = threeds.find_pattern_dirs
+    depths = []
+
+    def tracked_find(*args, **kwargs):
+        depth = kwargs.get("max_wrapper_depth", args[4] if len(args) > 4 else 2)
+        depths.append(depth)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(threeds, "find_pattern_dirs", tracked_find)
+
+    result = scan(tmp_path)
+
+    assert len(result.saves) == 1
+    assert depths and set(depths) == {0}
+
+
+def test_unrecognized_root_keeps_wrapper_walk(monkeypatch, tmp_path: Path):
+    cp_dir = (
+        tmp_path
+        / "wrapper"
+        / "switch"
+        / "Checkpoint"
+        / "saves"
+        / "0100000000010000 Super Mario Odyssey"
+        / "slot1"
+    )
+    cp_dir.mkdir(parents=True)
+    (cp_dir / "save.bin").write_bytes(b"switch_save")
+
+    from vajsave.platforms import switch
+
+    original = switch.find_pattern_dirs
+    depths = []
+
+    def tracked_find(*args, **kwargs):
+        depth = kwargs.get("max_wrapper_depth", args[4] if len(args) > 4 else 2)
+        depths.append(depth)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(switch, "find_pattern_dirs", tracked_find)
+
+    result = scan(tmp_path)
+
+    assert len(result.saves) == 1
+    assert depths and set(depths) == {2}
+
+
+def test_vita_companion_nonexistent_dirs_is_dir_bounded(
+    monkeypatch, tmp_path: Path
+):
+    from collections import Counter
+    from conftest import build_sfo
+
+    # 5 saves under user/00/savedata with distinct title IDs
+    for i in range(1, 6):
+        title_id = f"PCSE0000{i}"
+        sce_sys = tmp_path / "user" / "00" / "savedata" / title_id / "sce_sys"
+        sce_sys.mkdir(parents=True)
+        (sce_sys / "param.sfo").write_bytes(
+            build_sfo({"TITLE_ID": title_id, "TITLE": f"Game {i}"})
+        )
+
+    original_is_dir = Path.is_dir
+    checked_containers = []
+
+    def tracked_is_dir(self):
+        parts = [p.lower() for p in self.parts]
+        if "user" in parts and self.name.lower() in ("app", "appmeta"):
+            checked_containers.append(str(self))
+        return original_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", tracked_is_dir)
+
+    result = scan(tmp_path)
+    assert len(result.saves) == 5
+
+    counts = Counter(checked_containers)
+    # Each non-existent companion container path (e.g. user/app, user/00/app)
+    # must be probed at most once (O(1)), not once per save (O(saves)).
+    assert counts, "Should probe companion container paths"
+    assert all(c <= 1 for c in counts.values()), f"Probed too many times: {counts}"
+
+
+def test_vita_native_param_sfo_avoids_iterdir_on_sce_sys(
+    monkeypatch, tmp_path: Path, vita_sfo_bytes: bytes
+):
+    save_dir = tmp_path / "user" / "00" / "savedata" / "PCSE00120"
+    sce_sys = save_dir / "sce_sys"
+    sce_sys.mkdir(parents=True)
+    (sce_sys / "param.sfo").write_bytes(vita_sfo_bytes)
+
+    original_iterdir = Path.iterdir
+    iterdir_calls = []
+
+    def tracked_iterdir(self):
+        iterdir_calls.append(self.resolve())
+        return original_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", tracked_iterdir)
+
+    result = scan(tmp_path)
+    assert len(result.saves) == 1
+    # When sce_sys/param.sfo is directly present, native scan should use
+    # _find_vita_param_sfo rather than iterating sce_sys contents.
+    assert sce_sys.resolve() not in iterdir_calls
+
+
+def test_nds_sibling_walk_skips_nintendo_and_system_dirs(
+    monkeypatch, tmp_path: Path
+):
+    (tmp_path / "_nds").mkdir()
+    roms_dir = tmp_path / "roms" / "nds"
+    roms_dir.mkdir(parents=True)
+    (roms_dir / "game.nds").write_bytes(b"nds_rom_dummy")
+    (roms_dir / "game.sav").write_bytes(b"save_data")
+
+    nintendo_dir = tmp_path / "Nintendo" / "Contents"
+    nintendo_dir.mkdir(parents=True)
+    (nintendo_dir / "x").write_bytes(b"dummy")
+
+    original_iterdir = Path.iterdir
+    iterdir_calls = []
+
+    def tracked_iterdir(self):
+        iterdir_calls.append(self)
+        return original_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", tracked_iterdir)
+
+    result = scan(tmp_path)
+    assert any(s.path.endswith("game.sav") for s in result.saves)
+    iterdir_names = {p.name.lower() for p in iterdir_calls}
+    assert "nintendo" not in iterdir_names
+    assert "contents" not in iterdir_names
+

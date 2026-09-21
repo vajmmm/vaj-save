@@ -988,3 +988,29 @@ def test_unresolved_rebackup_never_overwrites_existing_identity_key(tmp_path: Pa
     assert game.identity_key == "psp:ULJM05800"
     assert game.id == game_key(entry)
     assert len(game.versions) == 2
+
+
+def test_hash_tree_skips_symlinks(tmp_path: Path):
+    save_dir = tmp_path / "save"
+    save_dir.mkdir()
+    (save_dir / "real.bin").write_bytes(b"real_data")
+
+    outside_dir = tmp_path / "outside_dir"
+    outside_dir.mkdir()
+    (outside_dir / "other.bin").write_bytes(b"other_data")
+
+    outside_file = tmp_path / "outside.txt"
+    outside_file.write_text("secret")
+
+    try:
+        (save_dir / "link_file.bin").symlink_to(outside_file)
+        (save_dir / "link_dir").symlink_to(outside_dir)
+    except OSError:
+        return
+
+    clean_dir = tmp_path / "clean"
+    clean_dir.mkdir()
+    (clean_dir / "real.bin").write_bytes(b"real_data")
+
+    assert hash_tree(save_dir) == hash_tree(clean_dir)
+

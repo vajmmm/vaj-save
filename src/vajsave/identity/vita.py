@@ -27,6 +27,18 @@ def _read_param_sfo(directory):
 
 
 def resolve(entry, ctx):
+    entry_title_id = getattr(entry, "title_id", None)
+    if entry_title_id and str(entry_title_id).strip():
+        title_id = str(entry_title_id).strip()
+        title = getattr(entry, "display_name", None) or title_id
+        return resolve_from_title_id(
+            entry,
+            platform=PLATFORM,
+            title_id=title_id,
+            title=title,
+            source=SOURCE_METADATA,
+            missing_reason="缺少 Vita title_id / PARAM.SFO",
+        )
     sfo_data = _read_param_sfo(entry.path)
     return resolve_from_title_id(
         entry,

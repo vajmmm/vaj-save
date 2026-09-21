@@ -242,12 +242,7 @@ def scan(root_path: Union[Path, str]) -> ScanResult:
                 seen_source_roots,
                 seen_save_paths,
             )
-            if platform_id == "psp":
-                scan_fn(*args, standard_root=bool(detected))
-            elif platform_id == "vita":
-                scan_fn(*args, standard_root=bool(detected))
-            else:
-                scan_fn(*args)
+            scan_fn(*args, standard_root=bool(detected))
 
     if not sources:
         platform = "unknown"
@@ -259,6 +254,8 @@ def scan(root_path: Union[Path, str]) -> ScanResult:
     # well-known icon names inside each save folder (never a disk-wide walk).
     for entry in saves:
         if entry.cover_path:
+            continue
+        if entry.platform == "vita":
             continue
         cover = find_embedded_cover(entry.path, max_depth=1)
         if cover is not None:

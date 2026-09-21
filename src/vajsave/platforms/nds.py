@@ -27,6 +27,24 @@ _MAX_SIBLING_DEPTH = 4
 # Top-level folders that hold NDS saves apart from the ROMs themselves.
 _TOP_LEVEL_SAVE_DIR_NAMES = frozenset({"save", "saves"})
 
+# Directory names that must be skipped during NDS walks to avoid walking foreign trees.
+_SKIP_DIR_NAMES = frozenset(
+    {
+        "nintendo",
+        "nintendo 3ds",
+        "atmosphere",
+        "app",
+        "appmeta",
+        "pspemu",
+        "user",
+        "addcont",
+        "patch",
+        "album",
+        "$recycle.bin",
+        "system volume information",
+    }
+)
+
 
 def _has_nds_rom(directory: Path, root_resolved: Path, warnings: List[str]) -> bool:
     for child in safe_iterdir(directory, warnings):
@@ -230,6 +248,8 @@ def _walk_sibling_depth(
     for child in safe_iterdir(directory, warnings):
         if not child.is_dir() or not is_safe_path(child, root_resolved):
             continue
+        if child.name.casefold() in _SKIP_DIR_NAMES:
+            continue
         _walk_sibling_depth(
             child,
             depth=depth + 1,
@@ -267,7 +287,8 @@ def _collect_rom_stems(
                 if child.suffix.lower() in _NDS_ROM_EXTENSIONS:
                     stems.setdefault(child.stem.casefold(), []).append(child)
             elif child.is_dir() and depth < max_depth:
-                walk(child, depth + 1)
+                if child.name.casefold() not in _SKIP_DIR_NAMES:
+                    walk(child, depth + 1)
 
     walk(root, 0)
     return stems
@@ -328,27 +349,35 @@ def scan_nds(
     saves: List[SaveEntry],
     seen_source_roots: Set[Path],
     seen_save_paths: Set[Path],
+    *,
+    standard_root: bool = False,
 ) -> None:
+    wrapper_depth = 0 if standard_root else 2
     # TWiLight: dirs with NDS ROM + saves/*.sav
     # Prefer known roms/nds layout via pattern, then shallow walk for saves/ next to ROMs
     twilight_candidates = collect_unique_dirs(
         [
-            *find_pattern_dirs(root, ("roms", "nds"), root_resolved, warnings),
+            *find_pattern_dirs(root, ("roms", "nds"), root_resolved, warnings, wrapper_depth),
             root,  # user may have selected the rom folder itself
         ]
     )
     # Also discover shallow: root and children/grandchildren that contain saves/ + ROM
-    # without full-disk rglob of *.sav
+    # without full-disk rglob of *.sav. When standard_root is True, do not enumerate
+    # root's children/grandchildren as twilight candidates.
     extra: List[Path] = []
-    for base in [root, *safe_iterdir(root, warnings)]:
-        if not base.is_dir() or not is_safe_path(base, root_resolved):
-            continue
-        extra.append(base)
-        if base is root:
-            continue
-        for child in safe_iterdir(base, warnings):
-            if child.is_dir() and is_safe_path(child, root_resolved):
-                extra.append(child)
+    if not standard_root:
+        for base in [root, *safe_iterdir(root, warnings)]:
+            if not base.is_dir() or not is_safe_path(base, root_resolved):
+                continue
+            if base.name.casefold() in _SKIP_DIR_NAMES:
+                continue
+            extra.append(base)
+            if base is root:
+                continue
+            for child in safe_iterdir(base, warnings):
+                if child.is_dir() and is_safe_path(child, root_resolved):
+                    if child.name.casefold() not in _SKIP_DIR_NAMES:
+                        extra.append(child)
     for candidate in collect_unique_dirs([*twilight_candidates, *extra]):
         _scan_twilight_dir(
             candidate, root_resolved, warnings, sources, saves, seen_source_roots, seen_save_paths
@@ -360,7 +389,7 @@ def scan_nds(
         or _is_roms_nds_path(root)
         or any(
             _is_roms_nds_path(p)
-            for p in find_pattern_dirs(root, ("roms", "nds"), root_resolved, warnings)
+            for p in find_pattern_dirs(root, ("roms", "nds"), root_resolved, warnings, wrapper_depth)
         )
     )
     # User selected a directory that itself holds a ROM + matching .sav

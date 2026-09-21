@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 import threading
 from dataclasses import asdict, dataclass, field
@@ -120,18 +121,30 @@ def _update_from_file(digest: Any, path: Path) -> None:
 
 
 def _file_fingerprint(path: Path) -> Tuple[Any, ...]:
-    stat = path.stat()
-    return ("file", str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+    st = path.stat()
+    return ("file", str(path.resolve()), st.st_mtime_ns, st.st_size)
 
 
 def _dir_file_list(root: Path) -> List[Tuple[Path, str, int, int]]:
     files: List[Tuple[Path, str, int, int]] = []
-    for child in root.rglob("*"):
-        if child.is_symlink() or not child.is_file():
-            continue
-        rel = child.relative_to(root).as_posix()
-        stat = child.stat()
-        files.append((child, rel, stat.st_mtime_ns, stat.st_size))
+    root_str = str(root)
+    for dirpath, dirnames, filenames in os.walk(root_str, followlinks=False):
+        dirnames[:] = [
+            d for d in dirnames if not os.path.islink(os.path.join(dirpath, d))
+        ]
+        for fname in filenames:
+            fpath = os.path.join(dirpath, fname)
+            if os.path.islink(fpath):
+                continue
+            try:
+                st = os.stat(fpath)
+                if not stat.S_ISREG(st.st_mode):
+                    continue
+            except OSError:
+                continue
+            child = Path(fpath)
+            rel = child.relative_to(root).as_posix()
+            files.append((child, rel, st.st_mtime_ns, st.st_size))
     files.sort(key=lambda item: item[1])
     return files
 

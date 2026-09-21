@@ -196,10 +196,19 @@ def scan_switch(
     saves: List[SaveEntry],
     seen_source_roots: Set[Path],
     seen_save_paths: Set[Path],
+    *,
+    standard_root: bool = False,
 ) -> None:
+    wrapper_depth = 0 if standard_root else 2
     # Checkpoint: .../switch/Checkpoint/saves
     sw_cp_dirs = collect_unique_dirs(
-        find_pattern_dirs(root, ("switch", "Checkpoint", "saves"), root_resolved, warnings)
+        find_pattern_dirs(
+            root,
+            ("switch", "Checkpoint", "saves"),
+            root_resolved,
+            warnings,
+            wrapper_depth,
+        )
     )
     if root.name.lower() == "saves" and root.parent.name == "Checkpoint":
         if root.parent.parent.name.lower() == "switch":
@@ -224,7 +233,9 @@ def scan_switch(
         )
 
     # JKSV: .../JKSV (skip reserved 3DS JKSM folder names)
-    jksv_dirs = collect_unique_dirs(find_pattern_dirs(root, ("JKSV",), root_resolved, warnings))
+    jksv_dirs = collect_unique_dirs(
+        find_pattern_dirs(root, ("JKSV",), root_resolved, warnings, wrapper_depth)
+    )
     if root.name == "JKSV":
         jksv_dirs = collect_unique_dirs([*jksv_dirs, root])
     for jksv_dir in jksv_dirs:

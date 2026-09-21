@@ -408,19 +408,19 @@ class AppState:
             posix = resolved.as_posix()
             if posix in ("/", "/System", "/Applications"):
                 return False
-        for volume in self.volumes:
-            try:
-                if Path(volume.mount_point).resolve() == resolved and volume.is_removable:
-                    return True
-            except OSError:
-                if Path(volume.mount_point) == root and volume.is_removable:
-                    return True
         for name in _HANDHELD_ROM_MARKERS:
             try:
                 if (resolved / name).is_dir():
                     return True
             except OSError:
                 continue
+        if self.current_result is not None:
+            if self.current_result.platform in ("gba", "nds"):
+                return True
+            if any(s.platform in ("gba", "nds") for s in self.current_result.sources):
+                return True
+            if any(s.platform in ("gba", "nds") for s in self.current_result.saves):
+                return True
         return False
 
     def _volume_rom_search_roots(self) -> List[Path]:

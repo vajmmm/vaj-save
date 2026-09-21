@@ -42,6 +42,19 @@ def _find_param_sfo(directory) -> Optional[Path]:
 
 
 def resolve(entry, ctx) -> GameIdentityResult:
+    entry_title_id = getattr(entry, "title_id", None)
+    if entry_title_id and str(entry_title_id).strip():
+        title_id = str(entry_title_id).strip()
+        title = getattr(entry, "display_name", None) or title_id
+        identity = GameIdentity(
+            identity_key=f"psp:{title_id}",
+            platform=PLATFORM,
+            title=title or title_id,
+            title_id=title_id,
+            source=SOURCE_METADATA,
+        )
+        return resolved(identity, save_path=entry.path)
+
     sfo_path = _find_param_sfo(entry.path)
     sfo_data = parse_sfo(sfo_path) if sfo_path is not None else {}
     title_id = (
