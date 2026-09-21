@@ -1234,22 +1234,34 @@ class VajSaveWindow(QMainWindow):
         pending = [save for save in saves if save.path not in self._enrichment_attempted]
         if not pending:
             return
-        results = self.state.resolve_identities(pending)
-        for save, result in zip(pending, results):
-            if not result.is_resolved or result.identity is None:
-                continue
-            self._enrichment_attempted.add(save.path)
-            identity = result.identity
 
-            def task(entry=save, resolved=result, game_identity=identity):
-                metadata = self.state.resolve_save_metadata(entry, game_identity)
-                cover = self.state.ensure_save_cover(entry, resolved, metadata)
-                return metadata, cover
+        def task():
+            return self.state.resolve_identities(pending)
 
-            def completed(payload, entry=save) -> None:
-                self._apply_cover_enrichment(entry, payload)
+        def completed(results) -> None:
+            if generation != self._list_generation or self.state.library_mode:
+                return
+            if not results:
+                return
+            for save, result in zip(pending, results):
+                if not result.is_resolved or result.identity is None:
+                    continue
+                self._enrichment_attempted.add(save.path)
+                identity = result.identity
 
-            self._artwork_loader.submit(("cover", save.path), task, completed)
+                def cover_task(entry=save, resolved=result, game_identity=identity):
+                    metadata = self.state.resolve_save_metadata(entry, game_identity)
+                    cover = self.state.ensure_save_cover(entry, resolved, metadata)
+                    return metadata, cover
+
+                def cover_completed(payload, entry=save) -> None:
+                    if generation != self._list_generation or self.state.library_mode:
+                        return
+                    self._apply_cover_enrichment(entry, payload)
+
+                self._artwork_loader.submit(("cover", save.path), cover_task, cover_completed)
+
+        self._artwork_loader.submit(("identity", generation), task, completed)
 
     def _apply_cover_enrichment(self, entry: SaveEntry, payload) -> None:
         if not payload:
@@ -1318,22 +1330,39 @@ class VajSaveWindow(QMainWindow):
         self.state.begin_mount_scan(path, auto=auto)
         self.refresh_all()
 
-        def task():
+        def scan_task():
             return self.state.prepare_mount_scan(path)
 
-        def completed(prepared) -> None:
+        def scan_completed(prepared) -> None:
             if generation != self._device_scan_generation:
                 return
-            self._device_scan_target = None
             if prepared is None:
+                self._device_scan_target = None
                 self.state.status_text = f"扫描失败: {path}"
                 self.refresh_all()
                 return
             self.state.apply_prepared_mount_scan(prepared)
             self.refresh_all()
 
+            def hash_task():
+                return self.state.prepare_backup_statuses(prepared.result.saves)
+
+            def hash_completed(backup_statuses) -> None:
+                if generation != self._device_scan_generation:
+                    return
+                self._device_scan_target = None
+                if backup_statuses is not None:
+                    self.state.apply_backup_statuses(backup_statuses)
+                    self.refresh_all()
+
+            hash_started = self._device_loader.submit(
+                ("device-hash", generation), hash_task, hash_completed
+            )
+            if not hash_started:
+                self._device_scan_target = None
+
         started = self._device_loader.submit(
-            ("device-scan", generation), task, completed
+            ("device-scan", generation), scan_task, scan_completed
         )
         if not started:
             self._device_scan_target = None

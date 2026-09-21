@@ -1855,3 +1855,132 @@ def test_savegame_mount_adds_card_root_to_rom_index(tmp_path: Path):
     gba_roots = resolver.rom_index._roots.get("gba", [])
     assert vol in gba_roots
 
+
+def test_prepare_mount_scan_skips_hash_for_backed_up_saves(tmp_path: Path, psp_sfo_bytes: bytes, monkeypatch):
+    root = tmp_path / "PSP_VOL"
+    save_dir = _psp_save_tree(root, "ULJM05800", b"data", psp_sfo_bytes)
+    lib = tmp_path / "lib"
+    entry = SaveEntry(
+        platform="psp",
+        source_id="psp",
+        display_name="Monster Hunter Portable 3rd",
+        path=str(save_dir),
+        title_id="ULJM05800",
+    )
+    backup_save(entry, lib, datetime(2026, 1, 1, 10, 0, 0))
+
+    def boom(_path):
+        raise AssertionError("prepare_mount_scan must not hash saves")
+
+    monkeypatch.setattr("vajsave.app_state.hash_tree", boom)
+    state = AppState(library_root=lib)
+    prepared = state.prepare_mount_scan(root)
+
+    assert len(prepared.result.saves) == 1
+    save = prepared.result.saves[0]
+    status = prepared.backup_statuses[save.path]
+    assert status.status == "changed"
+    assert status.sha256 is None
+    assert status.last_backup_at is not None
+
+
+def test_prepare_and_apply_backup_statuses_refines_status(tmp_path: Path, psp_sfo_bytes: bytes):
+    root = tmp_path / "PSP_VOL"
+    save_dir = _psp_save_tree(root, "ULJM05800", b"same-data", psp_sfo_bytes)
+    lib = tmp_path / "lib"
+    entry = SaveEntry(
+        platform="psp",
+        source_id="psp",
+        display_name="Monster Hunter Portable 3rd",
+        path=str(save_dir),
+        title_id="ULJM05800",
+    )
+    backup_save(entry, lib, datetime(2026, 1, 1, 10, 0, 0))
+
+    state = AppState(library_root=lib)
+    state.begin_mount_scan(root)
+    prepared_scan = state.prepare_mount_scan(root)
+    state.apply_prepared_mount_scan(prepared_scan)
+
+    save = prepared_scan.result.saves[0]
+    assert state.save_status(save).status == "changed"
+    assert state.save_status(save).sha256 is None
+
+    prepared_statuses = state.prepare_backup_statuses(prepared_scan.result.saves)
+    applied = state.apply_backup_statuses(prepared_statuses)
+    assert applied is True
+
+    refined = state.save_status(save)
+    assert refined.status == "unchanged"
+    assert refined.sha256 is not None
+    assert "已备份 1" in state.status_text
+
+
+def test_prepare_mount_scan_unbacked_save_status_is_new(tmp_path: Path, psp_sfo_bytes: bytes, monkeypatch):
+    root = tmp_path / "PSP_VOL"
+    save_dir = _psp_save_tree(root, "ULJM05800", b"new-data", psp_sfo_bytes)
+    lib = tmp_path / "lib"
+
+    def boom(_path):
+        raise AssertionError("prepare_mount_scan must not hash unbacked saves")
+
+    monkeypatch.setattr("vajsave.app_state.hash_tree", boom)
+    state = AppState(library_root=lib)
+    prepared = state.prepare_mount_scan(root)
+
+    assert len(prepared.result.saves) == 1
+    save = prepared.result.saves[0]
+    status = prepared.backup_statuses[save.path]
+    assert status.status == "new"
+    assert status.sha256 is None
+
+
+def test_prepare_backup_statuses_hash_oserror_sets_new_and_warning(tmp_path: Path, psp_sfo_bytes: bytes, monkeypatch):
+    root = tmp_path / "PSP_VOL"
+    save_dir = _psp_save_tree(root, "ULJM05800", b"data", psp_sfo_bytes)
+    lib = tmp_path / "lib"
+    entry = SaveEntry(
+        platform="psp",
+        source_id="psp",
+        display_name="Monster Hunter Portable 3rd",
+        path=str(save_dir),
+        title_id="ULJM05800",
+    )
+    backup_save(entry, lib, datetime(2026, 1, 1, 10, 0, 0))
+
+    def boom(_path):
+        raise OSError("read failure")
+
+    monkeypatch.setattr("vajsave.app_state.hash_tree", boom)
+    state = AppState(library_root=lib)
+    prepared = state.prepare_backup_statuses([entry])
+    assert prepared.statuses[entry.path].status == "new"
+    assert any("read failure" in w or "计算存档哈希失败" in w for w in prepared.status_warnings)
+
+
+def test_apply_backup_statuses_noop_when_current_result_differs(tmp_path: Path, psp_sfo_bytes: bytes):
+    root = tmp_path / "PSP_VOL"
+    save_dir = _psp_save_tree(root, "ULJM05800", b"data", psp_sfo_bytes)
+    lib = tmp_path / "lib"
+    entry = SaveEntry(
+        platform="psp",
+        source_id="psp",
+        display_name="Monster Hunter Portable 3rd",
+        path=str(save_dir),
+        title_id="ULJM05800",
+    )
+    state = AppState(library_root=lib)
+    prepared = state.prepare_backup_statuses([entry])
+
+    # current_result is None -> noop
+    assert state.apply_backup_statuses(prepared) is False
+
+    # current_result is different device -> noop
+    other_root = tmp_path / "OTHER_VOL"
+    other_root.mkdir()
+    state.begin_mount_scan(other_root)
+    prepared_scan = state.prepare_mount_scan(other_root)
+    state.apply_prepared_mount_scan(prepared_scan)
+    assert state.apply_backup_statuses(prepared) is False
+
+

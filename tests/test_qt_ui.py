@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import threading
+from datetime import datetime
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton
 
 from vajsave.app_state import AppState
 from vajsave.artwork import ArtworkResolution, PLACEHOLDER, SOURCE_DOWNLOADED
+from vajsave.library import Snapshot, backup_save, load_keep_last
 from vajsave.metadata import GameMetadata
 from vajsave.models import SaveEntry, ScanResult, VolumeInfo
 from vajsave.qt_ui import (
@@ -455,3 +457,176 @@ def test_main_settings_exposes_libretro_and_llm_entries(qt_app, qt_state):
         assert found["llm"] is not None
     finally:
         window.close()
+
+
+def test_identity_resolution_runs_off_qt_main_thread(qt_app, qt_state, monkeypatch):
+    resolved_threads = []
+    original_resolve = qt_state.resolve_identities
+
+    def resolve_wrapper(entries=None):
+        resolved_threads.append(threading.current_thread())
+        return original_resolve(entries)
+
+    monkeypatch.setattr(qt_state, "resolve_identities", resolve_wrapper)
+
+    window = VajSaveWindow(qt_state)
+    try:
+        window.show()
+        for _ in range(50):
+            QTest.qWait(20)
+            if resolved_threads:
+                break
+        assert resolved_threads, "resolve_identities was never called"
+        assert resolved_threads[0] != threading.current_thread()
+        assert resolved_threads[0] != threading.main_thread()
+    finally:
+        window.close()
+
+
+def test_scan_completed_shows_saves_before_hash_finishes(
+    qt_app, tmp_path: Path, monkeypatch
+):
+    mount = tmp_path / "dev"
+    save_path = mount / "save1"
+    save_path.mkdir(parents=True)
+    (save_path / "data.bin").write_bytes(b"data1")
+    lib = tmp_path / "lib"
+    entry = SaveEntry(
+        platform="switch",
+        source_id="demo",
+        display_name="Game 1",
+        path=str(save_path),
+        title_id="0100000000000001",
+    )
+    backup_save(entry, lib, datetime(2026, 1, 1, 10, 0, 0))
+
+    hash_started = threading.Event()
+    hash_release = threading.Event()
+    from vajsave.library import hash_tree as real_hash_tree
+
+    def slow_hash(path):
+        hash_started.set()
+        hash_release.wait(timeout=3)
+        return real_hash_tree(path)
+
+    monkeypatch.setattr("vajsave.app_state.hash_tree", slow_hash)
+
+    scan_res = ScanResult(root_path=str(mount), platform="switch", saves=[entry])
+    volume = VolumeInfo("Switch", mount, True)
+    state = AppState(
+        provider=FakeVolumeProvider([volume]),
+        scan_fn=lambda _p: scan_res,
+        library_root=lib,
+    )
+    monkeypatch.setattr(state, "start_watch", lambda *args, **kwargs: None)
+    monkeypatch.setattr(state, "stop_watch", lambda *args, **kwargs: None)
+
+    window = VajSaveWindow(state)
+    try:
+        window._request_mount_scan(mount)
+        for _ in range(50):
+            QTest.qWait(20)
+            if hash_started.is_set():
+                break
+
+        assert hash_started.is_set()
+        # Scan applied: saves visible in state and in gallery canvas
+        assert state.current_result is not None
+        assert len(state.current_result.saves) == 1
+        assert len(window.gallery.canvas.entries) == 1
+        # Cheap status is "changed" (not yet unchanged)
+        assert state.save_status(entry).status == "changed"
+
+        hash_release.set()
+        for _ in range(50):
+            QTest.qWait(20)
+            if state.save_status(entry).status == "unchanged":
+                break
+
+        assert state.save_status(entry).status == "unchanged"
+    finally:
+        hash_release.set()
+        window.close()
+
+
+def test_stale_hash_cannot_overwrite_new_device(
+    qt_app, tmp_path: Path, monkeypatch
+):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    save1 = first / "save1"
+    save2 = second / "save2"
+    save1.mkdir(parents=True)
+    save2.mkdir(parents=True)
+    (save1 / "data.bin").write_bytes(b"data1")
+    (save2 / "data.bin").write_bytes(b"data2")
+    lib = tmp_path / "lib"
+
+    entry1 = SaveEntry("switch", "demo", "Game 1", str(save1), "0100000000000001")
+    entry2 = SaveEntry("switch", "demo", "Game 2", str(save2), "0100000000000002")
+    backup_save(entry1, lib, datetime(2026, 1, 1, 10, 0, 0))
+    backup_save(entry2, lib, datetime(2026, 1, 1, 10, 0, 0))
+
+    first_hash_started = threading.Event()
+    first_hash_release = threading.Event()
+
+    def mock_hash(path):
+        if str(first) in str(path):
+            first_hash_started.set()
+            first_hash_release.wait(timeout=3)
+        return "digest"
+
+    monkeypatch.setattr("vajsave.app_state.hash_tree", mock_hash)
+
+    def scan_fn(path):
+        path = Path(path)
+        if path == first:
+            return ScanResult(str(first), "switch", saves=[entry1])
+        return ScanResult(str(second), "switch", saves=[entry2])
+
+    state = AppState(
+        provider=FakeVolumeProvider([]),
+        scan_fn=scan_fn,
+        library_root=lib,
+    )
+    monkeypatch.setattr(state, "start_watch", lambda *args, **kwargs: None)
+    monkeypatch.setattr(state, "stop_watch", lambda *args, **kwargs: None)
+
+    window = VajSaveWindow(state)
+    try:
+        window._request_mount_scan(first)
+        for _ in range(50):
+            QTest.qWait(20)
+            if first_hash_started.is_set():
+                break
+        assert first_hash_started.is_set()
+
+        # Switch to second device
+        window._request_mount_scan(second)
+        first_hash_release.set()
+
+        for _ in range(50):
+            QTest.qWait(20)
+            if state.current_mount == second and state.current_result is not None and state.current_result.root_path == str(second):
+                break
+
+        assert state.current_mount == second
+        assert state.current_result.root_path == str(second)
+        assert entry1.path not in state._backup_statuses
+    finally:
+        first_hash_release.set()
+        window.close()
+
+
+def test_library_mode_skips_cover_enrichment(qt_app, qt_state, monkeypatch):
+    identity_calls = []
+    monkeypatch.setattr(qt_state, "resolve_identities", lambda entries=None: identity_calls.append(True) or [])
+    qt_state.set_library_mode(True)
+    window = VajSaveWindow(qt_state)
+    try:
+        window.show()
+        QTest.qWait(100)
+        assert len(identity_calls) == 0
+    finally:
+        window.close()
+

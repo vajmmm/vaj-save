@@ -5,7 +5,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from .backend import StorageBackend
 from .library import (
@@ -141,6 +141,18 @@ class PreparedMountScan:
     status_warnings: Tuple[str, ...]
     status_counts: Dict[str, int]
     status_text: str
+
+
+@dataclass(frozen=True)
+class PreparedBackupStatuses:
+    """第二阶段后台哈希产生、等待由 UI 主线程提交的结果。"""
+
+    statuses: Dict[str, SaveBackupStatus]
+    status_warnings: Tuple[str, ...]
+    status_counts: Dict[str, int]
+    status_text: Optional[str] = None
+    entries: Tuple[SaveEntry, ...] = ()
+    mount_point: Optional[Path] = None
 
 
 def _build_status_text(result: ScanResult, counts: Optional[Dict[str, int]] = None) -> str:
@@ -1036,10 +1048,9 @@ class AppState:
             self.library_entries()  # populates statuses without hashing device files
             return self.backup_status_counts()
         entries = self.all_saves()
-        statuses, status_warnings, counts = self._calculate_device_statuses(entries)
-        self._backup_statuses = statuses
-        self.warnings.extend(status_warnings)
-        return counts
+        prepared = self.prepare_backup_statuses(entries)
+        self.apply_backup_statuses(prepared)
+        return prepared.status_counts
 
     def _calculate_device_statuses(
         self, entries: List[SaveEntry]
@@ -1062,7 +1073,7 @@ class AppState:
                 except (OSError, ValueError, FileNotFoundError) as exc:
                     return item.path, None, exc
 
-            workers = min(8, len(pending))
+            workers = min(2, len(pending))
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 hashed = list(pool.map(_hash_one, pending))
             by_path = {path: (digest, err) for path, digest, err in hashed}
@@ -1299,7 +1310,7 @@ class AppState:
         return path
 
     def prepare_mount_scan(self, mount_point: Union[Path, str]) -> PreparedMountScan:
-        """扫描并计算备份状态；本方法不修改 UI 可见状态，可在工作线程运行。"""
+        """扫描并计算廉价备份状态（不计算哈希）；可在工作线程运行。"""
         path = Path(mount_point)
         try:
             res = self.scan_fn(path)
@@ -1311,14 +1322,35 @@ class AppState:
                 saves=[],
                 warnings=[f"扫描异常: {e}"],
             )
-        statuses, status_warnings, counts = self._calculate_device_statuses(
-            list(res.saves)
-        )
+        catalog = load_catalog(self.library_root)
+        statuses: Dict[str, SaveBackupStatus] = {}
+        for entry in res.saves:
+            game = catalog.games.get(game_key(entry))
+            latest = game.versions[-1] if game and game.versions else None
+            if latest is None:
+                statuses[entry.path] = SaveBackupStatus(
+                    status="new",
+                    source_mtime=path_mtime_iso(entry.path),
+                    last_backup_at=None,
+                    mtime_stale=False,
+                    sha256=None,
+                )
+            else:
+                statuses[entry.path] = SaveBackupStatus(
+                    status="changed",
+                    source_mtime=path_mtime_iso(entry.path),
+                    last_backup_at=latest.created_at,
+                    mtime_stale=False,
+                    sha256=None,
+                )
+        counts = {"new": 0, "changed": 0, "unchanged": 0}
+        for status in statuses.values():
+            counts[status.status] = counts.get(status.status, 0) + 1
         return PreparedMountScan(
             mount_point=path,
             result=res,
             backup_statuses=statuses,
-            status_warnings=tuple(status_warnings),
+            status_warnings=(),
             status_counts=counts,
             status_text=_build_status_text(res, counts=counts),
         )
@@ -1333,6 +1365,43 @@ class AppState:
         self.status_text = prepared.status_text
         return prepared.result
 
+    def prepare_backup_statuses(
+        self, entries: Optional[Sequence[SaveEntry]] = None
+    ) -> PreparedBackupStatuses:
+        """计算设备存档真实哈希与状态；可在工作线程运行。最多 2 个工作线程。"""
+        target = (
+            list(entries)
+            if entries is not None
+            else (list(self.current_result.saves) if self.current_result else [])
+        )
+        statuses, status_warnings, counts = self._calculate_device_statuses(target)
+        status_text = None
+        if self.current_result is not None:
+            status_text = _build_status_text(self.current_result, counts=counts)
+        return PreparedBackupStatuses(
+            statuses=statuses,
+            status_warnings=tuple(status_warnings),
+            status_counts=counts,
+            status_text=status_text,
+            entries=tuple(target),
+            mount_point=self.current_mount,
+        )
+
+    def apply_backup_statuses(self, prepared: PreparedBackupStatuses) -> bool:
+        """在主线程提交后台哈希结果。若当前展示的已不是该批存档则丢弃 (no-op)。"""
+        if self.current_result is None:
+            return False
+        if prepared.mount_point is not None and self.current_mount != prepared.mount_point:
+            return False
+        if prepared.entries and tuple(self.current_result.saves) != prepared.entries:
+            return False
+        self._backup_statuses.update(prepared.statuses)
+        self.warnings.extend(prepared.status_warnings)
+        self.status_text = _build_status_text(
+            self.current_result, counts=self.backup_status_counts()
+        )
+        return True
+
     def select_mount(self, mount_point: Union[Path, str], auto: bool = False) -> ScanResult:
         """Select a volume or path synchronously and update current result.
 
@@ -1340,7 +1409,11 @@ class AppState:
         may later be replaced by a better device (see ``ensure_mount_selected``).
         """
         path = self.begin_mount_scan(mount_point, auto=auto)
-        return self.apply_prepared_mount_scan(self.prepare_mount_scan(path))
+        prepared_scan = self.prepare_mount_scan(path)
+        self.apply_prepared_mount_scan(prepared_scan)
+        prepared_statuses = self.prepare_backup_statuses(prepared_scan.result.saves)
+        self.apply_backup_statuses(prepared_statuses)
+        return prepared_scan.result
 
     def register_custom_path(self, path: Union[Path, str]) -> Path:
         """把用户选择的目录加入设备列表，但不立即扫描。"""
