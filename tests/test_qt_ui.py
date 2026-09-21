@@ -15,7 +15,7 @@ from PySide6.QtGui import QImage, QPainter, QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QLineEdit, QPushButton
 
-from vajsave.app_state import AppState
+from vajsave.app_state import PLATFORM_ORDER, AppState
 from vajsave.artwork import ArtworkResolution, PLACEHOLDER, SOURCE_DOWNLOADED
 from vajsave.library import backup_save
 from vajsave.metadata import GameMetadata
@@ -226,11 +226,11 @@ def test_formal_entry_uses_qt_runtime():
 
 def test_platform_icons_use_distinct_official_marks(qt_app):
     cache_keys = []
-    for platform in ("all", "psp", "vita", "switch", "3ds", "nds", "gba"):
+    for platform in ("all", "psp", "vita", "switch", "3ds", "nds", "gb", "gbc", "gba"):
         pixmap = _platform_icon(platform).pixmap(68, 28)
         assert not pixmap.isNull()
         cache_keys.append(pixmap.cacheKey())
-    assert len(set(cache_keys)) == 7
+    assert len(set(cache_keys)) == 9
 
     for dpr in (1.0, 1.25, 1.5, 1.75, 2.0, 3.0, 4.0):
         hidpi = _platform_icon("switch").pixmap(QSize(68, 28), dpr)
@@ -250,7 +250,7 @@ def test_platform_buttons_only_show_the_all_label(qt_app):
 
 
 def test_platform_icons_remain_legible_at_100_percent(qt_app):
-    for platform in ("psp", "vita", "switch", "3ds", "nds", "gba"):
+    for platform in ("psp", "vita", "switch", "3ds", "nds", "gb", "gbc", "gba"):
         image = _platform_icon(platform).pixmap(QSize(68, 28), 1.0).toImage()
         strong_pixels = sum(
             image.pixelColor(x, y).alpha() >= 160
@@ -264,7 +264,7 @@ def test_platform_logo_assets_are_packaged():
     from importlib import resources
 
     data = resources.files("vajsave.data")
-    for platform in ("psp", "vita", "switch", "3ds", "nds", "gba"):
+    for platform in ("psp", "vita", "switch", "3ds", "nds", "gb", "gbc", "gba"):
         asset = data.joinpath(f"platform-{platform}.svg")
         assert asset.is_file()
         assert b"<svg" in asset.read_bytes()
@@ -677,6 +677,29 @@ def test_scan_progress_bar_visible_during_slow_scan(qt_app, tmp_path: Path, monk
     finally:
         release.set()
         window.close()
+
+
+def test_dock_order_places_gb_gbc_between_nds_and_gba(qt_app, qt_state):
+    window = VajSaveWindow(qt_state)
+    try:
+        keys = list(window.dock.buttons)
+        assert keys.index("nds") < keys.index("gb") < keys.index("gbc") < keys.index("gba")
+        assert keys == list(PLATFORM_ORDER)
+    finally:
+        window.close()
+
+
+def test_qt_help_names_plan_topics(qt_app, qt_state):
+    from vajsave.qt_dialogs import HELP_TEXT
+
+    assert "不会写入掌机" in HELP_TEXT
+    assert "GB" in HELP_TEXT and "GBC" in HELP_TEXT
+    assert "ZIP" in HELP_TEXT
+    assert "删除单个版本" in HELP_TEXT
+    assert "FTP" in HELP_TEXT
+    assert "记住密码" in HELP_TEXT
+    assert "卷序列号" in HELP_TEXT
+    assert "插入后自动备份默认关闭" in HELP_TEXT
 
 
 def test_drawer_omits_dead_view_all_link(qt_app, qt_state):

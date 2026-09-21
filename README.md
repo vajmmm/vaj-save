@@ -1,11 +1,14 @@
 # vaj-save
 
-掌机存档实验室：备份、版本槽位和导出。识别 PSP / Vita / Switch / 3DS / NDS / GBA 的 USB 或 SD 导出目录。
+掌机存档实验室：备份、版本槽位和导出。识别 PSP / Vita / Switch / 3DS / NDS / GB / GBC / GBA 的 USB 或 SD 导出目录。
 
-- 卡带柜按机种分类（PSP / Vita / Switch / 3DS / NDS / GBA）
+- 卡带柜按机种分类（PSP / Vita / Switch / 3DS / NDS / GB / GBC / GBA）
 - 备份到 `~/Documents/vaj-save/`（可在「设置」里改），相同内容去重，变化则新开 SAVE SLOT
-- 备注、搜索；版本可恢复到文件夹或导出 ZIP
-- 扫描设备只读；写回请把恢复目标选成 Checkpoint / JKSV / SAVEDATA 目录
+- 备注、搜索、收藏；单个版本可删除；版本可恢复到文件夹，或导出 / 导入 ZIP
+- 「备份有更新」只拷有变化的存档，过程可取消；插入后自动备份默认关闭
+- FTP 只读增量拉取，可选记住密码
+- 用卡上的文件系统卷序列号记住存档根目录，下次插入只扫这些目录（刷新设备会全量扫描）
+- 扫描设备只读；恢复只拷到你选的文件夹，不会写入掌机。写回请把恢复目标选成 Checkpoint / JKSV / SAVEDATA 目录
 
 ## 界面预览
 
@@ -178,6 +181,9 @@ vajsave watch
 | GBA SuperChis / SuperFW | `SAVEGAME/*.sav`；有 `.superfw/` 时也认 `SAVES/*.sav` | SuperCard/SuperChis 默认目录；`SAVES/` 太泛，无指纹不收 |
 | NDS TWiLight | 目录内有 `.nds` 且 `saves/*.sav` | 常见于 `roms/nds/` |
 | NDS R4/Wood | 同目录 `.nds` + 同名 `.sav` | 需卡根指纹（`_nds/` / `R4.dat` / `TTMenu/` / `_system_/`）或 `roms/nds`；孤立 `.sav` 不收 |
+| GB | `roms/gb/`、EverDrive `EDGB/` / `GBOS/`、同名 `.gb` + `.sav`/`.srm` | 独立 Dock 项 |
+| GBC | `roms/gbc/`、同名 `.gbc` + `.sav`/`.srm` | 独立 Dock 项 |
+| EZ-Flash SAVER 分流 | `SAVER/foo.sav` 旁有 `foo.gb` / `foo.gbc` / `foo.gba` | 按 ROM 后缀记为 GB / GBC / GBA；没有 ROM 仍为 GBA |
 
 无上述指纹的普通 U 盘会标为 `unknown`，不会误报成某台掌机。
 
