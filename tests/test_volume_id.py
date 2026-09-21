@@ -11,3 +11,7 @@ def test_volume_id_for_missing_returns_none(tmp_path):
 
 def test_volume_id_for_uses_extra_without_usb_adapter_fields(tmp_path):
     assert volume_id_for(tmp_path, extra={"volume_id": "win:DEADBEEF", "usb": "vid:pid"}) == "win:DEADBEEF"
+
+
+def test_volume_id_for_rejects_zero_windows_serial(tmp_path):
+    assert volume_id_for(tmp_path, extra={"volume_id": "win:00000000"}) is None

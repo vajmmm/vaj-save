@@ -182,6 +182,35 @@ def test_enumerate_windows_drives_logical_error_returns_empty():
     assert _enumerate_windows_drives(kernel32) == []
 
 
+def test_enumerate_windows_drives_zero_serial_omits_volume_id():
+    kernel32 = _fake_kernel32({"E": (2, "USB", 0)})
+    vols = _enumerate_windows_drives(kernel32)
+    assert len(vols) == 1
+    assert "volume_id" not in (vols[0].extra or {})
+
+
+def test_enumerate_windows_drives_failed_probe_omits_volume_id():
+    class _Kernel32:
+        def GetLogicalDrives(self):
+            return 1 << (ord("E") - ord("A"))
+
+        def GetDriveTypeW(self, root):
+            return 2
+
+        def GetVolumeInformationW(self, root, buffer, n=0, serial=None, *args):
+            buffer.value = "USB"
+            if serial is not None:
+                obj = getattr(serial, "_obj", serial)
+                if hasattr(obj, "value"):
+                    obj.value = 0
+            return 0
+
+    vols = _enumerate_windows_drives(_Kernel32())
+    assert len(vols) == 1
+    assert vols[0].extra["label"] == "USB"
+    assert "volume_id" not in (vols[0].extra or {})
+
+
 def test_enumerate_windows_drives_label_error_is_safe():
     class _Kernel32:
         def GetLogicalDrives(self):

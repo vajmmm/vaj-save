@@ -22,6 +22,11 @@ if TYPE_CHECKING:
     from .app_state import AppState
 
 
+def _is_unexpected_keyword(exc: TypeError, name: str) -> bool:
+    message = str(exc)
+    return "unexpected keyword argument" in message and name in message
+
+
 def _hash_tree(path: Path) -> str:
     """Resolve ``hash_tree`` via ``app_state`` so tests can monkeypatch it."""
     from . import app_state
@@ -127,24 +132,27 @@ class ScanSession:
         def on_progress(item: ScanProgress) -> None:
             self.report_scan_progress(item)
 
-        attempts = []
+        kwargs: Dict[str, Any] = {"progress": on_progress}
         if bound_sources:
-            attempts.append(
-                lambda: self.app.scan_fn(
-                    path, progress=on_progress, bound_sources=bound_sources
-                )
-            )
-        attempts.append(lambda: self.app.scan_fn(path, progress=on_progress))
-        attempts.append(lambda: self.app.scan_fn(path))
-        last_error: Optional[TypeError] = None
-        for attempt in attempts:
-            try:
-                return attempt()
-            except TypeError as exc:
-                last_error = exc
-        if last_error is not None:
-            raise last_error
-        raise TypeError("scan_fn rejected all call conventions")
+            kwargs["bound_sources"] = bound_sources
+        return self._call_scan_fn(path, kwargs)
+
+    def _call_scan_fn(self, path: Path, kwargs: Dict[str, Any]) -> ScanResult:
+        """Call ``scan_fn``, dropping only unsupported keyword arguments.
+
+        A TypeError from inside a scanner (or any non-signature TypeError) is
+        re-raised so a bound scan cannot fall back to a full-volume walk.
+        """
+        try:
+            if kwargs:
+                return self.app.scan_fn(path, **kwargs)
+            return self.app.scan_fn(path)
+        except TypeError as exc:
+            dropped = [key for key in kwargs if _is_unexpected_keyword(exc, key)]
+            if not dropped:
+                raise
+            next_kwargs = {key: value for key, value in kwargs.items() if key not in dropped}
+            return self._call_scan_fn(path, next_kwargs)
 
     def _commit_bindings(
         self,
@@ -162,12 +170,8 @@ class ScanSession:
             present = {item.relative_root: item for item in registry.usable_sources(key, path)}
             for item in sources:
                 present[item.relative_root] = item
-            registry.record(key, label=label, sources=list(present.values()), merge=True)
-            pruned = registry.usable_sources(key, path)
-            if len(pruned) != len(registry.get(key)):
-                registry.record(key, label=label, sources=pruned, merge=False)
-        else:
-            registry.record(key, label=label, sources=sources, merge=False)
+            sources = list(present.values())
+        registry.record(key, label=label, sources=sources, merge=False)
 
     def begin_mount_scan(self, mount_point: Union[Path, str], auto: bool = False) -> Path:
         """在主线程切换到待扫描设备，并清除上一设备的展示状态。"""

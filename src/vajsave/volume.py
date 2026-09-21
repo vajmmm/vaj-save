@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Set, Tuple, Un
 
 from .models import VolumeInfo
 from .scanner import guess_platform
-from .volume_id import format_windows_serial
+from .volume_id import windows_serial_id
 
 try:  # pragma: no cover - platform dependent
     import ctypes
@@ -43,12 +43,13 @@ def _read_volume_identity(kernel32: Any, root_path: str) -> Tuple[str, Optional[
         buffer = _create_unicode_buffer(261)
         holder = _C_UINT32(0) if _C_UINT32 is not None else None
         serial_arg = _BYREF(holder) if holder is not None and _BYREF is not None else None
-        kernel32.GetVolumeInformationW(
+        ok = kernel32.GetVolumeInformationW(
             root_path, buffer, len(buffer), serial_arg, None, None, None, 0
         )
         label = buffer.value or ""
-        volume_id = format_windows_serial(int(holder.value)) if holder is not None else None
-        return label, volume_id
+        if not ok or holder is None:
+            return label, None
+        return label, windows_serial_id(int(holder.value))
     except Exception:
         return "", None
 

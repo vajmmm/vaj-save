@@ -19,18 +19,27 @@ def format_windows_serial(serial_dword: int) -> str:
     return f"win:{int(serial_dword) & 0xFFFFFFFF:08X}"
 
 
+def windows_serial_id(serial_dword: int) -> str | None:
+    """Return ``win:{8 hex}`` for a non-zero serial; ``None`` if the DWORD is 0."""
+    value = int(serial_dword) & 0xFFFFFFFF
+    if value == 0:
+        return None
+    return format_windows_serial(value)
+
+
 def volume_id_for(mount: Path, extra: dict | None = None) -> str | None:
     """Return a stable volume id for ``mount``, or ``None`` if none is known.
 
     ``extra["volume_id"]`` (from Windows enumeration) wins. USB adapter fields
     in ``extra`` are ignored. Native probes run only on real mount points so a
-    random directory does not inherit the host disk's UUID.
+    random directory does not inherit the host disk's UUID. A zero Windows
+    serial (``win:00000000``) is treated as missing.
     """
     if extra:
         stored = extra.get("volume_id")
         if isinstance(stored, str):
             text = stored.strip()
-            if text:
+            if text and text.casefold() != "win:00000000":
                 return text
     try:
         path = Path(mount)
@@ -65,10 +74,12 @@ def _windows_volume_id(mount: Path) -> Optional[str]:
             root = root + "\\"
         kernel32 = ctypes.windll.kernel32
         serial = ctypes.c_uint32(0)
-        kernel32.GetVolumeInformationW(
+        ok = kernel32.GetVolumeInformationW(
             root, None, 0, ctypes.byref(serial), None, None, None, 0
         )
-        return format_windows_serial(int(serial.value))
+        if not ok:
+            return None
+        return windows_serial_id(int(serial.value))
     except Exception:
         return None
 
@@ -156,4 +167,4 @@ def _linux_volume_id(mount: Path) -> Optional[str]:
     return f"linux:{first}"
 
 
-__all__ = ["format_windows_serial", "volume_id_for"]
+__all__ = ["format_windows_serial", "volume_id_for", "windows_serial_id"]

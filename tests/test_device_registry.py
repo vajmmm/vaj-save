@@ -166,6 +166,48 @@ def test_no_volume_id_does_not_write_devices_json(tmp_path, psp_sfo_bytes):
     assert not devices_path.exists()
 
 
+def test_zero_serial_does_not_become_registry_key(tmp_path, psp_sfo_bytes):
+    mount = _psp_card(tmp_path, psp_sfo_bytes)
+    vol = VolumeInfo(name="MS", mount_point=mount, extra={"volume_id": "win:00000000"})
+    state = AppState(
+        provider=FakeVolumeProvider([vol]),
+        library_root=tmp_path / "lib",
+    )
+    state.refresh_volumes()
+    state.select_mount(mount)
+    assert state.device_registry.get("win:00000000") == []
+    assert not (state.settings.config_dir() / "devices.json").exists()
+
+
+def test_bound_scan_type_error_is_not_full_scan(tmp_path, psp_sfo_bytes):
+    mount = _psp_card(tmp_path, psp_sfo_bytes)
+    vol = VolumeInfo(name="MS", mount_point=mount, extra={"volume_id": "win:ABCD1234"})
+    calls = []
+
+    def exploding_scan(path, progress=None, bound_sources=None):
+        calls.append(bound_sources)
+        if bound_sources:
+            raise TypeError("save parser exploded")
+        raise AssertionError("must not fall back to an unbound full scan")
+
+    state = AppState(
+        provider=FakeVolumeProvider([vol]),
+        scan_fn=exploding_scan,
+        library_root=tmp_path / "lib",
+    )
+    state.refresh_volumes()
+    state.device_registry.record(
+        "win:ABCD1234",
+        label="MS",
+        sources=[BoundSource("psp", "psp", "PSP/SAVEDATA")],
+        merge=False,
+    )
+    result = state.select_mount(mount)
+    assert calls and calls[0]
+    assert result.saves == []
+    assert any("save parser exploded" in warning for warning in result.warnings)
+
+
 def test_custom_folder_uses_path_key(tmp_path, psp_sfo_bytes):
     mount = tmp_path / "folder"
     save = mount / "PSP" / "SAVEDATA" / "ULJM05800"
