@@ -31,6 +31,7 @@ from .library import (
     hash_tree,  # tests monkeypatch vajsave.app_state.hash_tree
 )
 from .library_actions import LibraryActions
+from .library_versions import SnapshotDeletion, delete_snapshot
 from .metadata import GameMetadata, GameMetadataResolver
 from .models import SaveEntry, ScanResult, VolumeInfo
 from .platforms.catalog import PLATFORM_LABELS, PLATFORM_ORDER
@@ -377,6 +378,9 @@ class AppState:
 
     def delete_library_game(self, entry: SaveEntry) -> GameDeletion:
         return self.library_actions.delete_library_game(entry)
+
+    def delete_library_snapshot(self, entry: SaveEntry, snapshot: Snapshot) -> SnapshotDeletion:
+        return delete_snapshot(self.library_root, self._game_id(entry), snapshot.id)
 
     def collection_stats(self) -> Dict[str, int]:
         return self.library_actions.collection_stats()
