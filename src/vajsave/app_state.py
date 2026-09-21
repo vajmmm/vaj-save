@@ -83,15 +83,22 @@ class AppState:
         self.last_import_path: Optional[Path] = None
         self.last_backup: Optional[BackupResult] = None
 
-        # FTP pull settings. The host/port/user are persisted so a pull can be
-        # repeated; the password deliberately stays in memory only.
+        # FTP pull settings. Host/port/user are always persisted; the password
+        # is written to config.json only when ftp_remember_password is true.
         self._ftp_client_factory = ftp_client_factory
         ftp_config = self.settings.load()
         self.ftp_preset_key: str = resolve_ftp_preset_key(ftp_config)
         self.ftp_host: str = self._coerce_text(ftp_config.get("ftp_host"))
         self.ftp_port: Optional[int] = parse_port(ftp_config.get("ftp_port"))
         self.ftp_user: str = self._coerce_text(ftp_config.get("ftp_user"))
-        self._ftp_password: str = ""
+        self.ftp_remember_password: bool = self._coerce_bool(
+            ftp_config.get("ftp_remember_password")
+        )
+        self._ftp_password: str = (
+            self._coerce_text(ftp_config.get("ftp_password"))
+            if self.ftp_remember_password
+            else ""
+        )
 
         # Optional LLM cover disambiguation: only ever consulted for a listing
         # where several *different* titles share a query. Disabled by default
@@ -269,13 +276,19 @@ class AppState:
         user: Optional[object] = None,
         password: Optional[str] = None,
         preset_key: Optional[str] = None,
+        remember_password: Optional[bool] = None,
     ) -> FtpProfile:
         return self.ftp.configure_ftp(
-            host=host, port=port, user=user, password=password, preset_key=preset_key
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            preset_key=preset_key,
+            remember_password=remember_password,
         )
 
-    def pull_ftp_saves(self) -> FtpPullResult:
-        return self.ftp.pull_ftp_saves()
+    def pull_ftp_saves(self, token: object = None) -> FtpPullResult:
+        return self.ftp.pull_ftp_saves(token=token)
 
     def resolve_save_metadata(
         self, entry: SaveEntry, identity: Optional[GameIdentity] = None

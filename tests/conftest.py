@@ -122,13 +122,20 @@ class FakeRemoteFtpClient:
         *,
         fail_paths: Any = (),
         error_message: str = "",
+        modified: Any = None,
     ) -> None:
         self.tree = tree
         self.fail_paths = set(fail_paths)
         self.error_message = error_message
+        self.modified = dict(modified or {})
         self.commands: list = []
         self.connected = False
         self.closed = False
+
+    @staticmethod
+    def _child_path(remote_path: str, name: str) -> str:
+        base = str(remote_path or "/").rstrip("/")
+        return f"{base}/{name}" if base else f"/{name}"
 
     def connect(self) -> "FakeRemoteFtpClient":
         self.commands.append("CONNECT")
@@ -153,10 +160,21 @@ class FakeRemoteFtpClient:
         self.commands.append(("MLSD", remote_path))
         node = self._node(remote_path)
         assert isinstance(node, dict), f"not a directory: {remote_path}"
-        entries = [
-            FtpEntry(name=name, is_dir=isinstance(value, dict))
-            for name, value in node.items()
-        ]
+        entries = []
+        for name, value in node.items():
+            child = self._child_path(remote_path, name)
+            if isinstance(value, dict):
+                entries.append(FtpEntry(name=name, is_dir=True))
+                continue
+            size = len(value) if isinstance(value, (bytes, bytearray)) else 0
+            entries.append(
+                FtpEntry(
+                    name=name,
+                    is_dir=False,
+                    size=size,
+                    modified=str(self.modified.get(child, "") or ""),
+                )
+            )
         return entries
 
     def download(self, remote_path: str, local_path: Path) -> int:
