@@ -47,15 +47,19 @@ FORMAT_VERSION = 1
 
 # Platforms the bundled index covers.  Everything else is identified by title id
 # rather than ROM digest and is intentionally out of scope here.
-SUPPORTED_PLATFORMS: Tuple[str, ...] = ("gba", "nds")
+SUPPORTED_PLATFORMS: Tuple[str, ...] = ("gba", "nds", "gb", "gbc")
 
 # Substrings (lower-case) found in a DAT header/filename that map to a platform.
 _PLATFORM_MARKERS: Tuple[Tuple[str, str], ...] = (
     ("game boy advance", "gba"),
     ("gameboy advance", "gba"),
+    ("game boy color", "gbc"),
+    ("gameboy color", "gbc"),
     ("nintendo ds", "nds"),
     ("nintendo - ds", "nds"),
     ("nintendo-ds", "nds"),
+    ("game boy", "gb"),
+    ("gameboy", "gb"),
 )
 
 

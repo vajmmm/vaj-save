@@ -29,7 +29,7 @@ def test_switch_tokens_are_basic_white():
 
 
 def test_platform_colors_are_canonical_and_hex():
-    for key in ("all", "psp", "vita", "switch", "3ds", "nds", "gba"):
+    for key in ("all", "psp", "vita", "switch", "3ds", "nds", "gb", "gbc", "gba"):
         value = ui_theme.PLATFORM_COLORS[key]
         assert value.startswith("#") and len(value) == 7
 

@@ -60,7 +60,10 @@ _HANDHELD_ROM_MARKERS = (
     "roms",
     "ROMS",
     "_nds",
+    "EDGB",
+    "GBOS",
 )
+_CARTRIDGE_PLATFORMS = ("gba", "nds", "gb", "gbc")
 
 
 class Enrichment:
@@ -71,12 +74,16 @@ class Enrichment:
         self,
         gba_rom_dir: object = UNSET,
         nds_rom_dir: object = UNSET,
+        *,
+        gb_rom_dir: object = UNSET,
+        gbc_rom_dir: object = UNSET,
     ) -> Tuple[Optional[Path], Optional[Path]]:
-        """Persist the GBA/NDS ROM directories used for cartridge identity.
+        """Persist cartridge ROM directories used for identity.
 
-        Only the arguments that are passed are touched: the default sentinel
-        keeps the current value, ``None``/blank clears it.  Returns the new
-        ``(gba_rom_dir, nds_rom_dir)`` pair.
+        Positional arguments stay ``(gba_rom_dir, nds_rom_dir)``. ``gb_rom_dir``
+        and ``gbc_rom_dir`` are keyword-only. Only the arguments that are passed
+        are touched: the default sentinel keeps the current value, ``None``/blank
+        clears it. Returns the new ``(gba_rom_dir, nds_rom_dir)`` pair.
         """
         app = self.app
         config = app.settings.load()
@@ -92,6 +99,18 @@ class Enrichment:
                 config["nds_rom_dir"] = str(app.nds_rom_dir)
             else:
                 config.pop("nds_rom_dir", None)
+        if gb_rom_dir is not UNSET:
+            app.gb_rom_dir = app._coerce_dir(gb_rom_dir)
+            if app.gb_rom_dir is not None:
+                config["gb_rom_dir"] = str(app.gb_rom_dir)
+            else:
+                config.pop("gb_rom_dir", None)
+        if gbc_rom_dir is not UNSET:
+            app.gbc_rom_dir = app._coerce_dir(gbc_rom_dir)
+            if app.gbc_rom_dir is not None:
+                config["gbc_rom_dir"] = str(app.gbc_rom_dir)
+            else:
+                config.pop("gbc_rom_dir", None)
         app.settings.save(config)
         app._identity_resolver = None
         app._metadata_service = None
@@ -119,12 +138,18 @@ class Enrichment:
                     return True
             except OSError:
                 continue
+        for rel in ("roms/gb", "roms/gbc"):
+            try:
+                if (resolved_root.joinpath(*rel.split("/"))).is_dir():
+                    return True
+            except OSError:
+                continue
         if app.current_result is not None:
-            if app.current_result.platform in ("gba", "nds"):
+            if app.current_result.platform in _CARTRIDGE_PLATFORMS:
                 return True
-            if any(s.platform in ("gba", "nds") for s in app.current_result.sources):
+            if any(s.platform in _CARTRIDGE_PLATFORMS for s in app.current_result.sources):
                 return True
-            if any(s.platform in ("gba", "nds") for s in app.current_result.saves):
+            if any(s.platform in _CARTRIDGE_PLATFORMS for s in app.current_result.saves):
                 return True
         return False
 
@@ -148,10 +173,16 @@ class Enrichment:
         rom_dirs: Dict[str, List[Path]] = {}
         gba_roots = ([app.gba_rom_dir] if app.gba_rom_dir is not None else []) + extra
         nds_roots = ([app.nds_rom_dir] if app.nds_rom_dir is not None else []) + extra
+        gb_roots = ([app.gb_rom_dir] if app.gb_rom_dir is not None else []) + extra
+        gbc_roots = ([app.gbc_rom_dir] if app.gbc_rom_dir is not None else []) + extra
         if gba_roots:
             rom_dirs["gba"] = gba_roots
         if nds_roots:
             rom_dirs["nds"] = nds_roots
+        if gb_roots:
+            rom_dirs["gb"] = gb_roots
+        if gbc_roots:
+            rom_dirs["gbc"] = gbc_roots
         bindings = BindingStore(app.library_root / BINDINGS_NAME)
         return GameIdentityResolver(
             rom_dirs=rom_dirs,

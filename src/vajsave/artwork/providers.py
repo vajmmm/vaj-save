@@ -27,10 +27,12 @@ from urllib.parse import quote
 LIBRETRO_THUMBNAIL_BASE = "https://thumbnails.libretro.com"
 
 # libretro system folder names for the platforms the app resolves a title for.
-# GBA/NDS titles come from the ROM-digest index; PSP/Vita/3DS titles come from
-# the save's own name (PARAM.SFO or Checkpoint/JKSM folder).
+# GB/GBC/GBA/NDS titles come from the ROM-digest index; PSP/Vita/3DS titles come
+# from the save's own name (PARAM.SFO or Checkpoint/JKSM folder).
 LIBRETRO_SYSTEM_NAMES = {
     "gba": "Nintendo - Game Boy Advance",
+    "gb": "Nintendo - Game Boy",
+    "gbc": "Nintendo - Game Boy Color",
     "nds": "Nintendo - Nintendo DS",
     "psp": "Sony - PlayStation Portable",
     "vita": "Sony - PlayStation Vita",

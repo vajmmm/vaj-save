@@ -1,4 +1,4 @@
-"""ROM discovery and matching for the cartridge platforms (GBA/NDS).
+"""ROM discovery and matching for the cartridge platforms (GB/GBC/GBA/NDS).
 
 Matching is done entirely against ROM files.  The save payload is never opened:
 the resolver only reads the save *name* (via :func:`~.naming.save_hint`) to find
@@ -60,6 +60,8 @@ _MAX_WALK_DEPTH = 6
 _HEADER_OFFSETS: Dict[str, Tuple[int, int]] = {
     "gba": (0xA0, 0xAC),
     "nds": (0x00, 0x0C),
+    "gb": (0x134, 0x13F),
+    "gbc": (0x134, 0x13F),
 }
 
 
@@ -95,8 +97,8 @@ def is_supported_rom_path(path, platform: str) -> bool:
 
     Platforms without a declared constraint accept any path so the generic
     resolver keeps working for non-cartridge targets; cartridge platforms only
-    accept their declared dumps (e.g. GBA: ``.gba``/``.agb``,
-    NDS: ``.nds``/``.ids``).
+    accept their declared dumps (e.g. GB: ``.gb``, GBC: ``.gbc``,
+    GBA: ``.gba``/``.agb``, NDS: ``.nds``/``.ids``).
     """
     exts = supported_extensions(platform)
     if not exts:
@@ -317,7 +319,7 @@ def sibling_dirs(entry) -> List[Path]:
 
 
 def resolve_rom_identity(entry, ctx, *, platform: str) -> GameIdentityResult:
-    """Shared GBA/NDS resolution: manual binding > exact ROM > fuzzy ROM > binding."""
+    """Shared cartridge resolution: manual binding > exact ROM > fuzzy ROM > binding."""
     bound = ctx.bindings.get(entry)
     if bound is not None and bound.source == SOURCE_MANUAL:
         return resolved(bound, reason="手动绑定的游戏身份", save_path=entry.path)

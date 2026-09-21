@@ -9,10 +9,12 @@ never re-reads or re-parses a file.  Two input dialects are understood:
 * a real **No-Intro / Logiqx XML DAT** (``.dat``/``.xml``) that a user dropped
   next to the library or pointed the app at in settings.
 
-Only cartridge platforms the app actually identifies by ROM digest (GBA/NDS)
-are indexed; a digest recorded for any other platform can only ever return
-``None``.  Malformed, missing or unreadable files degrade to "nothing indexed"
-rather than raising.
+Only cartridge platforms the app actually identifies by ROM digest
+(GB/GBC/GBA/NDS) are indexed; a digest recorded for any other platform can
+only ever return ``None``.  Malformed, missing or unreadable files degrade to
+"nothing indexed" rather than raising. Bundled compact JSON currently ships
+for GBA/NDS; GB/GBC accept a user DAT under ``libretro_dir`` or a generated
+``gb.json``/``gbc.json``.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ from .models import SOURCE_LIBRETRO, GameMetadata
 
 # Platforms the metadata layer can answer for.  Everything else is out of scope
 # by design: the other consoles are identified by title id, not ROM digest.
-SUPPORTED_PLATFORMS: Tuple[str, ...] = ("gba", "nds")
+SUPPORTED_PLATFORMS: Tuple[str, ...] = ("gba", "nds", "gb", "gbc")
 
 # On-disk format of the bundled compact index.
 INDEX_FORMAT = "vajsave.libretro-index"
@@ -38,9 +40,14 @@ INDEX_FORMAT_VERSION = 1
 _PLATFORM_MARKERS: Tuple[Tuple[str, str], ...] = (
     ("game boy advance", "gba"),
     ("gameboy advance", "gba"),
+    ("game boy color", "gbc"),
+    ("gameboy color", "gbc"),
     ("nintendo ds", "nds"),
     ("nintendo - ds", "nds"),
+    ("game boy", "gb"),
+    ("gameboy", "gb"),
     ("gba", "gba"),
+    ("gbc", "gbc"),
     ("nds", "nds"),
 )
 

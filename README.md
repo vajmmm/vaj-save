@@ -85,9 +85,9 @@ U 盘，以及以 USB 大容量存储（UMS）方式直连的掌机（Hekate UMS
 画廊封面先通过方向和解码校验，再按各平台的竖版卡片比例平滑缩放；PSP 盒装图会按比例完整居中显示，两侧以中性底色承接，不再裁掉封面边缘；其他竖版图像继续居中裁切以填满卡片，横向素材不会进入画廊。旧版缩略图辅助函数仍采用 **「cover」填充**语义：极端宽高比会被**裁掉上下或左右边缘**（不会被拉伸变形，也不会留黑边）。超过 8 MiB 的文件、以及超出上限的目标尺寸会被跳过；文件缺失或损坏时静默回退到浅灰色方块，UI 不会报错。
 
 
-## 游戏信息（GBA/NDS libretro 索引）
+## 游戏信息（GB/GBC/GBA/NDS libretro 索引）
 
-GBA/NDS 的存档通过 ROM 摘要（SHA1/CRC32）匹配身份。内置的离线索引把摘要解析成规范游戏名（`canonical_title`）、地区（`region`）与外部 id（`external_ids`，如 No-Intro id 与卡带 serial），详情栏会优先显示规范名，并按规范名去下载官方封面。
+GB/GBC/GBA/NDS 的存档通过 ROM 摘要（SHA1/CRC32）匹配身份。内置的离线索引把摘要解析成规范游戏名（`canonical_title`）、地区（`region`）与外部 id（`external_ids`，如 No-Intro id 与卡带 serial），详情栏会优先显示规范名，并按规范名去下载官方封面。GB/GBC 未随包附带空索引；身份仍可用 ROM 头与文件名，封面按标题走 libretro Named_Boxarts。
 
 当 GBA ROM 是汉化版、改版等摘要不在 No-Intro 中时，程序会退回到用 ROM 头部的 **game code**（4 位卡带编号，如 `BPEE`）在内置索引中做一次**保守**匹配：仅当该编号在同一游戏家族内部存在多个地区/修订版本时才确定性地选取一个（优先非 beta/proto/demo 的正式版），若该编号对应多个不同游戏（真实编号冲突）或索引中没有记录，则仍返回“无元数据”，不会根据文件名/标题猜测。命中后的元数据同样以 ROM 的真实身份键缓存，因此批量封面下载可以继续按规范名进行；该回退仅对 GBA 启用。
 
@@ -104,6 +104,9 @@ GBA/NDS 的存档通过 ROM 摘要（SHA1/CRC32）匹配身份。内置的离线
 
 ```bash
 python tools/build_metadata_index.py --platform gba --dat "Nintendo - Game Boy Advance (<version>).dat" --out src/vajsave/data/libretro/gba.json
+python tools/build_metadata_index.py --platform nds --dat "Nintendo - Nintendo DS (<version>).dat" --out src/vajsave/data/libretro/nds.json
+python tools/build_metadata_index.py --platform gb --dat "Nintendo - Game Boy (<version>).dat" --out src/vajsave/data/libretro/gb.json
+python tools/build_metadata_index.py --platform gbc --dat "Nintendo - Game Boy Color (<version>).dat" --out src/vajsave/data/libretro/gbc.json
 ```
 
 ### 用户自定义索引
@@ -114,7 +117,7 @@ python tools/build_metadata_index.py --platform gba --dat "Nintendo - Game Boy A
 2. `<备份库>/metadata/libretro/`
 3. 程序内置目录 `vajsave/data/libretro/`
 
-索引只在需要时解析一次并常驻内存；列表刷新等 UI 热路径只读已解析的内存表，不会重复解析 DAT、也不会全盘扫描。查不到、索引损坏、平台不支持（非 GBA/NDS）时统一返回“无元数据”，不影响扫描/备份/封面回退。
+索引只在需要时解析一次并常驻内存；列表刷新等 UI 热路径只读已解析的内存表，不会重复解析 DAT、也不会全盘扫描。查不到、索引损坏、平台不支持（非 GB/GBC/GBA/NDS）时统一返回“无元数据”，不影响扫描/备份/封面回退。
 
 解析结果会缓存到 `<备份库>/game_metadata.json`（按 `GameIdentity.identity_key` 为键，原子写入、线程安全）；缓存命中时**完全不加载索引**。
 
