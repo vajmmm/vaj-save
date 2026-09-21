@@ -46,15 +46,18 @@ def _find_casefold_child(
         pass
 
     folded = name.casefold()
+    by_casefold: Dict[str, Path] = {}
     for child in safe_iterdir(directory, warnings):
+        by_casefold.setdefault(child.name.casefold(), child)
+
+    candidate = by_casefold.get(folded)
+    if candidate is not None:
         try:
-            matches_type = child.is_dir() if want_dir else child.is_file()
-            if child.name.casefold() == folded and matches_type and is_safe_path(
-                child, root_resolved
-            ):
-                return child
+            matches_type = candidate.is_dir() if want_dir else candidate.is_file()
+            if matches_type and is_safe_path(candidate, root_resolved):
+                return candidate
         except OSError:
-            continue
+            pass
     return None
 
 

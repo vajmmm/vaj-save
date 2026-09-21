@@ -85,6 +85,42 @@ def test_vita_savedata_uses_matching_app_metadata(
     assert entry.cover_path == str(icon)
 
 
+def test_vita_savedata_uses_casefold_matching_app_metadata(
+    monkeypatch, tmp_path: Path, vita_sfo_bytes: bytes
+):
+    save_dir = tmp_path / "user" / "00" / "savedata" / "PCSE00120"
+    save_sys = save_dir / "sce_sys"
+    save_sys.mkdir(parents=True)
+    (save_sys / "param.sfo").write_bytes(
+        build_sfo({"TITLE_ID": "PCSE00120", "CATEGORY": "gd"})
+    )
+    (save_dir / "savedata.bin").write_bytes(b"vita_save")
+
+    app_sys = tmp_path / "app" / "pcse00120" / "sce_sys"
+    app_sys.mkdir(parents=True)
+    (app_sys / "param.sfo").write_bytes(vita_sfo_bytes)
+    icon = app_sys / "icon0.png"
+    icon.write_bytes(b"installed_app_icon")
+
+    # Force exact case match to fail on macOS APFS so casefold path is exercised
+    orig_is_dir = Path.is_dir
+
+    def exact_miss_is_dir(self):
+        if self.parent == tmp_path / "app" and self.name == "PCSE00120":
+            return False
+        return orig_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", exact_miss_is_dir)
+
+    result = scan(tmp_path)
+
+    assert len(result.saves) == 1
+    entry = result.saves[0]
+    assert entry.title_id == "PCSE00120"
+    assert entry.display_name == "Persona 4 Golden"
+    assert entry.cover_path == str(icon)
+
+
 def test_vita_savedata_uses_matching_appmeta_metadata(
     tmp_path: Path, vita_sfo_bytes: bytes
 ):
@@ -194,6 +230,67 @@ def test_vita_standard_companion_icon_avoids_generic_cover_walk(
     result = scan(tmp_path)
 
     assert result.saves[0].cover_path == str(icon)
+
+
+def test_vita_scan_does_not_enumerate_unrelated_app_tree(
+    monkeypatch, tmp_path: Path
+):
+    save_title_ids = [f"PCSE0000{i}" for i in range(1, 6)]
+    for tid in save_title_ids:
+        save_dir = tmp_path / "user" / "00" / "savedata" / tid
+        sys_dir = save_dir / "sce_sys"
+        sys_dir.mkdir(parents=True)
+        (sys_dir / "param.sfo").write_bytes(
+            build_sfo({"TITLE_ID": tid, "CATEGORY": "gd", "TITLE": f"Save {tid}"})
+        )
+        (save_dir / "savedata.bin").write_bytes(b"vita_save")
+
+    app_root = tmp_path / "app"
+    for j in range(50):
+        unrelated_dir = app_root / f"PCSA{j:05d}" / "data"
+        unrelated_dir.mkdir(parents=True)
+        (unrelated_dir / "blob.bin").write_bytes(b"dummy")
+
+    app_root_resolved = app_root.resolve()
+
+    app_iterdir_calls = []
+    orig_iterdir = Path.iterdir
+
+    def tracking_iterdir(self):
+        try:
+            if self == app_root or self.resolve() == app_root_resolved:
+                app_iterdir_calls.append(self)
+        except OSError:
+            pass
+        return orig_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", tracking_iterdir)
+
+    app_child_is_dir_calls = []
+    orig_is_dir = Path.is_dir
+
+    def tracking_is_dir(self):
+        try:
+            if self.parent == app_root or self.parent.resolve() == app_root_resolved:
+                app_child_is_dir_calls.append(self.name)
+        except OSError:
+            pass
+        return orig_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", tracking_is_dir)
+
+    result = scan(tmp_path)
+
+    assert len(result.saves) == 5
+    assert len(app_iterdir_calls) <= 1
+    unrelated_calls = [name for name in app_child_is_dir_calls if name.startswith("PCSA")]
+    assert not unrelated_calls, (
+        f"无关 app/<id> 不得被 Path.is_dir，检测到 {len(unrelated_calls)} 次调用: {unrelated_calls[:10]}"
+    )
+    assert len(app_child_is_dir_calls) <= len(save_title_ids), (
+        f"app 子项 is_dir 次数 ({len(app_child_is_dir_calls)}) 超出存档数 ({len(save_title_ids)}): {app_child_is_dir_calls}"
+    )
+    assert all(name in set(save_title_ids) for name in app_child_is_dir_calls)
 
 
 def test_vita_exported_savegames(tmp_path: Path):
