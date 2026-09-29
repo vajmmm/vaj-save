@@ -174,6 +174,64 @@ def test_failed_pull_keeps_previous_cache_intact(tmp_path: Path):
     assert len(scan(cache).saves) == 2
 
 
+def test_missing_dir_mid_saves_fails_without_committing_half_tree(tmp_path: Path):
+    cache = device_cache_dir(tmp_path / "lib", "dev1")
+    tree = {
+        "saves": {
+            "Installed games": {
+                "0100000000010000 Super Mario Odyssey": {
+                    "Alice": {"main": b"ALICE-SAVE"}
+                },
+                "0100000000020000 Second Game": {"Bob": {"main": b"BOB-SAVE"}},
+            }
+        }
+    }
+    client = FakeMtpClient(
+        SAVES_STORAGES,
+        tree,
+        fail_paths={"/Installed games/0100000000020000 Second Game"},
+        error_message="object disappeared",
+    )
+
+    result = pull_device(client, cache, device_id="dev1")
+
+    assert result.ok is False
+    assert "object disappeared" in result.error
+    assert not cache.exists()
+    assert list(cache.parent.glob(".*staging*")) == []
+
+
+def test_missing_saves_root_keeps_previous_cache(tmp_path: Path):
+    cache = device_cache_dir(tmp_path / "lib", "dev1")
+    tree = {
+        "saves": {
+            "Installed games": {
+                "0100000000010000 Super Mario Odyssey": {
+                    "Alice": {"main": b"ALICE-SAVE"}
+                },
+                "0100000000020000 Second Game": {"Bob": {"main": b"BOB-SAVE"}},
+            }
+        }
+    }
+    first = pull_device(FakeMtpClient(SAVES_STORAGES, tree), cache, device_id="dev1")
+    assert first.ok
+    sav = cache / "Installed games" / "0100000000010000 Super Mario Odyssey" / "Alice" / "main"
+    assert sav.read_bytes() == b"ALICE-SAVE"
+    before = {p: p.read_bytes() for p in cache.rglob("*") if p.is_file()}
+
+    client = FakeMtpClient(
+        SAVES_STORAGES, tree, fail_paths={"/"}, error_message="saves storage lost"
+    )
+    result = pull_device(client, cache, device_id="dev1")
+
+    assert result.ok is False
+    assert "saves storage lost" in result.error
+    after = {p: p.read_bytes() for p in cache.rglob("*") if p.is_file()}
+    assert after == before
+    assert len(scan(cache).saves) == 2
+    assert list(cache.parent.glob(".*staging*")) == []
+
+
 class _CancelAfter:
     def __init__(self, predicate):
         self._predicate = predicate

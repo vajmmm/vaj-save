@@ -59,6 +59,9 @@ class _MirrorSpec:
     storage_id: str
     remote_root: str
     local_root: str  # POSIX relative path below the cache root ("" == root)
+    # Only optional SD subtrees may be absent from the device; a missing Saves
+    # storage/subtree is a genuine failure.
+    optional: bool = False
 
 
 def mtp_cache_root(library_root) -> Path:
@@ -80,12 +83,18 @@ def plan_for_storages(storages: List[MtpStorage]) -> List[_MirrorSpec]:
     for storage in storages:
         if storage.is_sd_card:
             for subtree in SD_SAVE_SUBTREES:
-                plan.append(_MirrorSpec(storage.storage_id, "/" + subtree, subtree))
+                plan.append(
+                    _MirrorSpec(storage.storage_id, "/" + subtree, subtree, True)
+                )
     return plan
 
 
 class _MtpPullCancelled(Exception):
     """Internal: cooperative cancel of an in-flight pull."""
+
+
+class _SubtreeMissing(Exception):
+    """Internal: an optional SD save subtree does not exist on the device."""
 
 
 def _throw_if_cancelled(token: object) -> None:
@@ -177,8 +186,14 @@ def _mirror(
     files_out: Optional[dict] = None,
     token: object = None,
     rel: str = "",
+    optional_root: bool = False,
 ) -> Tuple[int, int]:
-    """Recursively download one remote MTP directory into ``local_dir``."""
+    """Recursively download one remote MTP directory into ``local_dir``.
+
+    Only the very first listing of an optional subtree root may be absent; a
+    ``MtpNotFound`` anywhere below that point (or for a non-optional spec) is a
+    genuine failure and must propagate so the pull is aborted.
+    """
     _throw_if_cancelled(token)
     if depth > _MAX_DEPTH:
         return (0, 0)
@@ -186,7 +201,13 @@ def _mirror(
     total = 0
     recorded_files = manifest if manifest is not None else {}
     collected = files_out if files_out is not None else {}
-    for entry in client.list_dir(storage_id, remote_dir):
+    try:
+        entries = client.list_dir(storage_id, remote_dir)
+    except MtpNotFound:
+        if optional_root and depth == 0:
+            raise _SubtreeMissing(remote_dir) from None
+        raise
+    for entry in entries:
         _throw_if_cancelled(token)
         clean = sanitize_mtp_component(entry.name)
         if clean is None:
@@ -206,6 +227,7 @@ def _mirror(
                 files_out=collected,
                 token=token,
                 rel=child_rel,
+                optional_root=False,
             )
             files += child_files
             total += child_bytes
@@ -297,8 +319,9 @@ def pull_device(
                     files_out=files_out,
                     token=token,
                     rel=spec.local_root,
+                    optional_root=spec.optional,
                 )
-            except MtpNotFound:
+            except _SubtreeMissing:
                 # An absent optional SD subtree is not a pull failure.
                 continue
             files += part_files
