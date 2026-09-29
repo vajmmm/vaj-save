@@ -246,7 +246,7 @@ def test_cover_helpers_never_raise_on_exotic_entry(tmp_path: Path):
 # --- resolve_cover ----------------------------------------------------------
 
 
-def test_resolve_cover_priority_user_then_downloaded_then_embedded(tmp_path: Path):
+def test_resolve_cover_priority_user_then_downloaded_then_placeholder(tmp_path: Path):
     from vajsave.artwork import CoverCache
 
     save_dir = tmp_path / "ULJM05800"
@@ -269,14 +269,13 @@ def test_resolve_cover_priority_user_then_downloaded_then_embedded(tmp_path: Pat
     user.unlink()
     assert covers.resolve_cover(entry, lib, identity_key=identity_key) == downloaded
 
-    # A vanished file is no longer a manifest hit.
+    # A vanished file is no longer a manifest hit, and PSP never falls back to
+    # the save's embedded ICON0; the gallery shows a placeholder instead.
     downloaded.unlink()
-    assert covers.resolve_cover(entry, lib, identity_key=identity_key) == embedded
+    assert covers.resolve_cover(entry, lib, identity_key=identity_key) is None
 
-    # Even without a pre-recorded embedded path, the shared resolver discovers
-    # the icon inside the save folder.
     entry.cover_path = None
-    assert covers.resolve_cover(entry, lib, identity_key=identity_key) == embedded
+    assert covers.resolve_cover(entry, lib, identity_key=identity_key) is None
     assert covers.resolve_cover(None, lib) is None
 
 
@@ -315,8 +314,8 @@ def test_downloaded_cover_path_rejects_landscape_file(tmp_path: Path):
 
 
 def test_resolve_cover_downloaded_layer_needs_manifest(tmp_path: Path):
-    # A bare file dropped into the cache directory is not a manifest hit, so the
-    # shared resolver falls through to the embedded icon instead of trusting it.
+    # A bare file dropped into the cache directory is not a manifest hit. PSP
+    # also refuses its embedded ICON0, so there is no cover at all.
     save_dir = tmp_path / "save"
     save_dir.mkdir()
     embedded = _write_image(save_dir / "ICON0.PNG")
@@ -325,7 +324,7 @@ def test_resolve_cover_downloaded_layer_needs_manifest(tmp_path: Path):
     bare = lib / "covers" / "psp" / (covers.identity_hash(key) + ".png")
     _write_image(bare)
     entry = _entry(path=str(save_dir), cover_path=str(embedded))
-    assert covers.resolve_cover(entry, lib, identity_key=key) == embedded
+    assert covers.resolve_cover(entry, lib, identity_key=key) is None
 
 
 # --- load_thumbnail ---------------------------------------------------------

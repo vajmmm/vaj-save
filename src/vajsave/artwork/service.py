@@ -4,6 +4,11 @@ The public fallback order is fixed and tested:
 
     user local  >  downloaded  >  embedded  >  placeholder
 
+PSP is a deliberate exception: its ``ICON0.PNG`` is commonly a wide banner or a
+square menu icon rather than box art, so the PSP resolver skips the embedded
+layer and shows the placeholder when neither a user nor a downloaded cover
+exists.  Every other platform keeps the embedded fallback.
+
 * **user local** -- a portrait or near-square image under
   ``<library_root>/covers/<platform>/<name>.<ext>`` (the existing
   :func:`vajsave.covers.user_cover_path`);
@@ -69,6 +74,18 @@ class ArtworkResolution:
 PLACEHOLDER = ArtworkResolution(None, SOURCE_PLACEHOLDER)
 
 
+def _embedded_allowed(platform) -> bool:
+    """Whether a save's embedded icon may be shown as a gallery cover.
+
+    PSP ``ICON0.PNG`` files are frequently 144×80 banners or upscaled square
+    menu icons, never the portrait box art the gallery expects, so the PSP
+    resolver skips the embedded layer entirely and shows a placeholder when no
+    user or downloaded cover is available.  Every other platform keeps its
+    embedded fallback.
+    """
+    return str(platform or "").strip().lower() != "psp"
+
+
 def _embedded_path(entry) -> Optional[Path]:
     raw = getattr(entry, "cover_path", None)
     if raw:
@@ -125,7 +142,7 @@ def resolve_artwork(
     identity_key: Optional[str] = None,
     platform: Optional[str] = None,
 ) -> ArtworkResolution:
-    """Network-free best portrait cover: user > downloaded > embedded."""
+    """Network-free best portrait cover: user > downloaded > embedded (non-PSP)."""
     if entry is None:
         return PLACEHOLDER
     plat = platform if platform is not None else getattr(entry, "platform", None)
@@ -135,9 +152,10 @@ def resolve_artwork(
     downloaded = _downloaded_path(cache, plat, identity_key)
     if downloaded is not None:
         return ArtworkResolution(str(downloaded), SOURCE_DOWNLOADED)
-    embedded = _portrait_path(_embedded_path(entry))
-    if embedded is not None:
-        return ArtworkResolution(str(embedded), SOURCE_EMBEDDED)
+    if _embedded_allowed(plat):
+        embedded = _portrait_path(_embedded_path(entry))
+        if embedded is not None:
+            return ArtworkResolution(str(embedded), SOURCE_EMBEDDED)
     return PLACEHOLDER
 
 
@@ -269,11 +287,12 @@ class ArtworkService:
         """Cover for a platform whose provider key is the save's own title.
 
         PSP/Vita have no ROM index, so the caller passes the PARAM.SFO / display
-        title explicitly.  The usually small embedded icon
-        (``ICON0.PNG`` / ``sce_sys/icon0.png``) is only an offline fallback when
-        it is portrait or near-square; PSP's common 144×80 banner icons are kept in
-        the save but never shown as gallery covers. When possible, a full-size
-        box cover is downloaded and cached first.
+        title explicitly.  PSP's embedded icon (``ICON0.PNG``) is never used as a
+        gallery cover: a 144×80 banner or square menu icon is not box art, so
+        when no full-size box cover can be downloaded the PSP resolver falls
+        through to the placeholder.  Non-PSP platforms keep their portrait
+        embedded icon as the offline fallback. When possible, a full-size box
+        cover is downloaded and cached first.
 
         Checkpoint / SFO titles often miss the No-Intro filename on the first
         try, so PSP Title IDs use :func:`psp_title_candidates` (curated aliases
@@ -296,7 +315,9 @@ class ArtworkService:
         cached = _downloaded_path(self.cache, plat, identity_key)
         if cached is not None:
             return ArtworkResolution(str(cached), SOURCE_DOWNLOADED)
-        embedded = _portrait_path(_embedded_path(entry))
+        embedded = (
+            _portrait_path(_embedded_path(entry)) if _embedded_allowed(plat) else None
+        )
         names = []
         if plat == "3ds" and title_id:
             names.extend(self._3ds_names_for_title_id(title_id))
@@ -524,7 +545,7 @@ class ArtworkService:
         """Full fallback order including a download attempt.
 
         Intended to run on a worker thread: it may block on the network, but any
-        failure simply falls through to a portrait embedded icon or the
+        failure simply falls through to a portrait embedded icon (non-PSP) or the
         placeholder.
         """
         if entry is None:
@@ -541,9 +562,10 @@ class ArtworkService:
         )
         if downloaded is not None:
             return ArtworkResolution(str(downloaded), SOURCE_DOWNLOADED)
-        embedded = _portrait_path(_embedded_path(entry))
-        if embedded is not None:
-            return ArtworkResolution(str(embedded), SOURCE_EMBEDDED)
+        if _embedded_allowed(plat):
+            embedded = _portrait_path(_embedded_path(entry))
+            if embedded is not None:
+                return ArtworkResolution(str(embedded), SOURCE_EMBEDDED)
         return PLACEHOLDER
 
 

@@ -434,6 +434,92 @@ def test_resolve_artwork_none_entry_is_placeholder(tmp_path: Path):
     assert resolve_artwork(None, tmp_path).source == SOURCE_PLACEHOLDER
 
 
+def test_resolve_artwork_psp_never_uses_embedded_icon(tmp_path: Path):
+    """PSP skips the save's embedded icon even when it is portrait."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="psp", name="Monster Hunter")
+    icon = tmp_path / "ICON0.PNG"
+    icon.write_bytes(png_bytes(size=(64, 112)))
+    entry.cover_path = str(icon)
+
+    resolution = resolve_artwork(
+        entry, library, cache=cache, identity_key="psp:ULJM05800"
+    )
+    assert resolution.source == SOURCE_PLACEHOLDER
+    assert resolution.path is None
+
+
+def test_ensure_cover_psp_never_uses_embedded_icon_when_download_fails(
+    tmp_path: Path,
+):
+    """A failed PSP download falls back to the placeholder, not ICON0."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="psp", name="Monster Hunter")
+    icon = tmp_path / "ICON0.PNG"
+    icon.write_bytes(png_bytes(size=(64, 112)))
+    entry.cover_path = str(icon)
+    service = ArtworkService(
+        cache=cache,
+        downloader=ArtworkDownloader(
+            urlopen=lambda url, timeout=None: FakeResponse(b"", status=404)
+        ),
+    )
+
+    resolution = service.ensure_cover(
+        entry,
+        metadata=make_metadata(
+            platform="psp", title="Monster Hunter Portable 3rd", key="psp:ULJM05800"
+        ),
+        identity_key="psp:ULJM05800",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_PLACEHOLDER
+    assert resolution.path is None
+
+
+def test_psp_user_and_downloaded_covers_still_win_over_placeholder(tmp_path: Path):
+    """The user and downloaded layers keep priority for PSP."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="psp", name="Monster Hunter")
+    entry.cover_path = None
+    key = "psp:ULJM05800"
+
+    stored = cache.store("psp", key, png_bytes(size=(64, 112)))
+    assert stored is not None
+    resolution = resolve_artwork(entry, library, cache=cache, identity_key=key)
+    assert resolution.source == SOURCE_DOWNLOADED
+    assert Path(resolution.path) == stored
+    assert cache.remove("psp", key) == [stored]
+
+    user_dir = library / "covers" / "psp"
+    user_dir.mkdir(parents=True, exist_ok=True)
+    user = user_dir / "Monster Hunter.png"
+    user.write_bytes(png_bytes(size=(64, 112)))
+    resolution = resolve_artwork(entry, library, cache=cache, identity_key=key)
+    assert resolution.source == SOURCE_USER
+    assert Path(resolution.path) == user
+
+
+def test_embedded_fallback_still_used_for_gba_and_vita(tmp_path: Path):
+    """Non-PSP platforms keep their portrait embedded-icon fallback."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    for platform in ("gba", "vita"):
+        entry = make_entry(tmp_path, platform=platform, name=f"{platform} Game")
+        icon = tmp_path / f"{platform}_icon.png"
+        icon.write_bytes(png_bytes(size=(64, 112)))
+        entry.cover_path = str(icon)
+
+        resolution = resolve_artwork(
+            entry, library, cache=cache, identity_key=f"{platform}:x"
+        )
+        assert resolution.source == SOURCE_EMBEDDED
+        assert Path(resolution.path) == icon
+
+
 def test_resolve_artwork_skips_landscape_user_and_embedded_images(tmp_path: Path):
     library = tmp_path / "lib"
     entry = make_entry(tmp_path, platform="psp", name="Banner Game")
@@ -532,7 +618,7 @@ def test_ensure_cover_full_fallback_order(tmp_path: Path):
     ).source == SOURCE_PLACEHOLDER
 
 
-def test_ensure_cover_rejects_landscape_download_and_uses_embedded(tmp_path: Path):
+def test_ensure_cover_rejects_landscape_download_and_uses_placeholder(tmp_path: Path):
     library = tmp_path / "lib"
     cache = CoverCache(library / COVER_CACHE_DIR)
     embedded = tmp_path / "ICON0.PNG"
@@ -551,7 +637,8 @@ def test_ensure_cover_rejects_landscape_download_and_uses_embedded(tmp_path: Pat
         identity_key=key,
         library_root=library,
     )
-    assert resolution.source == SOURCE_EMBEDDED
+    assert resolution.source == SOURCE_PLACEHOLDER
+    assert resolution.path is None
     assert cache.lookup("psp", key) is None
 
 
@@ -853,7 +940,7 @@ def test_ensure_cover_for_title_upgrades_embedded_icon(tmp_path: Path):
     assert calls
 
 
-def test_ensure_cover_for_title_keeps_embedded_icon_when_offline(tmp_path: Path):
+def test_ensure_cover_for_title_uses_placeholder_when_offline(tmp_path: Path):
     library = tmp_path / "lib"
     entry = make_entry(tmp_path, platform="psp")
     icon = tmp_path / "ICON0.PNG"
@@ -874,8 +961,8 @@ def test_ensure_cover_for_title_keeps_embedded_icon_when_offline(tmp_path: Path)
         identity_key="psp:ULJM05800",
         library_root=library,
     )
-    assert resolution.source == SOURCE_EMBEDDED
-    assert Path(resolution.path) == icon
+    assert resolution.source == SOURCE_PLACEHOLDER
+    assert resolution.path is None
 
 
 def test_ensure_cover_for_title_cache_hit_is_zero_network(tmp_path: Path):
