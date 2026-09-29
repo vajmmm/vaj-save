@@ -4,10 +4,11 @@ The public fallback order is fixed and tested:
 
     user local  >  downloaded  >  embedded  >  placeholder
 
-PSP is a deliberate exception: its ``ICON0.PNG`` is commonly a wide banner or a
-square menu icon rather than box art, so the PSP resolver skips the embedded
-layer and shows the placeholder when neither a user nor a downloaded cover
-exists.  Every other platform keeps the embedded fallback.
+PSP and Vita are deliberate exceptions: their ``ICON0.PNG`` / ``sce_sys/icon0.png``
+files are a wide banner or a 128×128 LiveArea icon, never portrait box art, so
+those resolvers skip the embedded layer and show the placeholder when neither a
+user nor a downloaded cover exists.  Cartridge platforms keep the embedded
+fallback.
 
 * **user local** -- a portrait or near-square image under
   ``<library_root>/covers/<platform>/<name>.<ext>`` (the existing
@@ -102,17 +103,32 @@ def _is_psp_save(entry, platform=None) -> bool:
     )
 
 
+def _is_vita_save(entry, platform=None) -> bool:
+    """Whether ``entry``/``platform`` identifies a native Vita save.
+
+    Vita ``sce_sys/icon0.png`` is a 128×128 LiveArea icon, not box art.  PSP
+    saves living on a Vita card are handled by :func:`_is_psp_save` instead.
+    """
+    plat = (
+        platform if platform is not None else getattr(entry, "platform", None)
+    )
+    if str(plat or "").strip().lower() == "vita":
+        return True
+    source_id = str(getattr(entry, "source_id", None) or "").strip().lower()
+    return source_id in ("vita", "vita_exported")
+
+
 def _embedded_allowed(entry, platform=None) -> bool:
     """Whether a save's embedded icon may be shown as a gallery cover.
 
-    PSP ``ICON0.PNG`` files are frequently 144×80 banners or upscaled square
-    menu icons, never the portrait box art the gallery expects, so PSP saves
-    skip the embedded layer entirely and show a placeholder when no user or
-    downloaded cover is available.  This includes PSP saves found inside a
-    Vita memory card (Adrenaline / ``pspemu``) even when the entry is labelled
-    ``vita``.  Every non-PSP save keeps its embedded fallback.
+    PSP and Vita skip the embedded layer (banner / square LiveArea icon) and
+    show a placeholder when no user or downloaded box art is available.  This
+    includes PSP saves found inside a Vita memory card (Adrenaline / ``pspemu``).
+    Cartridge platforms keep their embedded fallback.
     """
-    return not _is_psp_save(entry, platform)
+    if _is_psp_save(entry, platform):
+        return False
+    return not _is_vita_save(entry, platform)
 
 
 def _embedded_path(entry) -> Optional[Path]:
@@ -316,12 +332,12 @@ class ArtworkService:
         """Cover for a platform whose provider key is the save's own title.
 
         PSP/Vita have no ROM index, so the caller passes the PARAM.SFO / display
-        title explicitly.  PSP's embedded icon (``ICON0.PNG``) is never used as a
-        gallery cover: a 144×80 banner or square menu icon is not box art, so
-        when no full-size box cover can be downloaded the PSP resolver falls
-        through to the placeholder.  Non-PSP platforms keep their portrait
-        embedded icon as the offline fallback. When possible, a full-size box
-        cover is downloaded and cached first.
+        title explicitly.  Their embedded icons (``ICON0.PNG`` / ``sce_sys/icon0.png``)
+        are never used as gallery covers: a banner or 128×128 LiveArea icon is
+        not box art, so when no full-size box cover can be downloaded the
+        resolver falls through to the placeholder.  Cartridge platforms keep
+        their portrait embedded icon as the offline fallback. When possible, a
+        full-size box cover is downloaded and cached first.
 
         Checkpoint / SFO titles often miss the No-Intro filename on the first
         try, so PSP Title IDs use :func:`psp_title_candidates` (curated aliases

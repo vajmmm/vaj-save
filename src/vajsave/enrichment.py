@@ -420,9 +420,9 @@ class Enrichment:
         without metadata this stays a local-only resolution: the app never guesses
         a name (and never touches the network) for an unknown ROM.  PSP/Vita/3DS
         are the exception: they have no ROM index, so their PARAM.SFO / Checkpoint
-        display title is used directly. Their small portrait/near-square embedded
-        icon remains the fallback when a full-size cover cannot be downloaded;
-        landscape PSP banners are ignored.
+        display title is used directly. PSP and Vita never use the embedded icon
+        as a gallery cover (banner / LiveArea icon); a failed download falls
+        through to the placeholder.
         """
         app = self.app
         try:

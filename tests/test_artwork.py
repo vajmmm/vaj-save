@@ -503,21 +503,20 @@ def test_psp_user_and_downloaded_covers_still_win_over_placeholder(tmp_path: Pat
     assert Path(resolution.path) == user
 
 
-def test_embedded_fallback_still_used_for_gba_and_vita(tmp_path: Path):
-    """Non-PSP platforms keep their portrait embedded-icon fallback."""
+def test_embedded_fallback_still_used_for_gba(tmp_path: Path):
+    """Cartridge platforms keep their portrait embedded-icon fallback."""
     library = tmp_path / "lib"
     cache = CoverCache(library / COVER_CACHE_DIR)
-    for platform in ("gba", "vita"):
-        entry = make_entry(tmp_path, platform=platform, name=f"{platform} Game")
-        icon = tmp_path / f"{platform}_icon.png"
-        icon.write_bytes(png_bytes(size=(64, 112)))
-        entry.cover_path = str(icon)
+    entry = make_entry(tmp_path, platform="gba", name="gba Game")
+    icon = tmp_path / "gba_icon.png"
+    icon.write_bytes(png_bytes(size=(64, 112)))
+    entry.cover_path = str(icon)
 
-        resolution = resolve_artwork(
-            entry, library, cache=cache, identity_key=f"{platform}:x"
-        )
-        assert resolution.source == SOURCE_EMBEDDED
-        assert Path(resolution.path) == icon
+    resolution = resolve_artwork(
+        entry, library, cache=cache, identity_key="gba:x"
+    )
+    assert resolution.source == SOURCE_EMBEDDED
+    assert Path(resolution.path) == icon
 
 
 def test_vita_entry_with_pspemu_path_never_uses_embedded_icon(tmp_path: Path):
@@ -627,9 +626,10 @@ def test_vita_entry_with_psp_savedata_path_never_uses_embedded_icon(tmp_path: Pa
         assert resolution.path is None
 
 
-def test_vita_native_savedata_path_still_uses_embedded_icon(tmp_path: Path):
-    """A real Vita save under ``ux0/user/00/savedata/<TITLEID>`` keeps its
-    portrait ``sce_sys/icon0.png`` fallback."""
+def test_vita_native_savedata_path_never_uses_embedded_icon(tmp_path: Path):
+    """A real Vita save under ``ux0/user/00/savedata/<TITLEID>`` skips the
+    128×128 LiveArea ``icon0.png`` and shows a placeholder until box art
+    is downloaded."""
     library = tmp_path / "lib"
     cache = CoverCache(library / COVER_CACHE_DIR)
     entry = make_entry(tmp_path, platform="vita", name="Persona 4 Golden")
@@ -642,8 +642,49 @@ def test_vita_native_savedata_path_still_uses_embedded_icon(tmp_path: Path):
     resolution = resolve_artwork(
         entry, library, cache=cache, identity_key="vita:PCSG00000"
     )
-    assert resolution.source == SOURCE_EMBEDDED
-    assert Path(resolution.path) == icon
+    assert resolution.source == SOURCE_PLACEHOLDER
+    assert resolution.path is None
+
+    service = ArtworkService(
+        cache=cache,
+        downloader=ArtworkDownloader(
+            urlopen=lambda url, timeout=None: FakeResponse(b"", status=404)
+        ),
+    )
+    ensure = service.ensure_cover(
+        entry,
+        metadata=make_metadata(
+            platform="vita", title="Persona 4 Golden", key="vita:PCSG00000"
+        ),
+        identity_key="vita:PCSG00000",
+        library_root=library,
+    )
+    assert ensure.source == SOURCE_PLACEHOLDER
+    assert ensure.path is None
+
+
+def test_vita_user_and_downloaded_covers_still_win_over_placeholder(tmp_path: Path):
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="vita", name="Persona 4 Golden")
+    entry.source_id = "vita"
+    icon = tmp_path / "icon0.png"
+    icon.write_bytes(png_bytes(size=(64, 112)))
+    entry.cover_path = str(icon)
+    key = "vita:PCSG00000"
+
+    stored = cache.store("vita", key, png_bytes(size=(64, 112)))
+    downloaded = resolve_artwork(entry, library, cache=cache, identity_key=key)
+    assert downloaded.source == SOURCE_DOWNLOADED
+    assert Path(downloaded.path) == stored
+
+    user_dir = library / "covers" / "vita"
+    user_dir.mkdir(parents=True, exist_ok=True)
+    user = user_dir / "Persona 4 Golden.png"
+    user.write_bytes(png_bytes(size=(64, 112)))
+    user_hit = resolve_artwork(entry, library, cache=cache, identity_key=key)
+    assert user_hit.source == SOURCE_USER
+    assert Path(user_hit.path) == user
 
 
 def test_resolve_artwork_skips_landscape_user_and_embedded_images(tmp_path: Path):
