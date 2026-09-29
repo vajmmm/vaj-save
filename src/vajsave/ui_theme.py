@@ -105,10 +105,50 @@ DRAWER_WIDTH = 430
 DRAWER_ANIMATION_STEPS = 8
 DRAWER_ANIMATION_MS = 16
 
+# Per-platform physical case proportions. Handheld boxes are near-square and
+# sit lower than the tall Switch/PSP plastic cases, so the gallery no longer
+# forces every platform into the same Switch-shaped white frame.
+GALLERY_CASE_ASPECT: Dict[str, float] = {
+    "switch": 0.70,
+    "psp": 0.74,
+    "vita": 0.74,
+    "3ds": 0.90,
+    "nds": 0.92,
+    "gba": 0.93,
+    "gb": 0.95,
+    "gbc": 0.95,
+}
+# Relative height against ``GALLERY_CELL_HEIGHT``/``CASE_H``. Switch and PSP
+# render at full height; the near-square handheld boxes are intentionally
+# smaller so they read as different physical cartridges instead of clipped
+# Switch cases.
+GALLERY_CASE_SCALE: Dict[str, float] = {
+    "switch": 1.0,
+    "psp": 1.0,
+    "vita": 1.0,
+    "3ds": 0.70,
+    "nds": 0.68,
+    "gba": 0.66,
+    "gb": 0.62,
+    "gbc": 0.62,
+}
+GALLERY_CASE_DEFAULT_ASPECT = 0.78
+GALLERY_CASE_DEFAULT_SCALE = 0.80
+# Horizontal breathing room kept between a case and the cell edge when the
+# aspect-derived width would otherwise overflow.
+GALLERY_CASE_WIDTH_INSET = 12
+
+# Detail drawer cover box. The control tracks the current platform's box
+# aspect (or the real portrait artwork aspect when one is available).
+DETAIL_COVER_MAX_WIDTH = 140
+DETAIL_COVER_MAX_HEIGHT = 196
+DETAIL_COVER_ASPECT_RANGE = (0.55, 1.05)
+
 STATUS_LABELS: Dict[str, str] = {
     "new": "新",
     "changed": "有变化",
     "unchanged": "已备份",
+    "checking": "核对中",
 }
 
 
@@ -171,6 +211,70 @@ def mix(color_a: str, color_b: str, t: float) -> str:
         return int(a + (b - a) * t + 0.5)
 
     return "#{:02x}{:02x}{:02x}".format(_blend(ar, br), _blend(ag, bg), _blend(ab, bb))
+
+
+# --- gallery / detail layout helpers -------------------------------------------
+
+
+def gallery_case_size(
+    platform: Any,
+    *,
+    cell_width: float,
+    case_height: float,
+) -> tuple[int, int]:
+    """Return the ``(width, height)`` of a platform's packaging in the gallery.
+
+    The height is derived from ``case_height * scale`` and the width from the
+    platform aspect. If the aspect-derived width would overflow the cell, the
+    box is scaled down proportionally instead of being clamped flat (which used
+    to make every platform the same width).
+    """
+    key = str(platform or "").strip().lower()
+    aspect = GALLERY_CASE_ASPECT.get(key, GALLERY_CASE_DEFAULT_ASPECT)
+    scale = GALLERY_CASE_SCALE.get(key, GALLERY_CASE_DEFAULT_SCALE)
+    height = max(1.0, float(case_height) * scale)
+    width = height * aspect
+    max_width = max(1.0, float(cell_width) - GALLERY_CASE_WIDTH_INSET)
+    if width > max_width:
+        width = max_width
+        height = width / aspect
+    return int(round(width)), int(round(height))
+
+
+def detail_cover_size(
+    platform: Any,
+    *,
+    max_width: float = DETAIL_COVER_MAX_WIDTH,
+    max_height: float = DETAIL_COVER_MAX_HEIGHT,
+    cover_aspect: Optional[float] = None,
+) -> tuple[int, int]:
+    """Return the portrait control size for the detail drawer cover.
+
+    ``cover_aspect`` may carry the real artwork ratio; when it is a plausible
+    portrait/near-square value it wins over the platform default so a square
+    NDS cover is not letterboxed in a tall Switch frame.
+    """
+    key = str(platform or "").strip().lower()
+    aspect: Optional[float] = None
+    if cover_aspect is not None:
+        try:
+            candidate = float(cover_aspect)
+        except (TypeError, ValueError):
+            candidate = 0.0
+        low, high = DETAIL_COVER_ASPECT_RANGE
+        if low <= candidate <= high:
+            aspect = candidate
+    if aspect is None:
+        aspect = GALLERY_CASE_ASPECT.get(key, GALLERY_CASE_DEFAULT_ASPECT)
+    if aspect <= 0:
+        aspect = GALLERY_CASE_DEFAULT_ASPECT
+    height = max(1.0, float(max_height))
+    width = height * aspect
+    max_width_value = max(1.0, float(max_width))
+    if width > max_width_value:
+        width = max_width_value
+        height = width / aspect
+    return int(round(width)), int(round(height))
 
 
 # --- row helpers ------------------------------------------------------------------

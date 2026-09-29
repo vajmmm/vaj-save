@@ -118,6 +118,11 @@ def test_status_labels_cover_known_states_and_degrade():
     assert ui_theme.status_label(None) == "新"
 
 
+def test_status_label_checking_is_localized():
+    assert ui_theme.STATUS_LABELS["checking"] == "核对中"
+    assert ui_theme.status_label("checking") == "核对中"
+
+
 def test_status_label_accepts_status_object():
     class _Status:
         status = "changed"
@@ -178,3 +183,75 @@ def test_save_row_unknown_platform_and_missing_name():
     # No pastel face, monogram or pill survives on the quiet row.
     for stale in ("face", "monogram", "pill"):
         assert stale not in row
+
+
+# --- gallery case geometry --------------------------------------------------
+
+
+def test_gallery_case_size_varies_by_platform():
+    switch = ui_theme.gallery_case_size("switch", cell_width=196, case_height=286)
+    nds = ui_theme.gallery_case_size("nds", cell_width=196, case_height=286)
+    gba = ui_theme.gallery_case_size("gba", cell_width=196, case_height=286)
+    for width, height in (switch, nds, gba):
+        assert width <= height
+    # Switch stays the tall reference box; NDS/GBA are visibly shorter and are
+    # not just a chopped-off Switch case.
+    assert switch[1] > nds[1]
+    assert switch[1] > gba[1]
+    assert nds[0] < switch[0] and nds[1] < switch[1]
+    assert gba[0] < switch[0] and gba[1] < switch[1]
+    # NDS/GBA boxes read as near-square portrait.
+    assert nds[0] / nds[1] >= 0.85
+    assert gba[0] / gba[1] >= 0.85
+
+
+def test_gallery_case_size_defines_gb_gbc_and_shrinks():
+    switch = ui_theme.gallery_case_size("switch", cell_width=196, case_height=286)
+    for platform in ("gb", "gbc"):
+        width, height = ui_theme.gallery_case_size(platform, cell_width=196, case_height=286)
+        assert width <= height, platform
+        assert height < switch[1], platform
+        assert width < switch[0], platform
+
+
+def test_gallery_case_size_caps_width_but_keeps_aspect():
+    width, height = ui_theme.gallery_case_size("switch", cell_width=196, case_height=286)
+    assert width <= 196 - 12
+    assert abs(width / height - ui_theme.GALLERY_CASE_ASPECT["switch"]) < 0.02
+
+
+def test_gallery_case_size_defaults_for_unknown_platform():
+    width, height = ui_theme.gallery_case_size("mystery", cell_width=196, case_height=286)
+    assert 0 < width <= height <= 286
+
+
+# --- detail cover geometry --------------------------------------------------
+
+
+def test_detail_cover_size_is_platform_aware():
+    switch = ui_theme.detail_cover_size("switch", max_width=140, max_height=196)
+    nds = ui_theme.detail_cover_size("nds", max_width=140, max_height=196)
+    gba = ui_theme.detail_cover_size("gba", max_width=140, max_height=196)
+    # Switch remains the tall portrait cover; NDS/GBA read near-square.
+    assert switch[1] == 196
+    assert switch[0] < switch[1]
+    assert switch[0] / switch[1] <= 0.80
+    assert nds[0] <= nds[1] and gba[0] <= gba[1]
+    assert nds[0] / nds[1] >= 0.85
+    assert gba[0] / gba[1] >= 0.85
+    assert (nds[0], nds[1]) != (116, 196)
+
+
+def test_detail_cover_size_uses_actual_aspect_when_plausible():
+    size = ui_theme.detail_cover_size(
+        "switch", max_width=140, max_height=196, cover_aspect=0.60
+    )
+    assert size[1] == 196
+    assert abs(size[0] / size[1] - 0.60) < 0.02
+
+
+def test_detail_cover_size_ignores_landscape_aspect():
+    fallback = ui_theme.detail_cover_size(
+        "nds", max_width=140, max_height=196, cover_aspect=1.80
+    )
+    assert fallback[0] <= fallback[1]

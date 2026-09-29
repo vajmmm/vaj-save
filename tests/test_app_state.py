@@ -1879,7 +1879,7 @@ def test_prepare_mount_scan_skips_hash_for_backed_up_saves(tmp_path: Path, psp_s
     assert len(prepared.result.saves) == 1
     save = prepared.result.saves[0]
     status = prepared.backup_statuses[save.path]
-    assert status.status == "changed"
+    assert status.status == "checking"
     assert status.sha256 is None
     assert status.last_backup_at is not None
 
@@ -1903,7 +1903,7 @@ def test_prepare_and_apply_backup_statuses_refines_status(tmp_path: Path, psp_sf
     state.apply_prepared_mount_scan(prepared_scan)
 
     save = prepared_scan.result.saves[0]
-    assert state.save_status(save).status == "changed"
+    assert state.save_status(save).status == "checking"
     assert state.save_status(save).sha256 is None
 
     prepared_statuses = state.prepare_backup_statuses(prepared_scan.result.saves)
@@ -1933,6 +1933,57 @@ def test_prepare_mount_scan_unbacked_save_status_is_new(tmp_path: Path, psp_sfo_
     status = prepared.backup_statuses[save.path]
     assert status.status == "new"
     assert status.sha256 is None
+
+
+def test_updated_visible_saves_excludes_checking_entries(
+    tmp_path: Path, psp_sfo_bytes: bytes, monkeypatch
+):
+    from vajsave.backup_jobs import updated_visible_saves
+
+    root = tmp_path / "PSP_VOL"
+    backed_dir = _psp_save_tree(root, "ULJM05800", b"same-data", psp_sfo_bytes)
+    new_dir = root / "PSP" / "SAVEDATA" / "ULJM05801"
+    new_dir.mkdir(parents=True)
+    (new_dir / "PARAM.SFO").write_bytes(
+        build_sfo(
+            {
+                "TITLE": "Second Game",
+                "TITLE_ID": "ULJM05801",
+                "CATEGORY": "MS",
+                "SAVEDATA_DIRECTORY": "ULJM05801",
+            }
+        )
+    )
+    (new_dir / "DATA.BIN").write_bytes(b"new-data")
+    lib = tmp_path / "lib"
+    backup_save(
+        SaveEntry(
+            platform="psp",
+            source_id="psp",
+            display_name="Monster Hunter Portable 3rd",
+            path=str(backed_dir),
+            title_id="ULJM05800",
+        ),
+        lib,
+        datetime(2026, 1, 1, 10, 0, 0),
+    )
+
+    def boom(_path):
+        raise AssertionError("prepare_mount_scan must not hash saves")
+
+    monkeypatch.setattr("vajsave.app_state.hash_tree", boom)
+    state = AppState(library_root=lib)
+    state.begin_mount_scan(root)
+    prepared_scan = state.prepare_mount_scan(root)
+    state.apply_prepared_mount_scan(prepared_scan)
+
+    by_id = {save.title_id: save for save in prepared_scan.result.saves}
+    assert state.save_status(by_id["ULJM05800"]).status == "checking"
+    assert state.save_status(by_id["ULJM05801"]).status == "new"
+
+    updated_ids = {save.title_id for save in updated_visible_saves(state)}
+    assert updated_ids == {"ULJM05801"}
+    assert "ULJM05800" not in updated_ids
 
 
 def test_prepare_backup_statuses_hash_oserror_sets_new_and_warning(tmp_path: Path, psp_sfo_bytes: bytes, monkeypatch):

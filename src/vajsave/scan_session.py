@@ -226,8 +226,12 @@ class ScanSession:
                     sha256=None,
                 )
             else:
+                # Cheap pass cannot know if the save really changed: hash is
+                # computed later in ``prepare_backup_statuses``. Report a neutral
+                # ``checking`` status so we never claim "changed" before hashing
+                # and so "backup updated" skips them until verified.
                 statuses[entry.path] = SaveBackupStatus(
-                    status="changed",
+                    status="checking",
                     source_mtime=path_mtime_iso(entry.path),
                     last_backup_at=latest.created_at,
                     mtime_stale=False,

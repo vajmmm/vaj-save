@@ -18,6 +18,7 @@ from vajsave.library import (
     path_mtime_iso,
     restore_snapshot,
     sanitize_name,
+    save_catalog,
 )
 from vajsave.models import SaveEntry, VolumeInfo
 from vajsave.volume import FakeVolumeProvider
@@ -988,6 +989,212 @@ def test_unresolved_rebackup_never_overwrites_existing_identity_key(tmp_path: Pa
     assert game.identity_key == "psp:ULJM05800"
     assert game.id == game_key(entry)
     assert len(game.versions) == 2
+
+
+def _catalog_game(game_id: str = "g", **kw) -> GameRecord:
+    fields = dict(
+        id=game_id,
+        platform="psp",
+        title_id="ULUS00001",
+        display_name="Demo",
+    )
+    fields.update(kw)
+    return GameRecord(**fields)
+
+
+def test_load_catalog_caches_when_mtime_and_size_unchanged(tmp_path: Path, monkeypatch):
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    path = lib / "catalog.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "games": [
+                    {
+                        "id": "g",
+                        "platform": "psp",
+                        "title_id": "ULUS00001",
+                        "display_name": "Demo",
+                        "versions": [],
+                        "starred": False,
+                        "note": "",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    calls = {"n": 0}
+    original = Path.read_text
+
+    def counting(self, *args, **kwargs):
+        if self.name == "catalog.json":
+            calls["n"] += 1
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counting)
+
+    first = load_catalog(lib)
+    assert list(first.games) == ["g"]
+    assert calls["n"] == 1
+
+    second = load_catalog(lib)
+    assert list(second.games) == ["g"]
+    # mtime+size unchanged -> served from the in-process cache, no re-read.
+    assert calls["n"] == 1
+
+
+def test_load_catalog_sees_save_catalog_changes(tmp_path: Path):
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    save_catalog(lib, Catalog({"g": _catalog_game(note="old")}))
+    assert load_catalog(lib).games["g"].note == "old"
+
+    catalog = load_catalog(lib)
+    catalog.games["g"].note = "new"
+    catalog.games["g"].starred = True
+    catalog.games["g"].versions.append(
+        Snapshot(id="v1", created_at="2026-01-01T00:00:00", sha256="a", source_path="/s", path="p")
+    )
+    save_catalog(lib, catalog)
+
+    fresh = load_catalog(lib)
+    assert fresh.games["g"].note == "new"
+    assert fresh.games["g"].starred is True
+    assert [s.id for s in fresh.games["g"].versions] == ["v1"]
+
+
+def test_load_catalog_detects_direct_file_change(tmp_path: Path):
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    save_catalog(lib, Catalog({"g": _catalog_game(note="one")}))
+    assert load_catalog(lib).games["g"].note == "one"
+
+    # A direct rewrite (not via save_catalog) changes mtime/size -> must reload.
+    (lib / "catalog.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "games": [
+                    {
+                        "id": "g",
+                        "platform": "psp",
+                        "title_id": "ULUS00001",
+                        "display_name": "Demo",
+                        "versions": [],
+                        "starred": False,
+                        "note": "a-much-longer-new-note",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert load_catalog(lib).games["g"].note == "a-much-longer-new-note"
+
+
+def test_load_catalog_missing_then_created(tmp_path: Path):
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    assert load_catalog(lib).games == {}
+    save_catalog(lib, Catalog({"g": _catalog_game()}))
+    assert list(load_catalog(lib).games) == ["g"]
+
+
+def test_load_catalog_corrupt_json_then_fixed(tmp_path: Path):
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    path = lib / "catalog.json"
+    path.write_text("{not-json-at-all", encoding="utf-8")
+    assert load_catalog(lib).games == {}
+
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "games": [
+                    {
+                        "id": "g",
+                        "platform": "psp",
+                        "title_id": "ULUS00001",
+                        "display_name": "Demo",
+                        "versions": [],
+                        "starred": False,
+                        "note": "",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    # A corrupt read must not be pinned: fixing the file yields real data.
+    assert list(load_catalog(lib).games) == ["g"]
+
+
+def test_load_catalog_isolated_per_library_root(tmp_path: Path):
+    lib_a = tmp_path / "a"
+    lib_b = tmp_path / "b"
+    save_catalog(lib_a, Catalog({"ga": _catalog_game("ga")}))
+    save_catalog(lib_b, Catalog({"gb": _catalog_game("gb")}))
+
+    assert list(load_catalog(lib_a).games) == ["ga"]
+    assert list(load_catalog(lib_b).games) == ["gb"]
+    # Repeat to exercise the cached path; roots must not bleed into each other.
+    assert list(load_catalog(lib_a).games) == ["ga"]
+    assert list(load_catalog(lib_b).games) == ["gb"]
+
+
+def test_load_catalog_returns_independent_copies(tmp_path: Path):
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    save_catalog(lib, Catalog({"g": _catalog_game(note="orig")}))
+
+    first = load_catalog(lib)
+    first.games["g"].note = "mutated"
+    first.games["g"].versions.append(
+        Snapshot(id="x", created_at="", sha256="", source_path="", path="p")
+    )
+    first.games["added"] = _catalog_game("added")
+
+    second = load_catalog(lib)
+    assert second.games["g"].note == "orig"
+    assert second.games["g"].versions == []
+    assert "added" not in second.games
+
+
+def test_load_catalog_concurrent_loads_are_independent(tmp_path: Path):
+    import threading
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    save_catalog(lib, Catalog({"g": _catalog_game(note="orig")}))
+
+    errors: list = []
+    seen: list = []
+
+    def worker():
+        try:
+            for _ in range(50):
+                catalog = load_catalog(lib)
+                catalog.games["g"].note = "mutated-by-worker"
+                catalog.games["scratch"] = _catalog_game("scratch")
+                seen.append(catalog.games["g"].note)
+        except Exception as exc:  # noqa: BLE001 - surfaced via assertion below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert seen and all(value == "mutated-by-worker" for value in seen)
+    # Every thread got its own copy; the cached snapshot is untouched.
+    assert load_catalog(lib).games["g"].note == "orig"
+    assert "scratch" not in load_catalog(lib).games
 
 
 def test_hash_tree_skips_symlinks(tmp_path: Path):

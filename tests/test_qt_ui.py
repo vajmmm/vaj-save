@@ -10,18 +10,27 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import QImage, QPainter, QPixmap
+from PySide6.QtCore import QRect, QRectF, QSize, Qt, QTimer
+from PySide6.QtGui import QImage, QPainter, QPaintEvent, QPixmap
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QLineEdit, QPushButton
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QDialog,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+)
 
 from vajsave.app_state import PLATFORM_ORDER, AppState
+from vajsave import ui_theme
 from vajsave.artwork import ArtworkResolution, PLACEHOLDER, SOURCE_DOWNLOADED
 from vajsave.library import backup_save
 from vajsave.metadata import GameMetadata
 from vajsave.models import SaveEntry, ScanResult, VolumeInfo
 from vajsave.qt_ui import (
     DRAWER_WIDTH,
+    DetailDrawer,
     GalleryCanvas,
     LLMSettingsDialog,
     PlatformButton,
@@ -87,6 +96,7 @@ def test_qt_window_uses_reference_dimensions_and_overlay(qt_app, qt_state):
     try:
         window.show()
         QTest.qWait(60)
+        columns_before = window.gallery.canvas.columns
         window.gallery.canvas.selected = {0}
         window.gallery.canvas.active = 0
         window.gallery.canvas.selection_changed.emit(window.gallery.canvas.selected_entries())
@@ -95,7 +105,9 @@ def test_qt_window_uses_reference_dimensions_and_overlay(qt_app, qt_state):
         assert window.size().height() == 900
         assert window.drawer.width() == DRAWER_WIDTH
         assert window.drawer.x() == window.body.width() - DRAWER_WIDTH
-        assert window.gallery.canvas.columns == 4
+        # The drawer overlays the gallery: opening it must not re-flow columns.
+        assert window.gallery.canvas.columns == columns_before
+        assert window.gallery.canvas.reserved_right == 0
         assert window.drawer.isVisible()
     finally:
         window.close()
@@ -332,10 +344,89 @@ def test_psp_gallery_uses_full_cover_fit(qt_app, qt_state, tmp_path: Path, monke
 
 def test_gallery_case_geometry_stays_portrait_for_supported_platforms(qt_app, qt_state):
     canvas = GalleryCanvas(qt_state)
-    for platform in ("switch", "psp", "vita", "3ds", "nds", "gba"):
+    for platform in ("switch", "psp", "vita", "3ds", "nds", "gba", "gb", "gbc"):
         entry = SaveEntry(platform=platform, source_id="test", display_name=platform, path=platform)
         width, height = canvas._case_size(entry)
         assert width <= height, platform
+
+
+def test_gallery_case_size_differs_between_switch_and_handhelds(qt_app, qt_state):
+    canvas = GalleryCanvas(qt_state)
+
+    def size(platform):
+        entry = SaveEntry(platform=platform, source_id="test", display_name=platform, path=platform)
+        return canvas._case_size(entry)
+
+    switch = size("switch")
+    nds = size("nds")
+    gba = size("gba")
+    gb = size("gb")
+    # Switch is the tall reference case.
+    assert switch[1] > nds[1]
+    assert switch[1] > gba[1]
+    assert switch[1] > gb[1]
+    # Handheld cases are near-square portrait, not chopped Switch boxes.
+    assert nds[0] / nds[1] >= 0.85
+    assert gba[0] / gba[1] >= 0.85
+    assert gb[0] < switch[0]
+
+
+def test_gallery_case_size_is_platform_token_driven(qt_app, qt_state):
+    canvas = GalleryCanvas(qt_state)
+    entry = SaveEntry(platform="switch", source_id="test", display_name="switch", path="switch")
+    baseline = canvas._case_size(entry)
+    # Selection / hover must never inject a different case geometry.
+    canvas.hovered = 0
+    canvas.selected = {0}
+    assert canvas._case_size(entry) == baseline
+
+
+def test_detail_cover_adapts_box_shape_to_platform(qt_app, qt_state):
+    drawer = DetailDrawer()
+    try:
+        drawer.set_cover_path(None, "switch")
+        switch = drawer.cover.size()
+        drawer.set_cover_path(None, "nds")
+        nds = drawer.cover.size()
+        drawer.set_cover_path(None, "gba")
+        gba = drawer.cover.size()
+        assert (switch.width(), switch.height()) != (116, 196)
+        assert switch.height() > nds.height()
+        assert switch.width() / switch.height() <= 0.80
+        assert nds.width() <= nds.height()
+        assert gba.width() <= gba.height()
+        assert nds.width() / nds.height() >= 0.85
+        assert gba.width() / gba.height() >= 0.85
+    finally:
+        drawer.deleteLater()
+
+
+def test_detail_cover_uses_actual_near_square_aspect(qt_app, qt_state, tmp_path: Path):
+    cover = tmp_path / "nds-cover.png"
+    image = QPixmap(400, 420)
+    image.fill(Qt.GlobalColor.blue)
+    assert image.save(str(cover), "PNG")
+    drawer = DetailDrawer()
+    try:
+        drawer.set_cover_path(str(cover), "nds")
+        size = drawer.cover.size()
+        # The control must roughly follow the 400x420 artwork instead of being
+        # letterboxed inside a fixed 116x196 Switch frame.
+        assert abs(size.width() / size.height() - 400 / 420) < 0.05
+        assert (size.width(), size.height()) != (116, 196)
+    finally:
+        drawer.deleteLater()
+
+
+def test_detail_cover_background_uses_theme_token(qt_app, qt_state):
+    window = VajSaveWindow(qt_state)
+    try:
+        style = window.styleSheet()
+        segment = style.split("#detailCover", 1)[1].split("}", 1)[0]
+        assert "white" not in segment.lower()
+        assert ui_theme.SWITCH["panel_alt"].lower() in segment.lower()
+    finally:
+        window.close()
 
 
 @pytest.mark.parametrize("dpr", (1.25, 1.5, 2.0))
@@ -534,8 +625,8 @@ def test_scan_completed_shows_saves_before_hash_finishes(
         assert state.current_result is not None
         assert len(state.current_result.saves) == 1
         assert len(window.gallery.canvas.entries) == 1
-        # Cheap status is "changed" (not yet unchanged)
-        assert state.save_status(entry).status == "changed"
+        # Cheap status is neutral "checking" (not yet hashed)
+        assert state.save_status(entry).status == "checking"
 
         hash_release.set()
         for _ in range(50):
@@ -889,3 +980,225 @@ def test_auto_backup_skipped_when_default_off(qt_app, tmp_path: Path, monkeypatc
     finally:
         window.close()
 
+
+
+# --- task-3e38b484: dirty-rect painting, LRU, async detail/FTP, empty states --
+
+
+def test_gallery_paint_only_loads_cases_inside_dirty_rect(qt_app, qt_state, monkeypatch):
+    canvas = GalleryCanvas(qt_state)
+    canvas.resize(400, 700)
+    qt_state.set_platform_filter("all")
+    entries = list(qt_state.visible_saves())
+    canvas.set_entries(entries)
+    assert canvas.columns == 1
+
+    loaded = []
+    original_load = canvas._load_pixmap
+
+    def load_spy(entry, *args, **kwargs):
+        loaded.append(entry.path)
+        return original_load(entry, *args, **kwargs)
+
+    monkeypatch.setattr(canvas, "_load_pixmap", load_spy)
+    canvas.paintEvent(QPaintEvent(QRect(0, 0, 400, 400)))
+
+    # Only the first shelf row is dirty; rows below must never resolve or load.
+    assert loaded == [entries[0].path]
+    assert entries[1].path not in canvas._cover_paths
+
+
+def test_gallery_pixmap_cache_is_bounded_lru(qt_app, qt_state, tmp_path: Path):
+    cover = tmp_path / "cover.png"
+    image = QPixmap(40, 60)
+    image.fill(Qt.GlobalColor.blue)
+    assert image.save(str(cover), "PNG")
+
+    canvas = GalleryCanvas(qt_state)
+    entry = qt_state.visible_saves()[0]
+    canvas.set_cover_path(entry.path, str(cover))
+    for index in range(300):
+        canvas._load_pixmap(entry, QRectF(0, 0, 20 + index, 40))
+
+    assert len(canvas._pixmaps) == canvas.PIXMAP_CACHE_SIZE
+    widths = {key[1] for key in canvas._pixmaps}
+    assert 20 + 299 in widths or 20 + 298 in widths
+    assert 20 not in widths
+
+
+def test_detail_set_entry_never_rglobs_on_ui_thread(qt_app, qt_state, monkeypatch):
+    entry = qt_state.visible_saves()[0]
+    main_calls = []
+    original_rglob = Path.rglob
+
+    def counting_rglob(self, *args, **kwargs):
+        if threading.current_thread() is threading.main_thread():
+            main_calls.append(str(self))
+        return original_rglob(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "rglob", counting_rglob)
+    window = VajSaveWindow(qt_state)
+    try:
+        versions = window.drawer.set_entry(qt_state, entry)
+        assert main_calls == []
+        assert window.drawer.fields["size"].text() in ("…", "—") or window.drawer.fields["size"].text().endswith(("B", "KB", "MB"))
+        assert versions is not None
+    finally:
+        window.close()
+
+
+def test_detail_size_is_filled_in_background(qt_app, qt_state):
+    entry = qt_state.visible_saves()[0]
+    expected = sum(
+        child.stat().st_size for child in Path(entry.path).rglob("*") if child.is_file()
+    )
+    window = VajSaveWindow(qt_state)
+    try:
+        window.drawer.set_entry(qt_state, entry)
+        for _ in range(50):
+            QTest.qWait(20)
+            if window.drawer.fields["size"].text() != "…":
+                break
+        assert window.drawer.fields["size"].text() == DetailDrawer._format_bytes(expected)
+    finally:
+        window.close()
+
+
+def test_ftp_pull_is_submitted_to_device_loader(qt_app, qt_state, monkeypatch):
+    window = VajSaveWindow(qt_state)
+    try:
+        class FakeFtpDialog:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def exec(self):
+                return QDialog.DialogCode.Accepted
+
+            def configure(self):
+                pass
+
+        monkeypatch.setattr(qt_ui, "FtpDialog", FakeFtpDialog)
+        pulled = []
+        monkeypatch.setattr(qt_state, "pull_ftp_saves", lambda token=None: pulled.append(True))
+        submitted = []
+        monkeypatch.setattr(
+            window._device_loader,
+            "submit",
+            lambda key, task, callback: submitted.append((key, task)) or True,
+        )
+        window._show_ftp()
+        assert submitted and submitted[0][0] == ("ftp-pull",)
+        assert pulled == []
+    finally:
+        window.close()
+
+
+def test_gallery_empty_state_distinguishes_reasons(qt_app, qt_state, tmp_path: Path):
+    from vajsave.platforms.common import ScanProgress
+
+    canvas = GalleryCanvas(qt_state)
+    # Search / filter matched nothing.
+    qt_state.set_search_query("no-such-game-xyz")
+    canvas.set_entries(qt_state.visible_saves())
+    assert "没有符合条件" in canvas._empty_message()
+    qt_state.set_search_query("")
+    qt_state.set_platform_filter("all")
+
+    # A scan is in flight.
+    qt_state.report_scan_progress(ScanProgress(message="正在扫描…"))
+    assert "正在扫描" in canvas._empty_message()
+    qt_state.clear_scan_progress()
+
+    # Nothing connected yet.
+    idle = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "library")
+    idle_canvas = GalleryCanvas(idle)
+    assert "连接掌机" in idle_canvas._empty_message()
+
+
+def test_show_drawer_keeps_gallery_columns_and_reserved_width(qt_app, qt_state):
+    window = VajSaveWindow(qt_state)
+    try:
+        window.show()
+        QTest.qWait(60)
+        canvas = window.gallery.canvas
+        columns_before = canvas.columns
+        canvas.selected = {0}
+        canvas.selection_changed.emit(canvas.selected_entries())
+        QTest.qWait(240)
+        assert canvas.columns == columns_before
+        assert canvas.reserved_right == 0
+        window.hide_drawer()
+        QTest.qWait(240)
+        assert canvas.columns == columns_before
+        assert canvas.reserved_right == 0
+    finally:
+        window.close()
+
+
+def test_search_does_not_bump_generation_or_reenrich(qt_app, qt_state, monkeypatch):
+    window = VajSaveWindow(qt_state)
+    try:
+        generation = window._list_generation
+        submits = []
+        monkeypatch.setattr(
+            window._artwork_loader,
+            "submit",
+            lambda key, task, callback: submits.append(key) or True,
+        )
+        window.search.setText("游戏 1")
+        assert window._list_generation == generation
+        assert all(not (isinstance(key, tuple) and key and key[0] == "identity") for key in submits)
+        assert submits == []
+    finally:
+        window.close()
+
+
+def test_export_and_import_zip_run_on_device_loader(qt_app, qt_state, monkeypatch, tmp_path: Path):
+    window = VajSaveWindow(qt_state)
+    try:
+        submitted = []
+        monkeypatch.setattr(
+            window._device_loader,
+            "submit",
+            lambda key, task, callback: submitted.append(key) or True,
+        )
+
+        class _Snapshot:
+            id = "snap-1"
+            created_at = "2026-01-01T00:00:00"
+
+            def absolute_path(self, library_root):
+                return Path(library_root) / "snap-1"
+
+        window._selected = qt_state.visible_saves()[0]
+        window._selected_snapshot = _Snapshot()
+        monkeypatch.setattr(
+            qt_ui.QFileDialog,
+            "getSaveFileName",
+            lambda *args, **kwargs: (str(tmp_path / "out.zip"), ""),
+        )
+        window._export()
+        assert submitted == [("export", "snap-1", str(tmp_path / "out.zip"))]
+    finally:
+        window.close()
+    # The first submit never ran (stubbed), so release the shared job slot.
+    qt_state._job_slot.end()
+
+    window = VajSaveWindow(qt_state)
+    try:
+        submitted = []
+        monkeypatch.setattr(
+            window._device_loader,
+            "submit",
+            lambda key, task, callback: submitted.append(key) or True,
+        )
+        zip_path = tmp_path / "import.zip"
+        zip_path.write_bytes(b"PK\x03\x04")
+        monkeypatch.setattr(
+            qt_ui.QFileDialog, "getOpenFileName", lambda *args, **kwargs: (str(zip_path), "")
+        )
+        monkeypatch.setattr(qt_ui, "zip_has_manifest", lambda path: True)
+        window._import_zip()
+        assert submitted == [("import-zip", str(zip_path))]
+    finally:
+        window.close()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -29,6 +30,16 @@ _HASH_CHUNK = 1024 * 1024
 _HASH_CACHE_MAX = 2048
 _hash_cache: Dict[Tuple[Any, ...], str] = {}
 _hash_cache_lock = threading.Lock()
+
+# In-process cache of parsed catalogs, keyed by (resolved catalog path,
+# mtime_ns, size). The stored :class:`Catalog` is treated as immutable: every
+# ``load_catalog`` returns a deep copy, and ``save_catalog`` stores a copy, so
+# callers that mutate the object they got (or are about to write) can never
+# corrupt the cache seen by another thread. A changed mtime/size simply misses,
+# and a corrupt read is never cached, so a broken file self-heals once fixed.
+_CATALOG_CACHE_MAX = 128
+_catalog_cache: Dict[Tuple[str, int, int], "Catalog"] = {}
+_catalog_cache_lock = threading.Lock()
 
 
 def default_library_root() -> Path:
@@ -445,17 +456,51 @@ def catalog_path(library_root: Path) -> Path:
     return Path(library_root) / CATALOG_NAME
 
 
+def _catalog_cache_key(path: Path) -> Optional[Tuple[str, int, int]]:
+    """Fingerprint of the on-disk catalog; None when it is absent/unstatable."""
+    try:
+        st = path.stat()
+        resolved = str(path.resolve())
+    except OSError:
+        return None
+    if not stat.S_ISREG(st.st_mode):
+        return None
+    return (resolved, st.st_mtime_ns, st.st_size)
+
+
+def _catalog_cache_store(path: Path, catalog: Catalog) -> None:
+    """Cache a pristine snapshot of ``catalog`` under the file's current state."""
+    key = _catalog_cache_key(path)
+    if key is None:
+        return
+    snapshot = copy.deepcopy(catalog)
+    with _catalog_cache_lock:
+        if len(_catalog_cache) >= _CATALOG_CACHE_MAX:
+            _catalog_cache.clear()
+        _catalog_cache[key] = snapshot
+
+
 def load_catalog(library_root: Path) -> Catalog:
     path = catalog_path(library_root)
-    if not path.is_file():
+    key = _catalog_cache_key(path)
+    if key is None:
         return Catalog()
+    with _catalog_cache_lock:
+        cached = _catalog_cache.get(key)
+    if cached is not None:
+        # Hand out an independent copy: callers mutate the result in place
+        # before ``save_catalog``, so the cached snapshot must stay pristine.
+        return copy.deepcopy(cached)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             return Catalog()
-        return Catalog.from_dict(data)
-    except (OSError, json.JSONDecodeError):
+        catalog = Catalog.from_dict(data)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        # Never cache a failure: repairing the file (new mtime/size) must win.
         return Catalog()
+    _catalog_cache_store(path, catalog)
+    return copy.deepcopy(catalog)
 
 
 def save_catalog(library_root: Path, catalog: Catalog) -> None:
@@ -465,6 +510,9 @@ def save_catalog(library_root: Path, catalog: Catalog) -> None:
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(catalog.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(path)
+    # Refresh the cache from the just-written file so the next load is a hit and
+    # never briefly reports stale data between replace() and the next stat.
+    _catalog_cache_store(path, catalog)
 
 
 def settings_path(library_root: Path) -> Path:
