@@ -520,6 +520,132 @@ def test_embedded_fallback_still_used_for_gba_and_vita(tmp_path: Path):
         assert Path(resolution.path) == icon
 
 
+def test_vita_entry_with_pspemu_path_never_uses_embedded_icon(tmp_path: Path):
+    """An Adrenaline/pspemu PSP save saved as a ``vita`` entry still skips
+    ICON0: the path identifies it as a PSP save regardless of the platform
+    string. Backslashes are normalized before matching."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="vita", name="Vita PSP Save")
+    entry.path = "ux0\\pspemu\\PSP\\SAVEDATA\\ULJM05800"
+    icon = tmp_path / "ICON0.PNG"
+    icon.write_bytes(png_bytes(size=(64, 112)))
+    entry.cover_path = str(icon)
+
+    resolution = resolve_artwork(
+        entry, library, cache=cache, identity_key="vita:ULJM05800"
+    )
+    assert resolution.source == SOURCE_PLACEHOLDER
+    assert resolution.path is None
+
+
+def test_ensure_cover_vita_entry_with_pspemu_path_never_uses_embedded(
+    tmp_path: Path,
+):
+    """A failed download for a pspemu PSP save on Vita falls back to the
+    placeholder, not the embedded ICON0."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="vita", name="Vita PSP Save")
+    entry.path = "ux0/pspemu/PSP/SAVEDATA/ULJM05800"
+    icon = tmp_path / "ICON0.PNG"
+    icon.write_bytes(png_bytes(size=(64, 112)))
+    entry.cover_path = str(icon)
+    service = ArtworkService(
+        cache=cache,
+        downloader=ArtworkDownloader(
+            urlopen=lambda url, timeout=None: FakeResponse(b"", status=404)
+        ),
+    )
+
+    resolution = service.ensure_cover(
+        entry,
+        metadata=make_metadata(
+            platform="vita",
+            title="Monster Hunter Portable 3rd",
+            key="vita:ULJM05800",
+        ),
+        identity_key="vita:ULJM05800",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_PLACEHOLDER
+    assert resolution.path is None
+
+
+def test_vita_entry_with_psp_source_id_never_uses_embedded_icon(tmp_path: Path):
+    """A ``source_id`` of ``psp`` also marks a PSP save even when the platform
+    string is ``vita`` and the path looks ordinary."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="vita", name="Adrenaline Save")
+    entry.source_id = "psp"
+    icon = tmp_path / "ICON0.PNG"
+    icon.write_bytes(png_bytes(size=(64, 112)))
+    entry.cover_path = str(icon)
+
+    resolution = resolve_artwork(
+        entry, library, cache=cache, identity_key="vita:ULJM05800"
+    )
+    assert resolution.source == SOURCE_PLACEHOLDER
+    assert resolution.path is None
+
+    service = ArtworkService(
+        cache=cache,
+        downloader=ArtworkDownloader(
+            urlopen=lambda url, timeout=None: FakeResponse(b"", status=404)
+        ),
+    )
+    ensure = service.ensure_cover(
+        entry,
+        metadata=make_metadata(
+            platform="vita", title="Adrenaline Save", key="vita:ULJM05800"
+        ),
+        identity_key="vita:ULJM05800",
+        library_root=library,
+    )
+    assert ensure.source == SOURCE_PLACEHOLDER
+    assert ensure.path is None
+
+
+def test_vita_entry_with_psp_savedata_path_never_uses_embedded_icon(tmp_path: Path):
+    """A ``PSP/SAVEDATA`` path also marks a PSP save, with or without a
+    trailing title-id segment."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    icon = tmp_path / "ICON0.PNG"
+    icon.write_bytes(png_bytes(size=(64, 112)))
+
+    for path in ("ms0:/PSP/SAVEDATA/ULJM05800", "ms0:/PSP/SAVEDATA"):
+        entry = make_entry(tmp_path, platform="vita", name="Vita PSP Save")
+        entry.source_id = "vita"
+        entry.path = path
+        entry.cover_path = str(icon)
+        resolution = resolve_artwork(
+            entry, library, cache=cache, identity_key="vita:ULJM05800"
+        )
+        assert resolution.source == SOURCE_PLACEHOLDER
+        assert resolution.path is None
+
+
+def test_vita_native_savedata_path_still_uses_embedded_icon(tmp_path: Path):
+    """A real Vita save under ``ux0/user/00/savedata/<TITLEID>`` keeps its
+    portrait ``sce_sys/icon0.png`` fallback."""
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="vita", name="Persona 4 Golden")
+    entry.source_id = "vita"
+    entry.path = "ux0/user/00/savedata/PCSG00000"
+    icon = tmp_path / "icon0.png"
+    icon.write_bytes(png_bytes(size=(64, 112)))
+    entry.cover_path = str(icon)
+
+    resolution = resolve_artwork(
+        entry, library, cache=cache, identity_key="vita:PCSG00000"
+    )
+    assert resolution.source == SOURCE_EMBEDDED
+    assert Path(resolution.path) == icon
+
+
 def test_resolve_artwork_skips_landscape_user_and_embedded_images(tmp_path: Path):
     library = tmp_path / "lib"
     entry = make_entry(tmp_path, platform="psp", name="Banner Game")

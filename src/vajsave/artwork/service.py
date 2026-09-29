@@ -74,16 +74,45 @@ class ArtworkResolution:
 PLACEHOLDER = ArtworkResolution(None, SOURCE_PLACEHOLDER)
 
 
-def _embedded_allowed(platform) -> bool:
+def _is_psp_save(entry, platform=None) -> bool:
+    """Whether ``entry``/``platform`` identifies a PSP save.
+
+    The embedded ``ICON0.PNG`` of a PSP save is never box art, so this decides
+    the embedded layer for both native PSP scans and PSP saves living inside a
+    Vita memory card (Adrenaline / ``pspemu``).  The platform string alone is
+    not enough: a display/identity layer may relabel a ``pspemu`` save as
+    ``vita``, so the entry's ``source_id`` and path are consulted too.
+    """
+    plat = (
+        platform if platform is not None else getattr(entry, "platform", None)
+    )
+    if str(plat or "").strip().lower() == "psp":
+        return True
+    source_id = getattr(entry, "source_id", None)
+    if str(source_id or "").strip().lower() == "psp":
+        return True
+    raw_path = getattr(entry, "path", None)
+    if not raw_path:
+        return False
+    normalised = str(raw_path).replace("\\", "/").casefold()
+    return (
+        "pspemu/" in normalised
+        or "/psp/savedata/" in normalised
+        or normalised.endswith("/psp/savedata")
+    )
+
+
+def _embedded_allowed(entry, platform=None) -> bool:
     """Whether a save's embedded icon may be shown as a gallery cover.
 
     PSP ``ICON0.PNG`` files are frequently 144×80 banners or upscaled square
-    menu icons, never the portrait box art the gallery expects, so the PSP
-    resolver skips the embedded layer entirely and shows a placeholder when no
-    user or downloaded cover is available.  Every other platform keeps its
-    embedded fallback.
+    menu icons, never the portrait box art the gallery expects, so PSP saves
+    skip the embedded layer entirely and show a placeholder when no user or
+    downloaded cover is available.  This includes PSP saves found inside a
+    Vita memory card (Adrenaline / ``pspemu``) even when the entry is labelled
+    ``vita``.  Every non-PSP save keeps its embedded fallback.
     """
-    return str(platform or "").strip().lower() != "psp"
+    return not _is_psp_save(entry, platform)
 
 
 def _embedded_path(entry) -> Optional[Path]:
@@ -152,7 +181,7 @@ def resolve_artwork(
     downloaded = _downloaded_path(cache, plat, identity_key)
     if downloaded is not None:
         return ArtworkResolution(str(downloaded), SOURCE_DOWNLOADED)
-    if _embedded_allowed(plat):
+    if _embedded_allowed(entry, plat):
         embedded = _portrait_path(_embedded_path(entry))
         if embedded is not None:
             return ArtworkResolution(str(embedded), SOURCE_EMBEDDED)
@@ -316,7 +345,7 @@ class ArtworkService:
         if cached is not None:
             return ArtworkResolution(str(cached), SOURCE_DOWNLOADED)
         embedded = (
-            _portrait_path(_embedded_path(entry)) if _embedded_allowed(plat) else None
+            _portrait_path(_embedded_path(entry)) if _embedded_allowed(entry, plat) else None
         )
         names = []
         if plat == "3ds" and title_id:
@@ -562,7 +591,7 @@ class ArtworkService:
         )
         if downloaded is not None:
             return ArtworkResolution(str(downloaded), SOURCE_DOWNLOADED)
-        if _embedded_allowed(plat):
+        if _embedded_allowed(entry, plat):
             embedded = _portrait_path(_embedded_path(entry))
             if embedded is not None:
                 return ArtworkResolution(str(embedded), SOURCE_EMBEDDED)
