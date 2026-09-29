@@ -6,6 +6,13 @@ from typing import Any, Dict
 import pytest
 
 from vajsave.remote_ftp import FtpEntry, RemoteFtpError
+from vajsave.remote_mtp import (
+    MtpDevice,
+    MtpEntry,
+    MtpError,
+    MtpNotFound,
+    MtpStorage,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -201,6 +208,145 @@ def fake_client_factory(tree: Dict[str, Any], **kwargs: Any):
 
     factory.clients = []  # type: ignore[attr-defined]
     return factory
+
+
+def _coerce_storage(value: Any) -> MtpStorage:
+    if isinstance(value, MtpStorage):
+        return value
+    storage_id, name, *rest = value
+    return MtpStorage(storage_id=str(storage_id), name=str(name), description=rest[0] if rest else "")
+
+
+class FakeMtpClient:
+    """In-memory stand-in for a WPD/MTP portable-device client.
+
+    ``storages`` is a list of :class:`MtpStorage` (or ``(id, name)`` tuples) and
+    ``tree`` maps a storage id to a nested dict: directories are dicts, files
+    are ``bytes`` leaves.  ``fail_paths`` makes a specific remote object raise
+    so partial-pull failure can be reproduced deterministically.
+    """
+
+    def __init__(
+        self,
+        storages: Any,
+        tree: Dict[str, Any],
+        *,
+        fail_paths: Any = (),
+        error_message: str = "",
+        modified: Any = None,
+    ) -> None:
+        self.storages = [_coerce_storage(item) for item in storages]
+        self.tree = tree
+        self.fail_paths = set(fail_paths)
+        self.error_message = error_message
+        self.modified = dict(modified or {})
+        self.commands: list = []
+        self.downloads: list = []
+        self.connected = False
+        self.closed = False
+
+    @staticmethod
+    def _parts(remote_path: str):
+        return [part for part in str(remote_path or "/").split("/") if part]
+
+    def connect(self) -> "FakeMtpClient":
+        self.commands.append("CONNECT")
+        self.connected = True
+        return self
+
+    def close(self) -> None:
+        self.closed = True
+
+    def list_storages(self):
+        self.commands.append("STORAGES")
+        return list(self.storages)
+
+    def _fails(self, storage_id: str, remote_path: str) -> bool:
+        return (storage_id, remote_path) in self.fail_paths or remote_path in self.fail_paths
+
+    def _node(self, storage_id: str, remote_path: str) -> Any:
+        node: Any = self.tree[storage_id]
+        for part in self._parts(remote_path):
+            node = node[part]
+        return node
+
+    def list_dir(self, storage_id: str, remote_path: str):
+        self.commands.append(("LS", storage_id, remote_path))
+        if self._fails(storage_id, remote_path):
+            raise MtpNotFound(self.error_message or f"no such object: {remote_path}")
+        try:
+            node = self._node(storage_id, remote_path)
+        except (KeyError, TypeError) as exc:
+            raise MtpNotFound(f"no such object: {remote_path}") from exc
+        if not isinstance(node, dict):
+            raise MtpNotFound(f"not a directory: {remote_path}")
+        entries = []
+        for name, value in node.items():
+            if isinstance(value, dict):
+                entries.append(MtpEntry(name=str(name), is_dir=True))
+                continue
+            child = f"{str(remote_path).rstrip('/')}/{name}"
+            entries.append(
+                MtpEntry(
+                    name=str(name),
+                    is_dir=False,
+                    size=len(value) if isinstance(value, (bytes, bytearray)) else 0,
+                    modified=str(self.modified.get(f"{storage_id}:{child}", "") or ""),
+                )
+            )
+        return entries
+
+    def download(self, storage_id: str, remote_path: str, local_path: Path) -> int:
+        self.downloads.append((storage_id, remote_path))
+        if self._fails(storage_id, remote_path):
+            raise MtpError(self.error_message or f"cannot read: {remote_path}")
+        data = self._node(storage_id, remote_path)
+        if not isinstance(data, (bytes, bytearray)):
+            raise MtpError(f"not a file: {remote_path}")
+        path = Path(local_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(bytes(data))
+        return len(data)
+
+
+def fake_mtp_client_factory(storages: Any, tree: Dict[str, Any], **kwargs: Any):
+    """Return a ``client_factory`` plus the created clients (for assertions)."""
+
+    def factory(device_id: str):
+        client = FakeMtpClient(storages, tree, **kwargs)
+        factory.clients.append(client)
+        return client
+
+    factory.clients = []  # type: ignore[attr-defined]
+    return factory
+
+
+def dbi_saves_tree() -> Dict[str, Any]:
+    """A Saves storage with two user saves plus Device/BCAT metadata dirs."""
+    return {
+        "saves": {
+            "Installed games": {
+                "0100000000010000 Super Mario Odyssey": {
+                    "Alice": {"main": b"ALICE-SAVE"},
+                    "Bob": {"main": b"BOB-SAVE"},
+                    "Device": {"cfg": b"skip-device"},
+                    "BCAT": {"data": b"skip-bcat"},
+                }
+            }
+        }
+    }
+
+
+def mtp_device(
+    device_id: str,
+    friendly_name: str,
+    storages: Any,
+) -> MtpDevice:
+    return MtpDevice(
+        device_id=device_id,
+        friendly_name=friendly_name,
+        storages=tuple(_coerce_storage(item) for item in storages),
+    )
 
 
 @pytest.fixture

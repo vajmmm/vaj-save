@@ -33,16 +33,43 @@ def _mount_sort_key(volume: VolumeInfo) -> Tuple[int, int]:
     return (0 if volume.is_removable else 1, -letter)
 
 
+class _CombinedVolumeProvider:
+    """Provider view that merges drive/provider volumes with MTP devices.
+
+    ``watch_volumes`` polls a single provider, so wrapping the real provider
+    here makes both ``refresh_volumes`` and the background watcher observe MTP
+    devices appearing and disappearing.  Provider errors are swallowed so the
+    watch loop keeps running.
+    """
+
+    def __init__(self, app: "AppState") -> None:
+        self._app = app
+
+    def list_volumes(self) -> List[VolumeInfo]:
+        app = self._app
+        volumes: List[VolumeInfo] = []
+        try:
+            volumes.extend(app.provider.list_volumes())
+        except Exception:  # noqa: BLE001 - watcher must survive a bad provider
+            pass
+        try:
+            volumes.extend(app.mtp.list_volumes())
+        except Exception:  # noqa: BLE001
+            pass
+        return volumes
+
+
 class DeviceSession:
     def __init__(self, app: AppState) -> None:
         self.app = app
 
     def refresh_volumes(self) -> List[VolumeInfo]:
-        """Fetch latest volume list from provider.
+        """Fetch latest volume list from provider plus discovered MTP devices.
 
         Pulled FTP caches are not provider volumes, so they are preserved across
         a refresh (when they still exist) instead of vanishing from the device
-        list.
+        list.  MTP devices are re-discovered on every refresh so a hotplug is
+        reflected without a manual refresh.
         """
         app = self.app
         preserved = [
@@ -51,10 +78,14 @@ class DeviceSession:
             if (volume.extra or {}).get("ftp") and Path(volume.mount_point).is_dir()
         ]
         try:
-            app.volumes = app.provider.list_volumes()
+            app.volumes = list(app.provider.list_volumes())
         except Exception as e:
             app.warnings.append(f"刷新卷列表失败: {e}")
             app.volumes = []
+        try:
+            app.volumes.extend(app.mtp.list_volumes())
+        except Exception:  # noqa: BLE001 - MTP discovery must never break refresh
+            pass
         for volume in preserved:
             if not any(
                 Path(existing.mount_point) == Path(volume.mount_point)
@@ -200,7 +231,7 @@ class DeviceSession:
 
         app._watch_thread = threading.Thread(
             target=watch_volumes,
-            args=(app.provider, interval, _callback, app._stop_event),
+            args=(_CombinedVolumeProvider(app), interval, _callback, app._stop_event),
             daemon=True,
         )
         app._watch_thread.start()

@@ -195,6 +195,14 @@ class ScanSession:
         """扫描并计算廉价备份状态（不计算哈希）；可在工作线程运行。"""
         path = Path(mount_point)
         extra = self._volume_extra(path)
+        pull_error = ""
+        if (extra or {}).get("mtp"):
+            # Pull the device into its cache on the scanning worker before the
+            # cache is scanned, so Qt never needs a new dialog.  A failed pull
+            # is reported as a warning and never raises into the UI thread.
+            pull = self.app.mtp.pull_mount(path)
+            if not pull.ok:
+                pull_error = pull.error or "拉取失败"
         key = device_key_for(path, extra)
         bound = None
         if key and not refresh:
@@ -212,6 +220,8 @@ class ScanSession:
         else:
             if key and bound is None:
                 self._commit_bindings(path, res, key=key, refresh=refresh)
+        if pull_error:
+            res.warnings.insert(0, f"DBI MTP 拉取失败: {pull_error}")
         catalog = load_catalog(self.app.library_root)
         statuses: Dict[str, SaveBackupStatus] = {}
         for entry in res.saves:

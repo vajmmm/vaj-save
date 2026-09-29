@@ -84,6 +84,9 @@ def _detected_platforms(base: Path) -> Set[str]:
 
     if has_dir("switch/Checkpoint/saves") or has_dir("switch") or has_dir("atmosphere"):
         detected.add("switch")
+    # DBI MTP Saves cache: Installed/Uninstalled games at the device root.
+    if any(has_dir(rel) for rel in ("Installed games", "Uninstalled games")):
+        detected.add("switch")
     if has_dir("3ds/Checkpoint/saves") or has_dir("Nintendo 3DS"):
         detected.add("3ds")
 
@@ -154,6 +157,10 @@ def guess_platform(root: Union[Path, str]) -> Optional[str]:
         return "psp"
     if base.name.upper() == "SAVEDATA":
         return "psp"
+
+    # DBI MTP Saves cache: games live under Installed/Uninstalled games.
+    if has_dir("Installed games") or has_dir("Uninstalled games"):
+        return "switch"
 
     # Checkpoint exports.
     if has_dir("switch/Checkpoint/saves"):

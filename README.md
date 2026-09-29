@@ -187,10 +187,17 @@ vajsave watch
 
 无上述指纹的普通 U 盘会标为 `unknown`，不会误报成某台掌机。
 
+## Windows DBI MTP（只读）
+
+Windows 上可以直接用 DBI 的 MTP responder（`Run MTP responder`）连接破解 Switch，无需盘符或读卡器：
+
+- 应用自动发现名称匹配 Switch / Nintendo / DBI / Checkpoint 或带 `Saves` 存储的便携设备，普通手机、相机不会出现；设备像盘符一样进入设备列表并支持热插拔。
+- 选中后先把 **`Saves`**（`Installed games` / `Uninstalled games` 下每个 `游戏/用户` 目录）以及 SD 上的 `switch/Checkpoint/saves`、`JKSV/`、`switch/DBI/saves/` 子树**原子增量**拉取到本地缓存（`<库>/mtp-cache/<设备>/`），再走现有扫描/备份。
+- 不会拉取 `Installed games` NSP 安装盘、Album 或整张 SD；恢复仍然只写你选的本地文件夹，**绝不写回掌机**。
+- macOS / Linux 不提供 MTP 协议栈，发现列表为空；请改用 Hekate UMS 挂整张 SD，或拔卡。
+
 ## 本轮不做
 
-- **Switch DBI / Checkpoint MTP**：macOS 上 MTP 不稳定。请用 Hekate UMS 挂整张 SD，或拔卡。
-- **MTP / WPD 直连探测**：以 MTP 模式直连的掌机（如部分 Switch DBI 连接）不分配盘符，本工具的盘符枚举看不到它，需要一个单独的 WPD 协议栈才能枚举；目前不做。
 - 存档解密、重签、写回、编辑器。只读管理。
 
 ## JKSV / JKSM 布局假设

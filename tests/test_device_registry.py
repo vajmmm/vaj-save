@@ -60,6 +60,12 @@ def test_device_key_custom_and_ftp(tmp_path):
     assert device_key_for(tmp_path, {"usb": "vid:pid"}) is None
 
 
+def test_device_key_mtp(tmp_path):
+    assert device_key_for(tmp_path, {"mtp": True, "mtp_id": "abc"}) == "mtp:abc"
+    assert device_key_for(tmp_path, {"mtp": True, "mtp_id": "  "}) is None
+    assert device_key_for(tmp_path, {"mtp": True}) is None
+
+
 def _psp_card(tmp_path: Path, psp_sfo_bytes: bytes) -> Path:
     mount = tmp_path / "card"
     save = mount / "PSP" / "SAVEDATA" / "ULJM05800"

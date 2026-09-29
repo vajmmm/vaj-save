@@ -21,6 +21,14 @@ _JKSV_RESERVED_NAMES = frozenset(
     {"saves", "extdata", "syssave", "boss", "shared", "_trash_"}
 )
 
+# DBI MTP Saves: a game folder contains per-user save folders plus reserved
+# metadata folders that must never become save slots.
+_DBI_RESERVED_NAMES = frozenset(
+    {"device", "bcat", "cache", "system", "temporary", "systembcat"}
+)
+# DBI MTP Saves containers (the game folders live one level below these).
+_DBI_GAME_CONTAINERS = ("Installed games", "Uninstalled games")
+
 
 def _parse_checkpoint_folder_name(name: str) -> Tuple[Optional[str], str]:
     """Parse Checkpoint folder name like '0x011C4 Pokemon Moon' or '0100000000010000 Super Mario Odyssey'."""
@@ -34,6 +42,74 @@ def _parse_checkpoint_folder_name(name: str) -> Tuple[Optional[str], str]:
 
 def _is_jksv_reserved(name: str) -> bool:
     return name.lower() in _JKSV_RESERVED_NAMES
+
+
+def _is_dbi_reserved(name: str) -> bool:
+    return name.strip().lower() in _DBI_RESERVED_NAMES
+
+
+def _scan_dbi_games_dir(
+    games_dir: Path,
+    *,
+    container_name: str,
+    root_resolved: Path,
+    warnings: List[str],
+    sources: List[SaveSource],
+    saves: List[SaveEntry],
+    seen_source_roots: Set[Path],
+    seen_save_paths: Set[Path],
+) -> None:
+    """Scan a DBI ``Installed games``/``Uninstalled games`` container.
+
+    Each ``<title>/<user>`` folder becomes one Switch save; the reserved
+    metadata folders (Device/BCAT/Cache/System/Temporary/SystemBCAT) are kept
+    out of the save list.
+    """
+    key = resolved_key(games_dir)
+    if key is None or key in seen_source_roots:
+        return
+    if not games_dir.is_dir() or not is_safe_path(games_dir, root_resolved):
+        return
+    game_dirs = [
+        d
+        for d in safe_iterdir(games_dir, warnings)
+        if d.is_dir() and is_safe_path(d, root_resolved)
+    ]
+    if not game_dirs:
+        return
+    seen_source_roots.add(key)
+    sources.append(
+        SaveSource(
+            source_id="switch_dbi",
+            platform="switch",
+            description=f"Switch DBI MTP {container_name} save directory",
+            root_path=str(games_dir),
+        )
+    )
+    for game_dir in game_dirs:
+        title_id, display_name = _parse_checkpoint_folder_name(game_dir.name)
+        user_dirs = [
+            d
+            for d in safe_iterdir(game_dir, warnings)
+            if d.is_dir()
+            and is_safe_path(d, root_resolved)
+            and not _is_dbi_reserved(d.name)
+        ]
+        for user_dir in user_dirs:
+            user_key = resolved_key(user_dir)
+            if user_key is None or user_key in seen_save_paths:
+                continue
+            seen_save_paths.add(user_key)
+            saves.append(
+                SaveEntry(
+                    platform="switch",
+                    source_id="switch_dbi",
+                    title_id=title_id,
+                    display_name=display_name,
+                    user=user_dir.name,
+                    path=str(user_dir),
+                )
+            )
 
 
 def _scan_checkpoint_saves_dir(
@@ -243,8 +319,39 @@ def scan_switch(
             jksv_dir, root_resolved, warnings, sources, saves, seen_source_roots, seen_save_paths
         )
 
+    # DBI MTP Saves: .../Installed games/<title>/<user> (and Uninstalled games)
+    for container in _DBI_GAME_CONTAINERS:
+        # A bound scan may point straight at the container itself.
+        if root.name == container:
+            _scan_dbi_games_dir(
+                root,
+                container_name=container,
+                root_resolved=root_resolved,
+                warnings=warnings,
+                sources=sources,
+                saves=saves,
+                seen_source_roots=seen_source_roots,
+                seen_save_paths=seen_save_paths,
+            )
+        container_dirs = collect_unique_dirs(
+            find_pattern_dirs(root, (container,), root_resolved, warnings, wrapper_depth)
+        )
+        for container_dir in container_dirs:
+            _scan_dbi_games_dir(
+                container_dir,
+                container_name=container,
+                root_resolved=root_resolved,
+                warnings=warnings,
+                sources=sources,
+                saves=saves,
+                seen_source_roots=seen_source_roots,
+                seen_save_paths=seen_save_paths,
+            )
+
     # SD fallback: atmosphere/ or switch/ at card root only
-    has_switch_saves = any(s.source_id in ("switch_checkpoint", "switch_jksv") for s in sources)
+    has_switch_saves = any(
+        s.source_id in ("switch_checkpoint", "switch_jksv", "switch_dbi") for s in sources
+    )
     if not has_switch_saves:
         has_atmo = (root / "atmosphere").is_dir() and is_safe_path(root / "atmosphere", root_resolved)
         has_switch_dir = (root / "switch").is_dir() and is_safe_path(root / "switch", root_resolved)

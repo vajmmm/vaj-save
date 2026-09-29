@@ -46,8 +46,13 @@ def relative_source_root(mount: Path, source_root: str) -> str | None:
 
 
 def device_key_for(mount: Path, extra: dict | None = None) -> str | None:
-    """Registry key for a mount: volume serial, ``path:{resolved}``, or ``ftp:{preset}``."""
+    """Registry key for a mount: volume serial, ``path:{resolved}``, ``ftp:{preset}`` or ``mtp:{id}``."""
     payload = extra or {}
+    if payload.get("mtp"):
+        mtp_id = payload.get("mtp_id")
+        if isinstance(mtp_id, str) and mtp_id.strip():
+            return f"mtp:{mtp_id.strip()}"
+        return None
     if payload.get("ftp"):
         preset = payload.get("ftp_preset")
         if isinstance(preset, str) and preset.strip():

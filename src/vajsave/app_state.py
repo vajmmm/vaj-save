@@ -38,6 +38,8 @@ from .library_import import import_snapshot_zip as _import_snapshot_zip
 from .library_versions import SnapshotDeletion, delete_snapshot
 from .metadata import GameMetadata, GameMetadataResolver
 from .models import SaveEntry, ScanResult, VolumeInfo
+from .mtp_fetch import MtpPullResult
+from .mtp_session import MtpSession
 from .platforms.catalog import PLATFORM_LABELS, PLATFORM_ORDER
 from .platforms.common import IDLE_SCAN_PROGRESS, ScanProgress
 from .remote_ftp import FtpProfile, RemoteFtpClient
@@ -75,6 +77,8 @@ class AppState:
         backend: Optional[StorageBackend] = None,
         library_root: Optional[Union[Path, str]] = None,
         ftp_client_factory: Optional[Callable[[FtpProfile], RemoteFtpClient]] = None,
+        mtp_client_factory: Optional[Callable[[str], object]] = None,
+        mtp_device_lister: Optional[Callable[[], List[object]]] = None,
     ) -> None:
         self.settings = SettingsStore()
         self.provider: VolumeProvider = provider or MountedVolumeProvider()
@@ -110,6 +114,12 @@ class AppState:
             if self.ftp_remember_password
             else ""
         )
+
+        # MTP (Windows WPD) discovery + pull.  Both hooks are injectable so
+        # tests never touch a real portable device.  Off Windows the default
+        # lister returns no devices.
+        self._mtp_client_factory = mtp_client_factory
+        self._mtp_device_lister = mtp_device_lister
 
         # Optional LLM cover disambiguation: only ever consulted for a listing
         # where several *different* titles share a query. Disabled by default
@@ -160,6 +170,7 @@ class AppState:
         self.scans = ScanSession(self)
         self.library_actions = LibraryActions(self)
         self.ftp = FtpSession(self)
+        self.mtp = MtpSession(self)
         self.enrichment = Enrichment(self)
 
     @staticmethod
@@ -319,6 +330,9 @@ class AppState:
 
     def pull_ftp_saves(self, token: object = None) -> FtpPullResult:
         return self.ftp.pull_ftp_saves(token=token)
+
+    def pull_mtp_saves(self, mount_point: Union[Path, str], token: object = None) -> MtpPullResult:
+        return self.mtp.pull_mount(mount_point, token=token)
 
     def resolve_save_metadata(
         self, entry: SaveEntry, identity: Optional[GameIdentity] = None
