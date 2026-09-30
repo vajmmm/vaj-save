@@ -20,9 +20,12 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QToolButton,
 )
 
 from vajsave.app_state import PLATFORM_ORDER, AppState
+from vajsave.baidu_api import BaiduCredentials
+from vajsave.baidu_sync_dialog import BaiduSyncDialog
 from vajsave import ui_theme
 from vajsave.artwork import ArtworkResolution, PLACEHOLDER, SOURCE_DOWNLOADED
 from vajsave.library import backup_save
@@ -109,6 +112,35 @@ def test_qt_window_uses_reference_dimensions_and_overlay(qt_app, qt_state):
         assert window.gallery.canvas.columns == columns_before
         assert window.gallery.canvas.reserved_right == 0
         assert window.drawer.isVisible()
+    finally:
+        window.close()
+
+
+def test_baidu_sync_menu_and_credentials_dialog_are_isolated(qt_app, qt_state):
+    window = VajSaveWindow(qt_state)
+    try:
+        menu_button = window.findChild(QToolButton, "menuButton")
+        action_labels = [
+            action.text()
+            for action in menu_button.menu().actions()
+            if not action.isSeparator()
+        ]
+        assert "配置百度网盘…" in action_labels
+        assert "同步到百度网盘" in action_labels
+
+        class CredentialStore:
+            def load(self):
+                return BaiduCredentials(
+                    "app-key", "secret-key", "vaj-save", "access", "refresh", 0
+                )
+
+        dialog = BaiduSyncDialog(object(), CredentialStore(), window)
+        try:
+            assert dialog.app_secret.echoMode() == QLineEdit.EchoMode.Password
+            assert dialog.auth_status.text() == "已连接百度网盘。"
+            assert not dialog.open_browser_button.isEnabled()
+        finally:
+            dialog.reject()
     finally:
         window.close()
 

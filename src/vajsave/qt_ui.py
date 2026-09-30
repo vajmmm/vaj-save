@@ -50,6 +50,9 @@ from PySide6.QtSvg import QSvgRenderer
 
 from .app_state import PLATFORM_LABELS, PLATFORM_ORDER, AppState
 from .artwork import MAX_COVER_ASPECT_RATIO, ArtworkLoader
+from .baidu_api import BaiduCredentialStore, BaiduNetdiskClient, BaiduSyncError
+from .baidu_sync import BaiduLibrarySync, SyncResult
+from .baidu_sync_dialog import BaiduSyncDialog
 from .identity import STATUS_AMBIGUOUS, STATUS_PARTIAL, STATUS_RESOLVED
 from .library import Snapshot
 from .models import SaveEntry
@@ -1177,6 +1180,9 @@ class VajSaveWindow(QMainWindow):
         menu_actions = QMenu(self)
         menu_actions.addAction("导入 ZIP", self._import_zip)
         menu_actions.addAction("打开备份库", self._open_library)
+        menu_actions.addSeparator()
+        menu_actions.addAction("配置百度网盘…", self._configure_baidu_sync)
+        menu_actions.addAction("同步到百度网盘", self._sync_baidu_library)
         menu.setMenu(menu_actions)
         brand = QVBoxLayout()
         brand.setSpacing(0)
@@ -1964,6 +1970,59 @@ class VajSaveWindow(QMainWindow):
 
         self._run_device_task(
             ("import-zip", str(zip_path)), task, lambda _result: None, error_title="导入 ZIP"
+        )
+
+    def _configure_baidu_sync(self) -> None:
+        BaiduSyncDialog(self._device_loader, parent=self).exec()
+
+    def _sync_baidu_library(self) -> None:
+        store = BaiduCredentialStore()
+        try:
+            credentials = store.load()
+        except BaiduSyncError as exc:
+            QMessageBox.warning(self, "百度网盘同步", str(exc))
+            return
+        if credentials is None or not credentials.connected:
+            QMessageBox.information(
+                self, "百度网盘同步", "请先在菜单中配置并连接百度网盘。"
+            )
+            return
+        message = (
+            f"将本地存档内容及游戏名称、备注、收藏状态、版本信息和 ROM 身份键上传到\n"
+            f"/apps/{credentials.app_name}/。本机源路径不会上传。\n\n"
+            "同步只追加新文件，不会删除网盘文件，也不会从网盘下载或恢复。继续吗？"
+        )
+        if QMessageBox.question(self, "同步到百度网盘", message) != QMessageBox.StandardButton.Yes:
+            return
+
+        sync = BaiduLibrarySync(BaiduNetdiskClient(store))
+
+        def task(token):
+            return sync.sync(
+                self.state.library_root,
+                token=token,
+                report=self.state._report_job_progress,
+            )
+
+        def completed(result: SyncResult) -> None:
+            if result.cancelled:
+                QMessageBox.information(
+                    self,
+                    "百度网盘同步已取消",
+                    f"已上传 {len(result.uploaded)} 个文件，跳过 {len(result.skipped)} 个已存在文件。",
+                )
+                return
+            self.status_text.setText(
+                f"百度网盘同步完成：新增 {len(result.uploaded)} 个，跳过 {len(result.skipped)} 个"
+            )
+            QMessageBox.information(
+                self,
+                "百度网盘同步完成",
+                f"新增 {len(result.uploaded)} 个文件，跳过 {len(result.skipped)} 个已存在文件。",
+            )
+
+        self._run_device_task(
+            ("baidu-library-sync",), task, completed, error_title="百度网盘同步失败"
         )
 
     def closeEvent(self, event) -> None:  # noqa: N802
