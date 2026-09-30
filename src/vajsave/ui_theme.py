@@ -1,8 +1,7 @@
 """vaj-save Archive Desk design tokens and pure layout helpers.
 
-This module is intentionally free of Tkinter imports so it can be unit tested
-without a display. ``app_ui`` consumes these tokens/helpers to render the
-platform dock, responsive gallery and fog-white detail drawer.
+This module is intentionally free of GUI toolkit imports so it can be unit
+tested without a display. ``qt_ui`` consumes these tokens and layout helpers.
 """
 
 from __future__ import annotations
@@ -65,7 +64,7 @@ HOVER = SWITCH["hover"]
 LINE_STRONG = SWITCH["line_strong"]
 ACCENT_HOVER = SWITCH["accent_hover"]
 
-# Canonical handheld platform identity colors (shared with DESIGN.md).
+# Canonical handheld platform identity colors used by the gallery.
 PLATFORM_COLORS: Dict[str, str] = {
     "all": "#0a84ff",
     "psp": "#64d2ff",
@@ -79,7 +78,7 @@ PLATFORM_COLORS: Dict[str, str] = {
 }
 
 # Legacy row metrics remain exported for integrations that still import them;
-# the live SaveList uses the gallery metrics below.
+# the Qt gallery uses the gallery metrics below.
 ROW_HEIGHT = 70
 ROW_COVER = 52
 ROW_COVER_RADIUS = 6
@@ -292,7 +291,7 @@ def save_row(entry: Any, status: Any, *, starred: bool = False) -> Dict[str, Any
     ``status`` may be a status string or any object exposing a ``.status``
     attribute (e.g. ``library.SaveBackupStatus``), keeping this helper pure and
     independent of the state layer. The item intentionally carries plain data;
-    geometry and shelf rendering stay in ``ui_widgets.SaveList``.
+    geometry and shelf rendering stay in the UI view layer.
     """
     status_key = getattr(status, "status", status) or "new"
     title = entry.display_name or entry.path

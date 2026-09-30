@@ -9,8 +9,8 @@
 - Do not hardcode OS-specific drive letters or paths; ensure cross-platform compatibility across Windows, macOS, and Linux.
 
 ## UI & Visual Design
-- Whenever modifying or creating desktop UI components, views, dialogs, or colors, strictly adhere to [DESIGN.md](./DESIGN.md).
-- Follow the Switch Basic White palette defined in [DESIGN.md](./DESIGN.md) (`#ebebeb` / `#f2f2f2` / `#e7e7e7` / `#ffffff` / `#2d2d2d`, accent `#0a84ff`).
+- The active desktop UI is implemented in `src/vajsave/qt_ui.py`; use `vajsave.ui_theme` as the source for runtime colors and layout tokens.
+- Follow the Switch Basic White palette (`#ebebeb` / `#f2f2f2` / `#e7e7e7` / `#ffffff` / `#2d2d2d`, accent `#0a84ff`).
 - Reference the tokens in `vajsave.ui_theme` instead of hardcoding colour values.
 - Use the canonical platform colors (`PLATFORM_COLORS`) for the 3px gallery pips only; keep all other surfaces neutral and token-owned.
 - Keep the middle column as a responsive（响应式）游戏画廊（gallery） of physical cartridge/box artwork on quiet silver display shelves（陈列架）. Preserve multi-selection, keyboard navigation and cover caching; selected cases may use a restrained blue focus outline.

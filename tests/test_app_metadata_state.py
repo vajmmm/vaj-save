@@ -612,32 +612,6 @@ def test_set_libretro_dir_persists_and_clears(tmp_path: Path):
     assert "libretro_dir" not in load_app_config()
 
 
-def test_settings_dialog_apply_libretro_dir(tmp_path: Path):
-    from vajsave.app_ui import VajSaveApp
-
-    state = AppState(library_root=tmp_path / "lib")
-
-    class Stub:
-        def __init__(self) -> None:
-            self.state = state
-            self.status = None
-
-        def update_status(self, text: str) -> None:
-            self.status = text
-
-        def refresh_saves_ui(self) -> None:
-            return
-
-    stub = Stub()
-    dat_dir = tmp_path / "dats"
-    dat_dir.mkdir()
-    VajSaveApp._apply_libretro_dir(stub, dat_dir)
-    assert state.libretro_dir == dat_dir
-    assert stub.status == "元数据目录已更新"
-    VajSaveApp._apply_libretro_dir(stub, None)
-    assert state.libretro_dir is None
-
-
 def test_library_mode_shows_cover_cached_under_rom_identity_key(tmp_path: Path):
     """A backup persists the ROM identity_key, so browsing the local library hits
     the identity-hash cover cache instead of falling back to a placeholder."""

@@ -1,19 +1,19 @@
-"""A tiny background worker that marshals results back to the Tk main thread.
+"""A small background worker that marshals results back to the UI thread.
 
-Doing network I/O on the UI thread would freeze the window, and touching Tk
-widgets from a worker thread is unsafe.  This helper bridges the two:
+Doing I/O on the UI thread would freeze the window, and touching UI widgets from
+a worker thread is unsafe. This helper bridges the two:
 
 * :meth:`ArtworkLoader.submit` runs ``task`` on a worker (thread pool).  While a
   task for a given key is still running, further submissions for the *same key*
   do not start second work item -- they attach another callback instead, so
   repeated selection changes cannot multiply the I/O;
-* every callback is delivered by calling ``schedule(deliver)`` -- in the app that
-  is ``root.after(0, deliver)``, so ``deliver`` runs on the main thread;
+* every callback is delivered by calling ``schedule(deliver)``; the caller
+  supplies the event-loop scheduler so ``deliver`` runs on the UI thread;
 * the *caller's* callback is responsible for dropping stale results (e.g. "the
   selection changed since I asked"), because only it knows what is current.
 
-The class never imports tkinter, which keeps it unit-testable with a synchronous
-executor and a recording ``schedule``.
+The class never imports a GUI toolkit, which keeps it unit-testable with a
+synchronous executor and a recording ``schedule``.
 """
 
 from __future__ import annotations

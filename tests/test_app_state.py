@@ -16,47 +16,11 @@ from vajsave.artwork.llm_choice import (
     PROTOCOL_ANTHROPIC,
     PROTOCOL_OPENAI,
 )
-from vajsave.library import backup_save
+from vajsave.library import backup_save, load_app_config
 from vajsave.models import SaveEntry, ScanResult, VolumeInfo
 from vajsave.volume import FakeVolumeProvider
 from vajsave.backend import FakeStorageBackend
 from conftest import build_sfo, checkpoint_ftp_tree, fake_client_factory
-
-
-@pytest.fixture(scope="module")
-def tk_root():
-    """A single Tk root shared by every UI test in this module.
-
-    macOS Tk cannot reliably tear down and recreate its interpreter inside one
-    process: calling ``tk.Tk()`` again after ``root.destroy()`` leaves the second
-    root's ``update()`` spinning forever in the Cocoa event loop. Sharing one root
-    keeps the UI tests hermetic without that hang.
-    """
-    try:
-        import tkinter as tk
-
-        root = tk.Tk()
-    except Exception:
-        pytest.skip("Tkinter display not available")
-    root.withdraw()
-    yield root
-    try:
-        root.destroy()
-    except Exception:
-        pass
-
-
-def _dispose_app(app, root) -> None:
-    """Stop an app's background work and drop its widgets, keeping `root` alive."""
-    try:
-        app._stop_background()
-    except Exception:
-        pass
-    for child in list(root.winfo_children()):
-        try:
-            child.destroy()
-        except Exception:
-            pass
 
 
 def test_app_state_init():
@@ -396,17 +360,18 @@ def test_app_state_watch_appeared_update_existing_volume(tmp_path: Path):
     assert state.volumes[0].name == "VOL_NEW"
 
 
-def test_open_in_file_manager_nonexistent(tmp_path: Path):
-    from vajsave.app_ui import open_in_file_manager
-    ok, msg = open_in_file_manager(tmp_path / "nonexistent")
+def test_open_path_nonexistent(tmp_path: Path):
+    from vajsave.qt_ui import _open_path
+
+    ok, msg = _open_path(tmp_path / "nonexistent")
     assert not ok
     assert "不存在" in msg
 
 
-def test_open_in_file_manager_darwin(tmp_path: Path, monkeypatch):
+def test_open_path_darwin(tmp_path: Path, monkeypatch):
     import sys
     import subprocess
-    from vajsave.app_ui import open_in_file_manager
+    from vajsave.qt_ui import _open_path
 
     monkeypatch.setattr(sys, "platform", "darwin")
     called_cmd = []
@@ -419,16 +384,16 @@ def test_open_in_file_manager_darwin(tmp_path: Path, monkeypatch):
     test_file = tmp_path / "test.txt"
     test_file.write_text("dummy")
 
-    ok, msg = open_in_file_manager(test_file)
+    ok, msg = _open_path(test_file)
     assert ok
-    assert "已在文件管理器中打开" in msg
+    assert "已打开" in msg
     assert called_cmd == [["open", "-R", str(test_file)]]
 
 
-def test_open_in_file_manager_win32(tmp_path: Path, monkeypatch):
+def test_open_path_win32(tmp_path: Path, monkeypatch):
     import sys
     import subprocess
-    from vajsave.app_ui import open_in_file_manager
+    from vajsave.qt_ui import _open_path
 
     monkeypatch.setattr(sys, "platform", "win32")
     called_cmd = []
@@ -441,15 +406,15 @@ def test_open_in_file_manager_win32(tmp_path: Path, monkeypatch):
     test_file = tmp_path / "test.txt"
     test_file.write_text("dummy")
 
-    ok, msg = open_in_file_manager(test_file)
+    ok, msg = _open_path(test_file)
     assert ok
     assert called_cmd == [["explorer", f"/select,{test_file}"]]
 
 
-def test_open_in_file_manager_linux(tmp_path: Path, monkeypatch):
+def test_open_path_linux(tmp_path: Path, monkeypatch):
     import sys
     import subprocess
-    from vajsave.app_ui import open_in_file_manager
+    from vajsave.qt_ui import _open_path
 
     monkeypatch.setattr(sys, "platform", "linux")
     called_cmd = []
@@ -462,14 +427,14 @@ def test_open_in_file_manager_linux(tmp_path: Path, monkeypatch):
     test_file = tmp_path / "test.txt"
     test_file.write_text("dummy")
 
-    ok, msg = open_in_file_manager(test_file)
+    ok, msg = _open_path(test_file)
     assert ok
     assert called_cmd == [["xdg-open", str(tmp_path)]]
 
 
-def test_open_in_file_manager_failure(tmp_path: Path, monkeypatch):
+def test_open_path_failure(tmp_path: Path, monkeypatch):
     import subprocess
-    from vajsave.app_ui import open_in_file_manager
+    from vajsave.qt_ui import _open_path
 
     def mock_run(cmd, check=True):
         raise OSError("Permission denied")
@@ -479,25 +444,9 @@ def test_open_in_file_manager_failure(tmp_path: Path, monkeypatch):
     test_file = tmp_path / "test.txt"
     test_file.write_text("dummy")
 
-    ok, msg = open_in_file_manager(test_file)
+    ok, msg = _open_path(test_file)
     assert not ok
     assert "失败" in msg
-
-
-def test_build_app_structure(tk_root):
-    from vajsave.app_ui import build_app
-
-    state = AppState(provider=FakeVolumeProvider([]))
-    app = build_app(state=state, root=tk_root)
-    try:
-        assert app.root == tk_root
-        assert app.state == state
-        app.on_refresh_clicked()
-        app.on_watch_toggle()
-    finally:
-        # Share the module Tk root instead of destroying it: recreating Tk in the
-        # same process is what hung the event loop on macOS.
-        _dispose_app(app, tk_root)
 
 
 def _psp_save_tree(root: Path, title_id: str, payload: bytes, psp_sfo_bytes: bytes) -> Path:
@@ -967,73 +916,6 @@ def test_set_keep_last_does_not_prune_existing_versions(tmp_path: Path):
     assert state.set_keep_last(1) == 1
     # Changing the setting must not immediately delete existing versions.
     assert len(load_catalog(lib).games[game_key(entry)].versions) == 3
-
-
-# --- app UI structure ---
-
-
-def test_app_ui_detail_scroll_and_volume_index(tk_root, tmp_path: Path, psp_sfo_bytes: bytes):
-    import tkinter as tk
-
-    from vajsave.app_ui import build_app
-
-    vol_dir = tmp_path / "VOL"
-    psp_dir = vol_dir / "PSP" / "SAVEDATA" / "ULJM05800"
-    psp_dir.mkdir(parents=True)
-    (psp_dir / "PARAM.SFO").write_bytes(psp_sfo_bytes)
-    (psp_dir / "DATA.BIN").write_bytes(b"data")
-
-    # name deliberately contains the old "  ·  " separator; index mapping must win
-    vol = VolumeInfo(name="WEIRD  ·  NAME", mount_point=vol_dir)
-    state = AppState(provider=FakeVolumeProvider([vol]), library_root=tmp_path / "lib")
-    state.refresh_volumes()
-    app = build_app(state=state, root=tk_root)
-    try:
-        assert hasattr(app, "on_settings_clicked")
-        # The right panel is the inspector: the versions Listbox fills the
-        # flexible inspector row beneath the action area.
-        assert app.actions_frame is not None
-        assert set(app.versions_frame.grid_info().get("sticky") or "") == set("nsew")
-        assert int(app.versions_frame.grid_rowconfigure(1)["weight"]) == 1
-
-        assert len(app._volumes_index) == 0
-        # The device list only shows the current device; ask it to present one.
-        app.refresh_volumes_ui(select_path=vol_dir)
-        assert len(app._volumes_index) == 1
-        tk_root.update_idletasks()
-        app.vol_list.selection_clear(0, tk.END)
-        app.vol_list.selection_set(0)
-        app.on_volume_selected()
-        assert state.current_mount == vol_dir
-
-        # The versions Listbox keeps its native wheel scrolling.
-        assert app.version_list.bind("<MouseWheel>") == ""
-        assert app.version_list.bind("<Button-4>") == ""
-    finally:
-        _dispose_app(app, tk_root)
-
-
-def test_settings_dialog_applies_library_root(tk_root, tmp_path: Path, monkeypatch):
-    import tkinter as tk
-
-    from vajsave.app_ui import build_app
-    from vajsave.library import load_app_config
-
-    monkeypatch.setenv("VAJSAVE_CONFIG_PATH", str(tmp_path / "config.json"))
-    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
-    app = build_app(state=state, root=tk_root)
-    try:
-        app.on_settings_clicked()
-        # update_idletasks lays out widgets without pumping the full Cocoa event loop.
-        tk_root.update_idletasks()
-        tops = [w for w in tk_root.winfo_children() if isinstance(w, tk.Toplevel)]
-        assert tops
-        # save path of the dialog
-        app._apply_library_root(str(tmp_path / "newlib"))
-        assert state.library_root == tmp_path / "newlib"
-        assert load_app_config()["library_root"] == str(tmp_path / "newlib")
-    finally:
-        _dispose_app(app, tk_root)
 
 
 # --- default device selection ---
@@ -2084,3 +1966,43 @@ def test_invoke_scan_without_progress_kwarg(tmp_path: Path):
     assert prepared.result.root_path == str(root)
 
 
+def test_ftp_remember_password_persists_only_when_enabled(tmp_path: Path):
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    state.configure_ftp(host="10.0.0.1", password="s3cret", remember_password=True)
+
+    saved = load_app_config()
+    assert saved.get("ftp_remember_password") is True
+    assert saved.get("ftp_password") == "s3cret"
+    assert state.ftp_remember_password is True
+    assert state._ftp_password == "s3cret"
+
+    state.configure_ftp(password="s3cret", remember_password=False)
+    saved = load_app_config()
+    assert saved.get("ftp_remember_password") is False
+    assert "ftp_password" not in saved
+    assert state.ftp_remember_password is False
+    assert state._ftp_password == "s3cret"
+
+
+def test_configure_ftp_default_keeps_password_in_memory_only(tmp_path: Path):
+    state = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    state.configure_ftp(host="10.0.0.1", user="ftp", password="no-store")
+
+    saved = load_app_config()
+    assert "ftp_password" not in saved
+    assert saved.get("ftp_remember_password") in (False, None)
+    assert state._ftp_password == "no-store"
+    assert state.ftp_host == "10.0.0.1"
+
+
+def test_remembered_ftp_password_reloads_on_new_app_state(tmp_path: Path):
+    first = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    first.configure_ftp(
+        host="192.168.1.50", password="keep-me", remember_password=True
+    )
+
+    fresh = AppState(provider=FakeVolumeProvider([]), library_root=tmp_path / "lib")
+    assert fresh.ftp_remember_password is True
+    assert fresh._ftp_password == "keep-me"
+    assert fresh.current_ftp_preset().password == "keep-me"
+    assert fresh.ftp_host == "192.168.1.50"

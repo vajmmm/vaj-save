@@ -1,9 +1,4 @@
-"""Unit tests for the pure helpers in ``vajsave.ui_theme``.
-
-These cover the Switch "Basic White" token set plus the row-data helper the
-single-column save list relies on. Everything here is display-free so it runs
-anywhere, even without a Tk display.
-"""
+"""Unit tests for the display-independent helpers in ``vajsave.ui_theme``."""
 
 from __future__ import annotations
 
@@ -34,7 +29,7 @@ def test_platform_colors_are_canonical_and_hex():
         assert value.startswith("#") and len(value) == 7
 
 
-def test_switch_functional_tokens_match_spec():
+def test_switch_functional_tokens_match_palette():
     tokens = ui_theme.SWITCH
     assert tokens["muted"] == "#8b8b8b"
     assert tokens["success"] == "#30d158"

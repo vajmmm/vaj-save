@@ -311,7 +311,7 @@ def _draw_dock(draw, body_top: int, body_bottom: int, state: AppState, fonts: di
 
 
 def _case_geometry(platform: str, available_width: int = GALLERY_CARD_WIDTH) -> tuple[int, int]:
-    """Mirror ``SaveList._case_size`` for the offline Pillow preview."""
+    """Mirror ``GalleryCanvas._case_size`` for the offline Pillow preview."""
     ratios = {
         "switch": 0.72,
         "psp": 1.06,
@@ -433,7 +433,7 @@ def _draw_shelf(draw, left: int, right: int, y: int) -> None:
 
 
 def _draw_action_icon(draw, kind: str, x: float, y: float, color: str, width: int = 2) -> None:
-    """Pillow counterpart of ``CanvasButton``'s geometric action icons."""
+    """Draw a simplified action icon for the offline preview."""
     if kind == "backup":
         draw.rectangle([x - 8, y - 5, x + 8, y + 1], outline=color, width=width)
         draw.line([x - 8, y - 5, x, y - 9, x + 8, y - 5], fill=color, width=width)
