@@ -24,11 +24,14 @@ The whole module is best-effort: every public method degrades rather than raises
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
+
+logger = logging.getLogger("vajsave.artwork.cache")
 
 from ..covers import DOWNLOADED_COVER_DIR, identity_hash
 from ..persistence import atomic_write_bytes, atomic_write_json
@@ -207,13 +210,16 @@ class CoverCache:
         if not data or len(data) > self.max_bytes:
             return None
         if not is_portrait_image_bytes(data):
+            logger.debug("[%s] 封面拒绝写入缓存: 构图非竖版比例", platform)
             return None
         path = self.path_for(platform, identity_key)
         if path is None:
             return None
         relative = self._local_path(platform, identity_key)
         if not atomic_write_bytes(path, data):
+            logger.warning("[%s] 封面写入磁盘失败: %s", platform, path)
             return None
+        logger.debug("[%s] 封面成功写入磁盘缓存: %s", platform, path)
         record = {
             "identity_key": str(identity_key),
             "platform": str(platform or "").strip(),

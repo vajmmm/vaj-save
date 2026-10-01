@@ -6,7 +6,10 @@ tested without a display. ``qt_ui`` consumes these tokens and layout helpers.
 
 from __future__ import annotations
 
+import sys
 from typing import Any, Dict, Optional
+
+FONT_FAMILY = "PingFang SC" if sys.platform == "darwin" else ("Microsoft YaHei" if sys.platform == "win32" else "Noto Sans CJK SC")
 
 # --- tokens -----------------------------------------------------------------------
 

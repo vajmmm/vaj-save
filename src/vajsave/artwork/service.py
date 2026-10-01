@@ -29,11 +29,14 @@ the cache.
 
 from __future__ import annotations
 
+import logging
 import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Sequence, Tuple, Union
+
+logger = logging.getLogger("vajsave.artwork.service")
 
 from ..covers import find_embedded_cover, user_cover_path
 from .boxart_index import (
@@ -319,17 +322,25 @@ class ArtworkService:
         """Fetch ``artwork`` and commit it to the cache; ``None`` on any failure."""
         if self.cache is None or not identity_key:
             return None
+        plat = platform or artwork.platform
+        logger.info("[%s] 正在请求封面资源: %s (提供方: %s)", plat, artwork.url, artwork.provider)
         data = self.downloader.fetch(artwork.url)
         if not data:
+            logger.debug("[%s] 封面下载失败或数据为空: %s", plat, artwork.url)
             return None
-        return self.cache.store(
-            platform or artwork.platform,
+        stored = self.cache.store(
+            plat,
             identity_key,
             data,
             provider=artwork.provider,
             canonical_title=artwork.canonical_title,
             remote_url=artwork.url,
         )
+        if stored is not None:
+            logger.info("[%s] 封面验证通过并写入缓存: %s -> %s", plat, artwork.url, stored)
+        else:
+            logger.warning("[%s] 封面校验未通过 (非竖版或图像损坏): %s", plat, artwork.url)
+        return stored
 
     def ensure_cover_for_title(
         self,
@@ -341,33 +352,15 @@ class ArtworkService:
         library_root: Union[Path, str, None],
         title_id: Optional[str] = None,
     ) -> ArtworkResolution:
-        """Cover for a platform whose provider key is the save's own title.
-
-        PSP/Vita have no ROM index, so the caller passes the PARAM.SFO / display
-        title explicitly.  Their embedded icons (``ICON0.PNG`` / ``sce_sys/icon0.png``)
-        are never used as gallery covers: a banner or 128×128 LiveArea icon is
-        not box art, so when no full-size box cover can be downloaded the
-        resolver falls through to the placeholder.  Cartridge platforms keep
-        their portrait embedded icon as the offline fallback. When possible, a
-        full-size box cover is downloaded and cached first.
-
-        Checkpoint / SFO titles often miss the No-Intro filename on the first
-        try, so PSP Title IDs use :func:`psp_title_candidates` (curated aliases
-        first, then a short list of whitespace, case and region variants) until
-        one download succeeds.
-        3DS Checkpoint short IDs (``0x00306``) are expanded to Title IDs and
-        looked up in the cached 3dsdb eShop list first.  When every candidate
-        404s the provider's ``Named_Boxarts`` directory listing is consulted and
-        accepted only for a unique match.  A 3DS entry without a usable title id
-        whose name is a DS cartridge (``AZEJ Kirby Super Star Ultra``) is looked
-        up under the NDS system instead.
-        """
+        """Cover for a platform whose provider key is the save's own title."""
         if entry is None:
             return PLACEHOLDER
         plat = (platform or getattr(entry, "platform", "") or "").strip().lower()
         plat, title = resolve_boxart_system(plat, title, title_id)
+        logger.info("[%s] 开始获取封面: '%s' (Title ID: %s, Key: %s)", plat, title, title_id or "无", identity_key or "无")
         user = _portrait_path(_user_path(entry, library_root))
         if user is not None:
+            logger.info("[%s] 命中本地自定义封面: %s", plat, user)
             return ArtworkResolution(str(user), SOURCE_USER)
         cached = _downloaded_path(self.cache, plat, identity_key)
         if plat == "switch":
@@ -387,10 +380,14 @@ class ArtworkService:
             if not switch_tid and title:
                 switch_tid = get_switch_id_for_title(title)
 
+            if switch_tid:
+                logger.info("[Switch] 解析得到 Title ID: %s (游戏名: '%s')", switch_tid, title)
+
             # If already cached as a square nlib icon, attempt to upgrade to GameTDB physical box art
             if cached is not None and self.cache is not None:
                 record = getattr(self.cache, "get_entry", lambda k: None)(identity_key)
                 if record and record.get("provider") == "nlib":
+                    logger.info("[Switch] 发现已缓存的 Nlib 方标，尝试升级为 GameTDB 实体盒装封面...")
                     if switch_tid:
                         for provider in self.providers:
                             if isinstance(provider, GameTDBSwitchProvider):
@@ -410,11 +407,14 @@ class ArtworkService:
                                     )
                                     if stored is not None:
                                         return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
+                logger.info("[%s] 命中本地下载缓存封面: %s", plat, cached)
                 return ArtworkResolution(str(cached), SOURCE_DOWNLOADED)
 
             if cached is not None:
+                logger.info("[%s] 命中本地下载缓存封面: %s", plat, cached)
                 return ArtworkResolution(str(cached), SOURCE_DOWNLOADED)
         elif cached is not None:
+            logger.info("[%s] 命中本地下载缓存封面: %s", plat, cached)
             return ArtworkResolution(str(cached), SOURCE_DOWNLOADED)
 
         embedded = (
@@ -424,6 +424,7 @@ class ArtworkService:
             # 2. If Title ID is known, perform Title ID-first direct lookups!
             if switch_tid:
                 # 2a. Direct GameTDB physical retail box art (primary + regional fallbacks)
+                logger.info("[Switch] 正在尝试 GameTDB 实体盒装封面 (Title ID: %s)...", switch_tid)
                 for provider in self.providers:
                     if isinstance(provider, GameTDBSwitchProvider):
                         for art in provider.cover_candidates_for_title_id(switch_tid):
@@ -434,6 +435,7 @@ class ArtworkService:
                                 return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
 
                 # 2b. Direct Nlib official square icon (digital-only eShop titles / uncataloged)
+                logger.info("[Switch] 正在尝试 Nintendo eShop 官方图标 (Title ID: %s)...", switch_tid)
                 for provider in self.providers:
                     if isinstance(provider, NlibSwitchProvider):
                         nlib_art = provider.cover_for_title_id(switch_tid)
@@ -453,6 +455,9 @@ class ArtworkService:
                 )
                 if resolved_name:
                     names.extend(switch_title_candidates(resolved_name, switch_tid))
+
+            if names:
+                logger.info("[Switch] 尝试游戏名称候选列表匹配封面: %s", names[:5])
 
             seen = set()
             for candidate in names:
@@ -485,6 +490,8 @@ class ArtworkService:
                 names.extend(psp_title_candidates(title, title_id))
             else:
                 names.extend(libretro_title_candidates(title))
+            if names:
+                logger.info("[%s] 尝试游戏名称候选匹配封面: %s", plat, names[:5])
             seen = set()
             for candidate in names:
                 if candidate in seen:
@@ -504,7 +511,9 @@ class ArtworkService:
             if downloaded is not None:
                 return downloaded
         if embedded is not None:
+            logger.info("[%s] 未获取到网络封面，回退使用存档内置图标: %s", plat, embedded)
             return ArtworkResolution(str(embedded), SOURCE_EMBEDDED)
+        logger.info("[%s] 未获取到可用封面，使用默认占位图: %s", plat, title)
         return PLACEHOLDER
 
     def _download_from_listing(

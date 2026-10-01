@@ -65,6 +65,7 @@ from .qt_dialogs import (
     show_help,
     zip_has_manifest,
 )
+from .qt_logs import LogViewerDialog
 from .rom_formats import supported_extensions
 from .ui_theme import (
     DETAIL_COVER_MAX_HEIGHT,
@@ -1141,6 +1142,9 @@ class VajSaveWindow(QMainWindow):
         self._device_scan_target: Optional[Path] = None
         self._enrichment_attempted: set[str] = set()
         self._list_generation = 0
+        self._log_dialog: Optional[Any] = None
+        from .log_store import setup_logging
+        setup_logging()
         self.setWindowTitle("vaj-save")
         self.resize(1480, 900)
         self.setMinimumSize(1180, 700)
@@ -1258,11 +1262,16 @@ class VajSaveWindow(QMainWindow):
         self.watch = _button("监听已开启", "fa6s.circle", checkable=True)
         self.watch.setChecked(True)
         self.watch.setObjectName("watchButton")
+        self.log_button = _button("运行日志", "fa6s.list-ul")
+        self.log_button.setObjectName("logButton")
+        self.log_button.setFixedHeight(28)
+        self.log_button.setToolTip("查看扫描与封面获取实时过程日志")
         status_row.addWidget(self.status_device)
         status_row.addWidget(self.status_text, 1)
         status_row.addWidget(self.scan_progress)
         status_row.addWidget(self.cancel_job)
         status_row.addWidget(self.watch)
+        status_row.addWidget(self.log_button)
         outer.addWidget(status)
 
     def _wire_events(self) -> None:
@@ -1273,6 +1282,7 @@ class VajSaveWindow(QMainWindow):
         self.backup_updated.clicked.connect(self._backup_updated)
         self.settings.clicked.connect(self._show_settings)
         self.watch.clicked.connect(self._toggle_watch)
+        self.log_button.clicked.connect(self._show_logs)
         self.cancel_job.clicked.connect(self.state.cancel_job)
         self.dock.platform_selected.connect(self._select_platform)
         self.dock.refresh_requested.connect(self._refresh_devices)
@@ -1339,7 +1349,7 @@ class VajSaveWindow(QMainWindow):
             #versionTable::item {{ padding: 5px 7px; border-bottom: 1px solid {mix(SWITCH['border_soft'], SWITCH['card'], 0.45)}; }}
             #versionTable::item:selected {{ background: {SWITCH['selected']}; color: {SWITCH['ink']}; }}
             #bottomBar {{ background: {CONTROL_WHITE}; border-top: 1px solid {SWITCH['border_soft']}; }}
-            #statusDevice, #statusText, #watchButton {{ font-size: 11px; }}
+            #statusDevice, #statusText, #watchButton, #logButton {{ font-size: 11px; }}
             #scanProgress {{ background: {SWITCH['surface_alt']}; border: 0; border-radius: 4px; }}
             #scanProgress::chunk {{ background: {SWITCH['accent']}; border-radius: 4px; }}
         """)
@@ -1981,6 +1991,15 @@ class VajSaveWindow(QMainWindow):
     def _show_help(self) -> None:
         show_help(self)
 
+    def _show_logs(self) -> None:
+        if self._log_dialog is None:
+            from .qt_logs import LogViewerDialog
+
+            self._log_dialog = LogViewerDialog(self)
+        self._log_dialog.show()
+        self._log_dialog.raise_()
+        self._log_dialog.activateWindow()
+
     def _open_library(self) -> None:
         ok, message = _open_path(self.state.library_root)
         self.status_text.setText(message)
@@ -2094,6 +2113,7 @@ __all__ = [
     "GalleryCanvas",
     "GalleryView",
     "LLMSettingsDialog",
+    "LogViewerDialog",
     "PlatformDock",
     "VajSaveWindow",
     "build_app",
