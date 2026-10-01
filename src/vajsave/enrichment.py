@@ -42,9 +42,9 @@ from .models import SaveEntry
 if TYPE_CHECKING:
     from .app_state import AppState
 
-# Platforms whose libretro provider name is the save's own SFO / display title
+# Platforms whose artwork provider name is the save's own SFO / display title
 # rather than a ROM-digest index canonical title.
-_TITLE_PROVIDER_PLATFORMS = ("psp", "vita", "3ds")
+_TITLE_PROVIDER_PLATFORMS = ("psp", "vita", "3ds", "switch")
 
 # Sentinel distinguishing "leave this setting untouched" from an explicit None
 # (which clears a persisted ROM directory) in ``set_rom_dirs``.
@@ -123,15 +123,19 @@ class Enrichment:
             resolved_root = root.resolve()
         except OSError:
             resolved_root = root
-        if sys.platform == "win32":
-            system = os.environ.get("SystemDrive", "C:").rstrip("\\").upper()
-            drive = (resolved_root.drive or "").rstrip("\\").upper()
-            if drive and drive == system:
-                return False
-        else:
-            posix = resolved_root.as_posix()
-            if posix in ("/", "/System", "/Applications"):
-                return False
+        is_removable = any(
+            v.mount_point == root and v.is_removable for v in app.volumes
+        )
+        if not is_removable:
+            if sys.platform == "win32":
+                system = os.environ.get("SystemDrive", "C:").rstrip("\\").upper()
+                drive = (resolved_root.drive or "").rstrip("\\").upper()
+                if drive and drive == system:
+                    return False
+            else:
+                posix = resolved_root.as_posix()
+                if posix in ("/", "/System", "/Applications"):
+                    return False
         for name in _HANDHELD_ROM_MARKERS:
             try:
                 if (resolved_root / name).is_dir():

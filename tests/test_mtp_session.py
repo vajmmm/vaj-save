@@ -153,6 +153,11 @@ def test_open_client_unsupported_platform(monkeypatch):
 def test_windows_default_backend_without_com_is_safe(monkeypatch):
     monkeypatch.setattr(mtp_windows.sys, "platform", "win32")
     # The real COM backend is unavailable here; discovery must fail closed.
+    monkeypatch.setattr(
+        mtp_windows._WindowsMtpBackend,
+        "_com",
+        lambda self: (_ for _ in ()).throw(OSError("COM unavailable")),
+    )
     assert mtp_windows.list_mtp_devices() == []
 
 

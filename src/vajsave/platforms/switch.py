@@ -30,14 +30,55 @@ _DBI_RESERVED_NAMES = frozenset(
 _DBI_GAME_CONTAINERS = ("Installed games", "Uninstalled games")
 
 
+_SWITCH_HEX_RE = re.compile(r"^(?:0?x)?([0-9a-fA-F]{14,16})$")
+
+
+def _clean_switch_title_id(raw: str) -> Optional[str]:
+    m = _SWITCH_HEX_RE.match(raw.strip())
+    if not m:
+        return None
+    tid = m.group(1).upper()
+    if len(tid) < 16 and tid.startswith("0100"):
+        tid = tid.ljust(16, "0")
+    return tid if len(tid) == 16 else None
+
+
 def _parse_checkpoint_folder_name(name: str) -> Tuple[Optional[str], str]:
-    """Parse Checkpoint folder name like '0x011C4 Pokemon Moon' or '0100000000010000 Super Mario Odyssey'."""
-    parts = name.split(maxsplit=1)
+    """Parse Checkpoint / JKSV / DBI folder names for Nintendo Switch saves.
+
+    Handles:
+    - Title ID + Title: '0100000000010000 Super Mario Odyssey'
+    - Hex prefix + Title: '0x0100000000010000 Super Mario Odyssey'
+    - Bare Title ID: '01006BB00C6F0000' or '010049900F556000'
+    - Checkpoint duplicate hex: '0x01006A800016E000 0x01006A800016E000'
+    - Pure Title name: 'Super Mario Odyssey'
+    """
+    from ..artwork.switch_covers import get_switch_title_for_id
+
+    clean_name = name.strip()
+    single_tid = _clean_switch_title_id(clean_name)
+    if single_tid:
+        resolved = get_switch_title_for_id(single_tid)
+        return single_tid, resolved or clean_name
+
+    parts = clean_name.split(maxsplit=1)
     if len(parts) == 2:
         token, display = parts
+        tid = _clean_switch_title_id(token)
+        if tid:
+            display_clean = display.strip()
+            # If display is also just the same Title ID or hex
+            if _clean_switch_title_id(display_clean):
+                resolved = get_switch_title_for_id(tid)
+                return tid, resolved or clean_name
+            display_stripped = display_clean.lstrip("- _")
+            return tid, display_stripped or display_clean
+
         if re.match(r"^(0x[0-9a-fA-F]+|[0-9a-fA-F]{8,16})$", token):
-            return token, display
-    return None, name
+            cleaned = re.sub(r"^0?x", "", token, flags=re.IGNORECASE).upper()
+            return cleaned, display
+
+    return None, clean_name
 
 
 def _is_jksv_reserved(name: str) -> bool:
@@ -211,6 +252,7 @@ def _scan_jksv_dir(
         )
     )
     for game_dir in jksv_games:
+        title_id, display_name = _parse_checkpoint_folder_name(game_dir.name)
         level1_dirs = [
             d for d in safe_iterdir(game_dir, warnings) if d.is_dir() and is_safe_path(d, root_resolved)
         ]
@@ -223,7 +265,8 @@ def _scan_jksv_dir(
                 SaveEntry(
                     platform="switch",
                     source_id="switch_jksv",
-                    display_name=game_dir.name,
+                    title_id=title_id,
+                    display_name=display_name,
                     path=str(game_dir),
                 )
             )
@@ -242,7 +285,8 @@ def _scan_jksv_dir(
                             SaveEntry(
                                 platform="switch",
                                 source_id="switch_jksv",
-                                display_name=game_dir.name,
+                                title_id=title_id,
+                                display_name=display_name,
                                 user=l1.name,
                                 slot=l2.name,
                                 path=str(l2),
@@ -257,7 +301,8 @@ def _scan_jksv_dir(
                         SaveEntry(
                             platform="switch",
                             source_id="switch_jksv",
-                            display_name=game_dir.name,
+                            title_id=title_id,
+                            display_name=display_name,
                             slot=l1.name,
                             path=str(l1),
                         )

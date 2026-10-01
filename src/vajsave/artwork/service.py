@@ -29,6 +29,7 @@ the cache.
 
 from __future__ import annotations
 
+import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,6 +52,13 @@ from .providers import (
     LibretroThumbnailProvider,
     libretro_title_candidates,
     psp_title_candidates,
+)
+from .switch_covers import (
+    GameTDBSwitchProvider,
+    NlibSwitchProvider,
+    _clean_switch_title_id,
+    get_switch_id_for_title,
+    switch_title_candidates,
 )
 from .title_ids import fetch_3dsdb_catalog, load_catalog, store_catalog, title_candidates_for_id
 
@@ -222,7 +230,11 @@ class ArtworkService:
         # ``None`` keeps the app fully deterministic and offline-by-default.
         self.llm_chooser = llm_chooser
         if providers is None:
-            self.providers: List[ArtworkProvider] = [LibretroThumbnailProvider()]
+            self.providers: List[ArtworkProvider] = [
+                LibretroThumbnailProvider(),
+                GameTDBSwitchProvider(),
+                NlibSwitchProvider(),
+            ]
         else:
             self.providers = list(providers)
         # A provider's directory listing is immutable for the lifetime of one
@@ -358,36 +370,139 @@ class ArtworkService:
         if user is not None:
             return ArtworkResolution(str(user), SOURCE_USER)
         cached = _downloaded_path(self.cache, plat, identity_key)
-        if cached is not None:
+        if plat == "switch":
+            # 1. Resolve 16-hex Title ID from any available source
+            switch_tid = None
+            for cand_id in (
+                title_id,
+                getattr(entry, "title_id", None),
+                title if (title and (_clean_switch_title_id(str(title)) or "0100" in str(title))) else None,
+                identity_key.split("switch:", 1)[1] if (identity_key and "switch:" in identity_key) else None,
+            ):
+                cleaned = _clean_switch_title_id(cand_id)
+                if cleaned:
+                    switch_tid = cleaned
+                    break
+
+            if not switch_tid and title:
+                switch_tid = get_switch_id_for_title(title)
+
+            # If already cached as a square nlib icon, attempt to upgrade to GameTDB physical box art
+            if cached is not None and self.cache is not None:
+                record = getattr(self.cache, "get_entry", lambda k: None)(identity_key)
+                if record and record.get("provider") == "nlib":
+                    if switch_tid:
+                        for provider in self.providers:
+                            if isinstance(provider, GameTDBSwitchProvider):
+                                for art in provider.cover_candidates_for_title_id(switch_tid):
+                                    stored = self._store_artwork(
+                                        art, identity_key=identity_key, platform=plat
+                                    )
+                                    if stored is not None:
+                                        return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
+                    names = switch_title_candidates(title, switch_tid or title_id)
+                    for provider in self.providers:
+                        if isinstance(provider, GameTDBSwitchProvider):
+                            for name in names:
+                                for art in provider.cover_candidates(name):
+                                    stored = self._store_artwork(
+                                        art, identity_key=identity_key, platform=plat
+                                    )
+                                    if stored is not None:
+                                        return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
+                return ArtworkResolution(str(cached), SOURCE_DOWNLOADED)
+
+            if cached is not None:
+                return ArtworkResolution(str(cached), SOURCE_DOWNLOADED)
+        elif cached is not None:
             return ArtworkResolution(str(cached), SOURCE_DOWNLOADED)
+
         embedded = (
             _portrait_path(_embedded_path(entry)) if _embedded_allowed(entry, plat) else None
         )
-        names = []
-        if plat == "3ds" and title_id:
-            names.extend(self._3ds_names_for_title_id(title_id))
-        if plat == "psp":
-            names.extend(psp_title_candidates(title, title_id))
+        if plat == "switch":
+            # 2. If Title ID is known, perform Title ID-first direct lookups!
+            if switch_tid:
+                # 2a. Direct GameTDB physical retail box art (primary + regional fallbacks)
+                for provider in self.providers:
+                    if isinstance(provider, GameTDBSwitchProvider):
+                        for art in provider.cover_candidates_for_title_id(switch_tid):
+                            stored = self._store_artwork(
+                                art, identity_key=identity_key, platform=plat
+                            )
+                            if stored is not None:
+                                return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
+
+                # 2b. Direct Nlib official square icon (digital-only eShop titles / uncataloged)
+                for provider in self.providers:
+                    if isinstance(provider, NlibSwitchProvider):
+                        nlib_art = provider.cover_for_title_id(switch_tid)
+                        if nlib_art is not None:
+                            stored = self._store_artwork(
+                                nlib_art, identity_key=identity_key, platform=plat
+                            )
+                            if stored is not None:
+                                return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
+
+            # 3. String candidate matching fallback if Title ID lookups did not find a cover
+            names = []
+            names.extend(switch_title_candidates(title, switch_tid or title_id))
+            if not names and switch_tid:
+                resolved_name = NlibSwitchProvider.resolve_title_name(
+                    self.downloader._urlopen, str(switch_tid)
+                )
+                if resolved_name:
+                    names.extend(switch_title_candidates(resolved_name, switch_tid))
+
+            seen = set()
+            for candidate in names:
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
+                artwork = self.ref_for(plat, candidate)
+                if artwork is None:
+                    continue
+                stored = self._store_artwork(
+                    artwork, identity_key=identity_key, platform=plat
+                )
+                if stored is not None:
+                    return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
+
+            for provider in self.providers:
+                if isinstance(provider, GameTDBSwitchProvider):
+                    for cand_title in names:
+                        for art in provider.cover_candidates(cand_title):
+                            stored = self._store_artwork(
+                                art, identity_key=identity_key, platform=plat
+                            )
+                            if stored is not None:
+                                return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
         else:
-            names.extend(libretro_title_candidates(title))
-        seen = set()
-        for candidate in names:
-            if candidate in seen:
-                continue
-            seen.add(candidate)
-            artwork = self.ref_for(plat, candidate)
-            if artwork is None:
-                continue
-            stored = self._store_artwork(
-                artwork, identity_key=identity_key, platform=plat
+            names = []
+            if plat == "3ds" and title_id:
+                names.extend(self._3ds_names_for_title_id(title_id))
+            if plat == "psp":
+                names.extend(psp_title_candidates(title, title_id))
+            else:
+                names.extend(libretro_title_candidates(title))
+            seen = set()
+            for candidate in names:
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
+                artwork = self.ref_for(plat, candidate)
+                if artwork is None:
+                    continue
+                stored = self._store_artwork(
+                    artwork, identity_key=identity_key, platform=plat
+                )
+                if stored is not None:
+                    return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
+            downloaded = self._download_from_listing(
+                plat, names, identity_key=identity_key
             )
-            if stored is not None:
-                return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
-        downloaded = self._download_from_listing(
-            plat, names, identity_key=identity_key
-        )
-        if downloaded is not None:
-            return downloaded
+            if downloaded is not None:
+                return downloaded
         if embedded is not None:
             return ArtworkResolution(str(embedded), SOURCE_EMBEDDED)
         return PLACEHOLDER

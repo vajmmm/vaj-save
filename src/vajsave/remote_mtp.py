@@ -66,7 +66,10 @@ class MtpStorage:
 
     @property
     def is_sd_card(self) -> bool:
-        return _SD_STORAGE_RE.search((self.name or "").strip()) is not None
+        clean = (self.name or "").strip()
+        if re.search(r"install", clean, re.IGNORECASE):
+            return False
+        return _SD_STORAGE_RE.search(clean) is not None
 
 
 @dataclass(frozen=True)

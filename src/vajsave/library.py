@@ -599,14 +599,22 @@ def _is_safe_library_path(target: Path, library_root: Path) -> bool:
 
 
 def is_inside_library(path: Union[Path, str], library_root: Union[Path, str]) -> bool:
-    """True when ``path`` resolves strictly inside ``library_root``.
+    """True when ``path`` resolves strictly inside ``library_root``,
+    excluding transient staging caches like ``mtp-cache`` or ``ftp-cache``.
 
     Used to stop a backup from copying a snapshot (or any other library
     payload) back into the library tree.
     """
     try:
-        return _is_safe_library_path(Path(path), Path(library_root))
-    except (TypeError, ValueError):
+        target = Path(path).resolve()
+        root = Path(library_root).resolve()
+        if not _is_safe_library_path(target, root):
+            return False
+        rel = target.relative_to(root)
+        if rel.parts and rel.parts[0] in ("mtp-cache", "ftp-cache"):
+            return False
+        return True
+    except (TypeError, ValueError, OSError):
         return False
 
 

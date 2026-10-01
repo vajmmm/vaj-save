@@ -374,6 +374,37 @@ def test_psp_gallery_uses_full_cover_fit(qt_app, qt_state, tmp_path: Path, monke
     assert calls
 
 
+def test_switch_gallery_uses_full_cover_fit(qt_app, qt_state, tmp_path: Path, monkeypatch):
+    path = tmp_path / "switch-boxart.png"
+    cover = QPixmap(352, 570)
+    cover.fill(Qt.GlobalColor.red)
+    assert cover.save(str(path), "PNG")
+    entry = SaveEntry(
+        platform="switch",
+        source_id="switch-demo",
+        display_name="Switch 游戏",
+        path=str(tmp_path / "save"),
+    )
+    canvas = GalleryCanvas(qt_state)
+    canvas.resize(320, 440)
+    canvas.set_entries([entry])
+    canvas.set_cover_path(entry.path, str(path))
+    calls = []
+    original = qt_ui._cover_fit_rect
+
+    def record_fit(pixmap, target):
+        calls.append(target)
+        return original(pixmap, target)
+
+    monkeypatch.setattr(qt_ui, "_cover_fit_rect", record_fit)
+    image = QImage(320, 440, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(image)
+    canvas._paint_case(painter, 0, entry)
+    painter.end()
+    assert calls
+
+
 def test_gallery_case_geometry_stays_portrait_for_supported_platforms(qt_app, qt_state):
     canvas = GalleryCanvas(qt_state)
     for platform in ("switch", "psp", "vita", "3ds", "nds", "gba", "gb", "gbc"):
@@ -1033,7 +1064,7 @@ def test_gallery_paint_only_loads_cases_inside_dirty_rect(qt_app, qt_state, monk
         return original_load(entry, *args, **kwargs)
 
     monkeypatch.setattr(canvas, "_load_pixmap", load_spy)
-    canvas.paintEvent(QPaintEvent(QRect(0, 0, 400, 400)))
+    canvas.paintEvent(QPaintEvent(QRect(0, 0, 400, 360)))
 
     # Only the first shelf row is dirty; rows below must never resolve or load.
     assert loaded == [entries[0].path]

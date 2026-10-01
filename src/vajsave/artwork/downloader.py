@@ -21,6 +21,19 @@ DEFAULT_TIMEOUT = 5.0
 MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024
 
 
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36 vaj-save/1.0"
+)
+
+
+def _default_urlopen(target: Any, timeout: float = DEFAULT_TIMEOUT) -> Any:
+    if isinstance(target, str):
+        target = urllib.request.Request(target, headers={"User-Agent": DEFAULT_USER_AGENT})
+    return urllib.request.urlopen(target, timeout=timeout)
+
+
 class ArtworkDownloader:
     """A minimal GET-only client with a hard size cap."""
 
@@ -33,7 +46,7 @@ class ArtworkDownloader:
     ) -> None:
         self.timeout = float(timeout)
         self.max_bytes = int(max_bytes)
-        self._urlopen = urlopen or urllib.request.urlopen
+        self._urlopen = urlopen or _default_urlopen
 
     def fetch(self, url: Optional[str]) -> Optional[bytes]:
         """Return the body of ``url`` or ``None`` on any failure or oversize."""

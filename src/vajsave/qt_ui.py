@@ -492,7 +492,7 @@ class GalleryCanvas(QWidget):
             max(1, int(round(cover_rect.width()))),
             max(1, int(round(cover_rect.height()))),
             round(dpr, 3),
-            platform == "psp",
+            platform in ("psp", "switch"),
         )
         cached = self._pixmaps.get(key)
         if cached is not None:
@@ -517,8 +517,8 @@ class GalleryCanvas(QWidget):
             max(1, int(round(cover_rect.width() * dpr))),
             max(1, int(round(cover_rect.height() * dpr))),
         )
-        if platform == "psp":
-            # PSP 盒装图完整保留（不裁切），由卡片底色承接两侧留白。
+        if platform in ("psp", "switch"):
+            # PSP/Switch 盒装图完整保留（不裁切），由卡片底色承接留白。
             scaled = pixmap.scaled(
                 physical,
                 Qt.AspectRatioMode.KeepAspectRatio,
@@ -639,10 +639,8 @@ class GalleryCanvas(QWidget):
         if pixmap is not None:
             painter.save()
             painter.setClipPath(self._rounded_path(cover_rect, 3))
-            if str(entry.platform or "").strip().lower() == "psp":
-                # PSP 盒装图的实际比例比卡片略窄；完整缩放可保留封面边缘和文字，
-                # 由卡片底色承接两侧留白，避免再次出现中心裁切。位图已预缩放，
-                # 绘制时不再重采样原图。
+            if str(entry.platform or "").strip().lower() in ("psp", "switch"):
+                # PSP/Switch 盒装图的实际比例由卡片底色承接留白，完整缩放保留封面边缘和文字，避免中心裁切。
                 painter.fillRect(cover_rect, QColor(SWITCH["panel_alt"]))
                 painter.drawPixmap(_cover_fit_rect(pixmap, cover_rect).topLeft(), pixmap)
             else:
@@ -1136,7 +1134,9 @@ class VajSaveWindow(QMainWindow):
         self._drawer_open = False
         self._drawer_animation: Optional[QPropertyAnimation] = None
         self._callback_bridge = _QtCallbackBridge(self)
-        self._artwork_loader = ArtworkLoader(self._callback_bridge.dispatch.emit)
+        self._artwork_loader = ArtworkLoader(
+            self._callback_bridge.dispatch.emit, max_workers=6
+        )
         self._device_loader = ArtworkLoader(
             self._callback_bridge.dispatch.emit, max_workers=1
         )
@@ -1464,7 +1464,7 @@ class VajSaveWindow(QMainWindow):
         self, saves: list[SaveEntry], generation: int
     ) -> None:
         """首帧之后为可见条目恢复元数据解析和高清封面下载。"""
-        if generation != self._list_generation or self.state.library_mode:
+        if self.state.library_mode:
             return
         pending = [save for save in saves if save.path not in self._enrichment_attempted]
         if not pending:
@@ -1474,12 +1474,15 @@ class VajSaveWindow(QMainWindow):
             return self.state.resolve_identities(pending)
 
         def completed(results) -> None:
-            if generation != self._list_generation or self.state.library_mode:
+            if self.state.library_mode:
                 return
             if not results:
                 return
             for save, result in zip(pending, results):
-                if not result.is_resolved or result.identity is None:
+                if result.identity is None:
+                    continue
+                plat = (result.identity.platform or save.platform or "").strip().lower()
+                if plat not in ("switch", "3ds", "psp", "vita") and not result.is_resolved:
                     continue
                 self._enrichment_attempted.add(save.path)
                 identity = result.identity
@@ -1490,8 +1493,10 @@ class VajSaveWindow(QMainWindow):
                     return metadata, cover
 
                 def cover_completed(payload, entry=save) -> None:
-                    if generation != self._list_generation or self.state.library_mode:
+                    if self.state.library_mode:
                         return
+                    if not payload or not getattr(payload[1], "path", None):
+                        self._enrichment_attempted.discard(entry.path)
                     self._apply_cover_enrichment(entry, payload)
 
                 self._artwork_loader.submit(("cover", save.path), cover_task, cover_completed)
@@ -1534,7 +1539,7 @@ class VajSaveWindow(QMainWindow):
         if candidate is not None:
             self._request_mount_scan(candidate.mount_point, auto=True)
         elif self._device_scan_target is None:
-            self.refresh_all()
+            self.refresh_all(enrich=False)
 
     def _cancel_pending_device_scan(self) -> None:
         """使已在后台运行的扫描结果失效；文件系统调用本身不强制中断。"""
@@ -1589,7 +1594,7 @@ class VajSaveWindow(QMainWindow):
                 self._device_scan_target = None
                 if backup_statuses is not None:
                     self.state.apply_backup_statuses(backup_statuses)
-                    self.refresh_all()
+                    self.refresh_all(enrich=False)
                     if auto:
                         self._maybe_auto_backup()
 

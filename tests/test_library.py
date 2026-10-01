@@ -1221,3 +1221,31 @@ def test_hash_tree_skips_symlinks(tmp_path: Path):
 
     assert hash_tree(save_dir) == hash_tree(clean_dir)
 
+
+def test_is_inside_library(tmp_path: Path):
+    from vajsave.library import is_inside_library
+
+    lib = tmp_path / "library"
+    lib.mkdir()
+
+    # Actual snapshot in library
+    snapshot = lib / "switch" / "01006BB00C6F0000" / "default" / "2026-03-01T10-00-00"
+    snapshot.mkdir(parents=True)
+    assert is_inside_library(snapshot, lib) is True
+
+    # mtp-cache staging folder must NOT be treated as inside library
+    mtp_save = lib / "mtp-cache" / "dev-09f1217927c7c4de" / "Installed games" / "Zelda" / "user"
+    mtp_save.mkdir(parents=True)
+    assert is_inside_library(mtp_save, lib) is False
+
+    # ftp-cache staging folder must NOT be treated as inside library
+    ftp_save = lib / "ftp-cache" / "dev-xyz" / "save"
+    ftp_save.mkdir(parents=True)
+    assert is_inside_library(ftp_save, lib) is False
+
+    # Completely outside library
+    outside = tmp_path / "outside_dir" / "save"
+    outside.mkdir(parents=True)
+    assert is_inside_library(outside, lib) is False
+
+

@@ -142,7 +142,7 @@ def test_enumerate_windows_drives_bitmask_and_volumeinfo():
         }
     )
     vols = _enumerate_windows_drives(kernel32)
-    by_letter = {v.mount_point.name[0]: v for v in vols}
+    by_letter = {str(v.mount_point)[0].upper(): v for v in vols}
 
     assert set(by_letter) == {"C", "E", "F"}
     assert by_letter["C"].is_removable is False
@@ -166,7 +166,7 @@ def test_enumerate_windows_drives_removable_before_fixed():
         {"C": (3, ""), "D": (3, ""), "E": (2, ""), "F": (2, "")}
     )
     vols = _enumerate_windows_drives(kernel32)
-    assert [v.mount_point.name[0] for v in vols] == ["E", "F", "C", "D"]
+    assert [str(v.mount_point)[0].upper() for v in vols] == ["E", "F", "C", "D"]
 
 
 def test_enumerate_windows_drives_skips_type_error():
@@ -174,7 +174,7 @@ def test_enumerate_windows_drives_skips_type_error():
         {"C": (3, ""), "E": (2, "USB")}, failing_type=("E",)
     )
     vols = _enumerate_windows_drives(kernel32)
-    assert [v.mount_point.name[0] for v in vols] == ["C"]
+    assert [str(v.mount_point)[0].upper() for v in vols] == ["C"]
 
 
 def test_enumerate_windows_drives_logical_error_returns_empty():

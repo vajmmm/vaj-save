@@ -47,7 +47,7 @@ from .restore_targets import remember_restore_dir, suggested_restore_dir as sugg
 from .scan_session import PreparedBackupStatuses, PreparedMountScan, ScanSession
 from .scanner import scan
 from .settings_store import SettingsStore
-from .volume import MountedVolumeProvider, VolumeProvider
+from .volume import FakeVolumeProvider, MountedVolumeProvider, VolumeProvider
 
 # Re-exported so ``from vajsave.app_state import PLATFORM_ORDER, PLATFORM_LABELS``
 # and the hash_tree monkeypatch path keep working.
@@ -118,6 +118,8 @@ class AppState:
         # MTP (Windows WPD) discovery + pull.  Both hooks are injectable so
         # tests never touch a real portable device.  Off Windows the default
         # lister returns no devices.
+        if mtp_device_lister is None and not isinstance(self.provider, MountedVolumeProvider):
+            mtp_device_lister = lambda: []
         self._mtp_client_factory = mtp_client_factory
         self._mtp_device_lister = mtp_device_lister
 

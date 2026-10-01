@@ -44,6 +44,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "vajsave.data" = ["libretro/*", "*.svg", "*.md"]
+"vajsave.artwork" = ["*.json.gz"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"

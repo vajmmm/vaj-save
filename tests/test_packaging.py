@@ -69,6 +69,9 @@ def test_wheel_contains_bundled_index(tmp_path):
     import subprocess
     import sys
     import zipfile
+    import pytest
+
+    pytest.importorskip("build")
 
     subprocess.run(
         [sys.executable, "-m", "build", "--wheel", "--no-isolation", "--outdir", str(tmp_path)],

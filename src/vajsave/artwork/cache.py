@@ -177,6 +177,14 @@ class CoverCache:
             return None
         return path
 
+    def get_entry(self, identity_key: str) -> Optional[Dict[str, Any]]:
+        """Return a copy of the manifest entry for ``identity_key``, if present."""
+        if not identity_key:
+            return None
+        with self._lock:
+            rec = self._entries.get(str(identity_key))
+            return dict(rec) if isinstance(rec, dict) else None
+
     # -- store ---------------------------------------------------------------
 
     def store(

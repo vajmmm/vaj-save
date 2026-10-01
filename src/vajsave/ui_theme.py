@@ -108,7 +108,7 @@ DRAWER_ANIMATION_MS = 16
 # sit lower than the tall Switch/PSP plastic cases, so the gallery no longer
 # forces every platform into the same Switch-shaped white frame.
 GALLERY_CASE_ASPECT: Dict[str, float] = {
-    "switch": 0.70,
+    "switch": 0.63,
     "psp": 0.74,
     "vita": 0.74,
     "3ds": 0.90,

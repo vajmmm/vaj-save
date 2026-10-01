@@ -56,6 +56,12 @@ from .providers import (
     psp_title_candidates,
     sanitize_libretro_filename,
 )
+from .switch_covers import (
+    GameTDBSwitchProvider,
+    NlibSwitchProvider,
+    normalize_switch_title,
+    switch_title_candidates,
+)
 from .service import (
     PLACEHOLDER,
     SOURCE_DOWNLOADED,
@@ -81,6 +87,10 @@ __all__ = [
     "LIBRETRO_SYSTEM_NAMES",
     "PSP_TITLE_ALIASES",
     "psp_title_candidates",
+    "GameTDBSwitchProvider",
+    "NlibSwitchProvider",
+    "normalize_switch_title",
+    "switch_title_candidates",
     "sanitize_libretro_filename",
     "ArtworkDownloader",
     "DEFAULT_TIMEOUT",
