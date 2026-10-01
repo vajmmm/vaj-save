@@ -160,12 +160,16 @@ class LibraryActions:
             app.status_text = "就绪"
 
     def all_saves(self) -> List[SaveEntry]:
+        from .game_grouping import group_saves_by_game
+
         app = self.app
         if app.library_mode:
-            return self.library_entries()
-        if not app.current_result:
+            raw = self.library_entries()
+        elif not app.current_result:
             return []
-        return list(app.current_result.saves)
+        else:
+            raw = list(app.current_result.saves)
+        return group_saves_by_game(raw, app)
 
     def platform_counts(self) -> Dict[str, int]:
         counts = {key: 0 for key in PLATFORM_ORDER if key != "all"}
@@ -181,13 +185,23 @@ class LibraryActions:
             saves = [save for save in saves if save.platform == app.selected_platform]
         query = (app.search_query or "").strip().lower()
         if query:
-            saves = [
-                save
-                for save in saves
-                if query in (save.display_name or "").lower()
-                or query in (save.title_id or "").lower()
-                or query in (save.source_id or "").lower()
-            ]
+            def _matches_query(s: SaveEntry) -> bool:
+                if (
+                    query in (s.display_name or "").lower()
+                    or query in (s.title_id or "").lower()
+                    or query in (s.source_id or "").lower()
+                ):
+                    return True
+                for sub in (s.extra or {}).get("sub_entries", []):
+                    if (
+                        query in (sub.display_name or "").lower()
+                        or query in (sub.title_id or "").lower()
+                        or query in (sub.source_id or "").lower()
+                    ):
+                        return True
+                return False
+
+            saves = [save for save in saves if _matches_query(save)]
         if app.starred_only:
             catalog = load_catalog(app.library_root)
             saves = [
@@ -206,6 +220,20 @@ class LibraryActions:
 
     def save_status(self, entry: SaveEntry) -> SaveBackupStatus:
         app = self.app
+        subs = (entry.extra or {}).get("sub_entries")
+        if subs and len(subs) > 1:
+            sub_statuses = [self.save_status(sub) for sub in subs]
+            changed = next((s for s in sub_statuses if s.status == "changed"), None)
+            if changed:
+                return changed
+            new = next((s for s in sub_statuses if s.status == "new"), None)
+            if new:
+                return new
+            return max(
+                sub_statuses,
+                key=lambda s: (s.last_backup_at or "", s.source_mtime or ""),
+            )
+
         cached = app._backup_statuses.get(entry.path)
         if cached is not None:
             return cached
@@ -291,6 +319,12 @@ class LibraryActions:
         app = self.app
         game_id = self.game_id(entry)
         result = delete_game(app.library_root, game_id)
+        subs = (entry.extra or {}).get("sub_entries")
+        if subs and len(subs) > 1:
+            for sub in subs:
+                sub_id = self.game_id(sub)
+                if sub_id != game_id:
+                    delete_game(app.library_root, sub_id)
         app._backup_statuses = {}
         name = entry.display_name or game_id
         if result.ok:
@@ -394,7 +428,14 @@ class LibraryActions:
         self, entries: List[SaveEntry], token: CancelToken | None = None
     ) -> List[Path]:
         """Backup explicit multi-selection via the cancellable job runner."""
-        return run_selected_backups(self.app, entries, token)
+        expanded: list[SaveEntry] = []
+        for entry in entries:
+            subs = (entry.extra or {}).get("sub_entries")
+            if subs:
+                expanded.extend(subs)
+            else:
+                expanded.append(entry)
+        return run_selected_backups(self.app, expanded, token)
 
     def import_visible_saves(self) -> List[Path]:
         return self.import_selected_saves(list(self.visible_saves()))
@@ -405,6 +446,23 @@ class LibraryActions:
         if game_id is not None:
             game = catalog.games.get(game_id)
             return list(game.versions) if game is not None else []
+        subs = (entry.extra or {}).get("sub_entries")
+        if subs and len(subs) > 1:
+            all_versions: list[Snapshot] = []
+            seen_ids = set()
+            for sub in subs:
+                sub_game_id = self.library_game_id(sub)
+                if sub_game_id is not None:
+                    g = catalog.games.get(sub_game_id)
+                    v_list = list(g.versions) if g is not None else []
+                else:
+                    v_list = versions_for(catalog, sub)
+                for v in v_list:
+                    if v.id not in seen_ids:
+                        seen_ids.add(v.id)
+                        all_versions.append(v)
+            all_versions.sort(key=lambda v: v.created_at)
+            return all_versions
         return versions_for(catalog, entry)
 
     def restore_version(

@@ -18,6 +18,7 @@ a = Analysis(
     datas=[
         (str(project_root / "assets"), "assets"),
         (str(project_root / "src" / "vajsave" / "data"), "vajsave/data"),
+        (str(project_root / "src" / "vajsave" / "artwork"), "vajsave/artwork"),
     ] + qtawesome_datas,
     hiddenimports=hiddenimports,
     hookspath=[],

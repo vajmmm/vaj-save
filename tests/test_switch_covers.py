@@ -465,4 +465,35 @@ def test_ensure_cover_upgrades_cached_nlib_to_gametdb(tmp_path: Path) -> None:
     assert "AK63B" in entry_meta["remote_url"]
 
 
+def test_newly_curated_switch_titles_match() -> None:
+    from vajsave.artwork.switch_covers import (
+        GameTDBSwitchProvider,
+        get_switch_id_for_title,
+    )
+    provider = GameTDBSwitchProvider()
+
+    test_cases = [
+        ("Rhythm Heaven Groove", "0100D9F01D474000", "BFLTA"),
+        ("STORY OF SEASONS Grand Bazaar", "010056901ED1A000", "BG4TB"),
+        ("Super Mario Galaxy 2", "0100FD8022DAA000", "BPDLA"),
+        ("Tomodachi Life Living the Dream", "010051F0207B2000", "BLFGA"),
+    ]
+
+    for title, expected_tid, expected_gid in test_cases:
+        tid = get_switch_id_for_title(title)
+        assert tid == expected_tid, f"Expected {expected_tid} for {title}, got {tid}"
+        match = provider.lookup_game(title)
+        assert match is not None, f"Expected GameTDB match for {title}"
+        assert match[0] == expected_gid, f"Expected GID {expected_gid} for {title}, got {match[0]}"
+
+
+def test_switch_title_candidates_splits_unicode_dashes() -> None:
+    cands = switch_title_candidates("STORY OF SEASONS: Grand Bazaar – Nintendo Switch 2 Edition")
+    assert "STORY OF SEASONS: Grand Bazaar" in cands
+    assert "STORY OF SEASONS" in cands
+
+    cands_em = switch_title_candidates("Game Title — Special Edition")
+    assert "Game Title" in cands_em
+
+
 

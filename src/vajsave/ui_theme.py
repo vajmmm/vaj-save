@@ -111,14 +111,14 @@ DRAWER_ANIMATION_MS = 16
 # sit lower than the tall Switch/PSP plastic cases, so the gallery no longer
 # forces every platform into the same Switch-shaped white frame.
 GALLERY_CASE_ASPECT: Dict[str, float] = {
-    "switch": 0.63,
-    "psp": 0.74,
-    "vita": 0.74,
+    "switch": 0.618,
+    "psp": 0.58,
+    "vita": 0.78,
     "3ds": 0.90,
-    "nds": 0.92,
-    "gba": 0.93,
-    "gb": 0.95,
-    "gbc": 0.95,
+    "nds": 0.90,
+    "gba": 0.90,
+    "gb": 0.92,
+    "gbc": 0.92,
 }
 # Relative height against ``GALLERY_CELL_HEIGHT``/``CASE_H``. Switch and PSP
 # render at full height; the near-square handheld boxes are intentionally
@@ -223,17 +223,25 @@ def gallery_case_size(
     *,
     cell_width: float,
     case_height: float,
+    cover_aspect: Optional[float] = None,
 ) -> tuple[int, int]:
     """Return the ``(width, height)`` of a platform's packaging in the gallery.
 
     The height is derived from ``case_height * scale`` and the width from the
-    platform aspect. If the aspect-derived width would overflow the cell, the
-    box is scaled down proportionally instead of being clamped flat (which used
-    to make every platform the same width).
+    platform aspect (or the cover artwork's real aspect ratio when available).
+    If the aspect-derived width would overflow the cell, the box is scaled down
+    proportionally instead of being clamped flat.
     """
     key = str(platform or "").strip().lower()
     aspect = GALLERY_CASE_ASPECT.get(key, GALLERY_CASE_DEFAULT_ASPECT)
     scale = GALLERY_CASE_SCALE.get(key, GALLERY_CASE_DEFAULT_SCALE)
+    if cover_aspect is not None:
+        try:
+            ca = float(cover_aspect)
+            if 0.45 <= ca <= 1.35:
+                aspect = ca
+        except (ValueError, TypeError):
+            pass
     height = max(1.0, float(case_height) * scale)
     width = height * aspect
     max_width = max(1.0, float(cell_width) - GALLERY_CASE_WIDTH_INSET)

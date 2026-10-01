@@ -106,7 +106,7 @@ def sanitize_name(name: str, fallback: str = "untitled") -> str:
 def game_key(entry: SaveEntry) -> str:
     platform = sanitize_name(entry.platform or "unknown", "unknown")
     title = sanitize_name(entry.title_id or entry.display_name or "untitled")
-    slot = sanitize_name(entry.slot or "default", "default")
+    slot = sanitize_name(entry.slot or entry.user or "default", "default")
     return f"{platform}:{title}:{slot}"
 
 
@@ -118,7 +118,7 @@ def destination_for(
     stamp = (when or datetime.now()).strftime("%Y-%m-%d_%H-%M-%S")
     platform = sanitize_name(entry.platform or "unknown", "unknown")
     title = sanitize_name(entry.title_id or entry.display_name or "untitled")
-    slot = sanitize_name(entry.slot or "default", "default")
+    slot = sanitize_name(entry.slot or entry.user or "default", "default")
     return Path(library_root) / platform / title / slot / stamp
 
 

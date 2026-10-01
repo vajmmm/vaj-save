@@ -92,12 +92,16 @@ KNOWN_SWITCH_TITLES: Dict[str, str] = {
     "0100A8B01E0C8000": "Shin chan: Shiro and the Coal Town",
     "0100965017338000": "Super Mario Party Jamboree",
     "01008CF01BAAC000": "The Legend of Zelda: Echoes of Wisdom",
+    "0100D9F01D474000": "Rhythm Heaven Groove",
+    "010056901ED1A000": "STORY OF SEASONS: Grand Bazaar",
+    "0100FD8022DAA000": "Super Mario Galaxy 2",
+    "010051F0207B2000": "Tomodachi Life: Living the Dream",
 }
 
 # Regional / translated aliases mapping to canonical Title IDs
 KNOWN_TITLE_ALIASES: Dict[str, str] = {
     "유니콘 오버로드": "010069401ADB8000",
-    "페르소ナ 5 더 로열": "01005CA01580E000",
+    "페르소나 5 더 로열": "01005CA01580E000",
     "페르소나 5 더 로열": "01005CA01580E000",
     "秽翼的尤斯蒂娅": "01003C7017BB4000",
     "穢翼のユースティア": "01003C7017BB4000",
@@ -106,6 +110,20 @@ KNOWN_TITLE_ALIASES: Dict[str, str] = {
     "summer sweetheart": "01004E500DB9E000",
     "unicorn overlord": "010069401ADB8000",
     "persona 5 royal": "01005CA01580E000",
+    "rhythm heaven groove": "0100D9F01D474000",
+    "rhythm paradise groove": "0100D9F01D474000",
+    "节奏天国": "0100D9F01D474000",
+    "节奏天国 groove": "0100D9F01D474000",
+    "story of seasons grand bazaar": "010056901ED1A000",
+    "story of seasons: grand bazaar": "010056901ED1A000",
+    "牧场物语 欢迎来到风之集市": "010056901ED1A000",
+    "super mario galaxy 2": "0100FD8022DAA000",
+    "超级马力欧银河2": "0100FD8022DAA000",
+    "超级马里奥银河2": "0100FD8022DAA000",
+    "tomodachi life living the dream": "010051F0207B2000",
+    "tomodachi life: living the dream": "010051F0207B2000",
+    "朋友聚会 梦想生活": "010051F0207B2000",
+    "朋友聚会": "010051F0207B2000",
 }
 
 _SWITCH_TITLES_CATALOG: Optional[Dict[str, str]] = None
@@ -113,12 +131,25 @@ _SWITCH_TITLES_LOCK = threading.RLock()
 _SWITCH_REVERSE_CATALOG: Optional[Dict[str, str]] = None
 
 
+def _artwork_resource_path(filename: str) -> Path:
+    """Resolve a bundled artwork data file in dev, installed package, or PyInstaller frozen exe."""
+    direct = Path(__file__).parent / filename
+    if direct.is_file():
+        return direct
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        cand = Path(meipass) / "vajsave" / "artwork" / filename
+        if cand.is_file():
+            return cand
+    return direct
+
+
 def _load_switch_titles_catalog() -> Dict[str, str]:
     global _SWITCH_TITLES_CATALOG
     if _SWITCH_TITLES_CATALOG is None:
         with _SWITCH_TITLES_LOCK:
             if _SWITCH_TITLES_CATALOG is None:
-                path = Path(__file__).parent / DEFAULT_TITLES_FILE
+                path = _artwork_resource_path(DEFAULT_TITLES_FILE)
                 cat: Dict[str, str] = {}
                 if path.is_file():
                     try:
@@ -330,9 +361,10 @@ def switch_title_candidates(title: object, title_id: Optional[object] = None) ->
         stripped = re.sub(r"\[.*?\]|\(.*?\)", "", raw).strip()
         if stripped:
             add(stripped)
-        # Split on hyphen separator: "Brotato - Nintendo Switch Edition"
-        if " - " in raw:
-            add(raw.split(" - ", 1)[0].strip())
+        # Split on dash separators: "Brotato - Nintendo Switch Edition", "STORY OF SEASONS: Grand Bazaar – ..."
+        for dash in (" - ", " – ", " — "):
+            if dash in raw:
+                add(raw.split(dash, 1)[0].strip())
         # Split on colon or hyphen if present: "The Legend of Zelda: Breath of the Wild"
         if ":" in raw:
             add(raw.split(":", 1)[0].strip())
@@ -360,7 +392,7 @@ class GameTDBSwitchProvider(ArtworkProvider):
         return (platform or "").strip().lower() == "switch"
 
     def _default_catalog_path(self) -> Path:
-        return Path(__file__).parent / DEFAULT_CATALOG_FILE
+        return _artwork_resource_path(DEFAULT_CATALOG_FILE)
 
     def _load_catalog(self) -> Dict[str, str]:
         path = self.catalog_path or self._default_catalog_path()

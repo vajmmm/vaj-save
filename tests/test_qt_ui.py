@@ -344,7 +344,7 @@ def test_psp_cover_fit_preserves_full_artwork(qt_app):
     assert fitted.center() == target.center()
 
 
-def test_psp_gallery_uses_full_cover_fit(qt_app, qt_state, tmp_path: Path, monkeypatch):
+def test_psp_gallery_adapts_to_cover_aspect_seamlessly(qt_app, qt_state, tmp_path: Path):
     path = tmp_path / "psp-boxart.png"
     cover = QPixmap(600, 1000)
     cover.fill(Qt.GlobalColor.blue)
@@ -359,23 +359,20 @@ def test_psp_gallery_uses_full_cover_fit(qt_app, qt_state, tmp_path: Path, monke
     canvas.resize(320, 440)
     canvas.set_entries([entry])
     canvas.set_cover_path(entry.path, str(path))
-    calls = []
-    original = qt_ui._cover_fit_rect
+    width, height = canvas._case_size(entry)
+    assert abs(width / height - 0.60) < 0.02
 
-    def record_fit(pixmap, target):
-        calls.append(target)
-        return original(pixmap, target)
-
-    monkeypatch.setattr(qt_ui, "_cover_fit_rect", record_fit)
     image = QImage(320, 440, QImage.Format.Format_ARGB32_Premultiplied)
     image.fill(Qt.GlobalColor.transparent)
     painter = QPainter(image)
     canvas._paint_case(painter, 0, entry)
     painter.end()
-    assert calls
+    case_rect = canvas._case_rect(0)
+    assert case_rect.width() == width
+    assert case_rect.height() == height
 
 
-def test_switch_gallery_uses_full_cover_fit(qt_app, qt_state, tmp_path: Path, monkeypatch):
+def test_switch_gallery_adapts_to_cover_aspect_seamlessly(qt_app, qt_state, tmp_path: Path):
     path = tmp_path / "switch-boxart.png"
     cover = QPixmap(352, 570)
     cover.fill(Qt.GlobalColor.red)
@@ -390,20 +387,17 @@ def test_switch_gallery_uses_full_cover_fit(qt_app, qt_state, tmp_path: Path, mo
     canvas.resize(320, 440)
     canvas.set_entries([entry])
     canvas.set_cover_path(entry.path, str(path))
-    calls = []
-    original = qt_ui._cover_fit_rect
+    width, height = canvas._case_size(entry)
+    assert abs(width / height - (352.0 / 570.0)) < 0.02
 
-    def record_fit(pixmap, target):
-        calls.append(target)
-        return original(pixmap, target)
-
-    monkeypatch.setattr(qt_ui, "_cover_fit_rect", record_fit)
     image = QImage(320, 440, QImage.Format.Format_ARGB32_Premultiplied)
     image.fill(Qt.GlobalColor.transparent)
     painter = QPainter(image)
     canvas._paint_case(painter, 0, entry)
     painter.end()
-    assert calls
+    case_rect = canvas._case_rect(0)
+    assert case_rect.width() == width
+    assert case_rect.height() == height
 
 
 def test_gallery_case_geometry_stays_portrait_for_supported_platforms(qt_app, qt_state):
@@ -871,8 +865,9 @@ def test_drawer_omits_dead_view_all_link(qt_app, qt_state):
 def test_topbar_exposes_starred_filter_and_backup_updated(qt_app, qt_state):
     window = VajSaveWindow(qt_state)
     try:
+        assert window.filter_button.text().startswith("筛选")
         assert window.starred_only.text() == "只看收藏"
-        assert window.backup_updated.text() == "备份有更新"
+        assert "备份有更新" in window.backup_updated.text()
         assert window.cancel_job.text() == "取消"
         assert window.cancel_job.isHidden()
         assert not hasattr(window, "help")
@@ -881,6 +876,7 @@ def test_topbar_exposes_starred_filter_and_backup_updated(qt_app, qt_state):
         assert "帮助" not in topbar_button_texts
         window.starred_only.click()
         assert qt_state.starred_only is True
+        assert "仅收藏" in window.filter_button.text()
     finally:
         window.close()
 
@@ -893,7 +889,17 @@ def test_dock_omits_moved_actions(qt_app, qt_state):
         assert "其他设备" not in dock_texts
         assert "FTP 拉取" not in dock_texts
         assert "刷新设备" in dock_texts
-        assert "本地存档" in dock_texts
+        assert "本地存档" not in dock_texts
+        # View switcher is in the top right
+        assert window.view_switcher.btn_device.text() == "设备存档"
+        assert window.view_switcher.btn_library.text() == "本地存档"
+        assert window.view_switcher.btn_device.isChecked() is True
+        window.view_switcher.btn_library.click()
+        assert qt_state.library_mode is True
+        assert window.view_switcher.btn_library.isChecked() is True
+        window.view_switcher.btn_device.click()
+        assert qt_state.library_mode is False
+        assert window.view_switcher.btn_device.isChecked() is True
     finally:
         window.close()
 
@@ -1289,3 +1295,47 @@ def test_export_and_import_zip_run_on_device_loader(qt_app, qt_state, monkeypatc
         assert submitted == [("import-zip", str(zip_path))]
     finally:
         window.close()
+
+
+def test_detail_drawer_source_selector_for_multi_entry_game(qt_app, qt_state):
+    e1 = SaveEntry(
+        platform="switch",
+        source_id="switch_jksv",
+        display_name="Super Mario 3D All-Stars",
+        title_id="010049900F556000",
+        path="/sd/JKSV/010049900F556000",
+    )
+    e2 = SaveEntry(
+        platform="switch",
+        source_id="switch_dbi",
+        display_name="Super Mario 3D All-Stars",
+        title_id=None,
+        user="vajmm",
+        path="/sd/Installed games/Super Mario 3D All-Stars/vajmm",
+    )
+    from vajsave.game_grouping import group_saves_by_game
+    grouped = group_saves_by_game([e1, e2], qt_state)
+    assert len(grouped) == 1
+
+    drawer = DetailDrawer()
+    try:
+        drawer.show()
+        drawer.set_entry(qt_state, grouped[0])
+        assert not drawer.source_selector.isHidden()
+        assert drawer.source_selector.count() == 2
+        # Switch selection
+        drawer.source_selector.setCurrentIndex(1)
+        assert drawer.selected_entry() is not None
+
+        # Single entry game should hide the selector
+        single = SaveEntry(
+            platform="switch",
+            source_id="switch_dbi",
+            display_name="Single Game",
+            title_id="0100999988887777",
+            path="/sd/Single",
+        )
+        drawer.set_entry(qt_state, single)
+        assert drawer.source_selector.isHidden()
+    finally:
+        drawer.close()

@@ -19,10 +19,25 @@ os.environ["QT_API"] = "pyside6"
 
 import qtawesome as qta
 from PySide6.QtCore import QByteArray, QEasingCurve, QObject, QPoint, QPropertyAnimation, QRectF, QSize, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QFont, QIcon, QKeyEvent, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import (
+    QActionGroup,
+    QColor,
+    QFont,
+    QIcon,
+    QImageReader,
+    QKeyEvent,
+    QKeySequence,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QButtonGroup,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -70,7 +85,6 @@ from .rom_formats import supported_extensions
 from .ui_theme import (
     DETAIL_COVER_MAX_HEIGHT,
     DETAIL_COVER_MAX_WIDTH,
-    PLATFORM_COLORS,
     SWITCH,
     darken,
     detail_cover_size,
@@ -251,7 +265,9 @@ def _open_path(path: Path) -> tuple[bool, str]:
         if sys.platform == "darwin":
             subprocess.run(["open", "-R", str(path)], check=True)
         elif sys.platform == "win32":
-            subprocess.run(["explorer", f"/select,{path}"], check=True)
+            # Windows explorer.exe delegates to the shell and exits with code 1;
+            # check=True must not be used.
+            subprocess.run(["explorer", f"/select,{path}"])
         else:
             subprocess.run(["xdg-open", str(path if path.is_dir() else path.parent)], check=True)
         return True, f"已打开：{path}"
@@ -334,7 +350,6 @@ class PlatformDock(QFrame):
         layout.addLayout(row)
         actions = (
             ("刷新设备", "fa6s.arrows-rotate", self.refresh_requested),
-            ("本地存档", "fa6s.folder", self.library_requested),
         )
         for text, icon_name, signal in actions:
             layout.addWidget(self._action_button(text, icon_name, signal))
@@ -397,9 +412,26 @@ class GalleryCanvas(QWidget):
         self.reserved_right = 0
         self._pixmaps: "OrderedDict[tuple, QPixmap]" = OrderedDict()
         self._cover_paths: dict[str, str] = {}
+        self._cover_aspects: dict[str, Optional[float]] = {}
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def _get_cover_aspect(self, entry: SaveEntry) -> Optional[float]:
+        if entry.path in self._cover_aspects:
+            return self._cover_aspects[entry.path]
+        path = self._cover_paths.get(entry.path)
+        if not path:
+            return None
+        reader = QImageReader(path)
+        sz = reader.size()
+        if sz.isValid() and sz.height() > 0:
+            aspect = sz.width() / sz.height()
+            if 0.35 <= aspect <= MAX_COVER_ASPECT_RATIO:
+                self._cover_aspects[entry.path] = aspect
+                return aspect
+        self._cover_aspects[entry.path] = None
+        return None
 
     def set_entries(self, entries: Iterable[SaveEntry]) -> None:
         current_paths = {self.entries[i].path for i in self.selected if 0 <= i < len(self.entries)}
@@ -413,9 +445,27 @@ class GalleryCanvas(QWidget):
         """替换一个条目的封面路径，并让下一帧重新读取高清资源。"""
         path = str(cover_path or "")
         previous = self._cover_paths.get(entry_path, "")
-        if previous == path:
+        if previous == path and entry_path in self._cover_aspects:
             return
         self._cover_paths[entry_path] = path
+        if path:
+            reader = QImageReader(path)
+            sz = reader.size()
+            if sz.isValid() and sz.height() > 0:
+                aspect = sz.width() / sz.height()
+                if 0.35 <= aspect <= MAX_COVER_ASPECT_RATIO:
+                    self._cover_aspects[entry_path] = aspect
+                else:
+                    self._cover_aspects[entry_path] = None
+            else:
+                self._cover_aspects[entry_path] = None
+        else:
+            self._cover_aspects[entry_path] = None
+        if previous or path:
+            self._pixmaps = OrderedDict(
+                (k, v) for k, v in self._pixmaps.items() if k[0] != previous and k[0] != path
+            )
+        self._update_geometry()
         self.update()
 
     def set_reserved_right(self, width: int) -> None:
@@ -453,6 +503,7 @@ class GalleryCanvas(QWidget):
             getattr(entry, "platform", None),
             cell_width=self.CELL_W,
             case_height=self.CASE_H,
+            cover_aspect=self._get_cover_aspect(entry),
         )
 
     def _case_rect(self, index: int) -> QRectF:
@@ -460,11 +511,16 @@ class GalleryCanvas(QWidget):
         width, height = self._case_size(self.entries[index])
         bottom = cell.top() + self.SHELF_Y - 2
         lift = 3 if index == self.hovered else 0
-        return QRectF(cell.center().x() - width / 2, bottom - height - lift, width, height)
+        return QRectF(
+            round(cell.center().x() - width / 2.0),
+            round(bottom - height - lift),
+            float(width),
+            float(height),
+        )
 
     def _default_cover_rect(self, entry: SaveEntry) -> QRectF:
         width, height = self._case_size(entry)
-        return QRectF(0, 0, max(1, width - 12), max(1, height - 13))
+        return QRectF(0, 0, float(width), float(height))
 
     def _load_pixmap(self, entry: SaveEntry, cover_rect: Optional[QRectF] = None) -> Optional[QPixmap]:
         """Return the cover pre-scaled to the case face (logical size + DPR).
@@ -481,6 +537,12 @@ class GalleryCanvas(QWidget):
             resolution = self.state.resolve_save_cover(entry)
             path = str(resolution.path or "")
             self._cover_paths[entry.path] = path
+            if path and entry.path not in self._cover_aspects:
+                sz = QImageReader(path).size()
+                if sz.isValid() and sz.height() > 0:
+                    aspect = sz.width() / sz.height()
+                    if 0.35 <= aspect <= MAX_COVER_ASPECT_RATIO:
+                        self._cover_aspects[entry.path] = aspect
         if not path:
             return None
         dpr = float(self.devicePixelRatioF()) or 1.0
@@ -490,7 +552,6 @@ class GalleryCanvas(QWidget):
             max(1, int(round(cover_rect.width()))),
             max(1, int(round(cover_rect.height()))),
             round(dpr, 3),
-            platform in ("psp", "switch"),
         )
         cached = self._pixmaps.get(key)
         if cached is not None:
@@ -515,23 +576,15 @@ class GalleryCanvas(QWidget):
             max(1, int(round(cover_rect.width() * dpr))),
             max(1, int(round(cover_rect.height() * dpr))),
         )
-        if platform in ("psp", "switch"):
-            # PSP/Switch 盒装图完整保留（不裁切），由卡片底色承接留白。
-            scaled = pixmap.scaled(
-                physical,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        else:
-            source = _cover_source_rect(pixmap, cover_rect)
-            cropped = pixmap.copy(source.toRect())
-            if cropped.isNull():
-                cropped = pixmap
-            scaled = cropped.scaled(
-                physical,
-                Qt.AspectRatioMode.IgnoreAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
+        source = _cover_source_rect(pixmap, cover_rect)
+        cropped = pixmap.copy(source.toRect())
+        if cropped.isNull():
+            cropped = pixmap
+        scaled = cropped.scaled(
+            physical,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
         scaled.setDevicePixelRatio(dpr)
         return scaled
 
@@ -626,33 +679,29 @@ class GalleryCanvas(QWidget):
                 painter.setPen(QPen(QColor(10, 132, 255, alpha), 2))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawRoundedRect(glow_rect, 8, 8)
-        case_fill = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
-        case_fill.setColorAt(0, QColor(SWITCH["card"]))
-        case_fill.setColorAt(1, QColor(mix(SWITCH["card"], SWITCH["shadow_soft"], 0.52)))
-        painter.setPen(QPen(QColor(SWITCH["accent"] if selected else mix(SWITCH["line"], SWITCH["shadow_deep"], 0.32)), 2 if selected else 1))
-        painter.setBrush(case_fill)
-        painter.drawRoundedRect(rect, 6, 6)
-        cover_rect = rect.adjusted(6, 6, -6, -7)
-        pixmap = self._load_pixmap(entry, cover_rect)
+        pixmap = self._load_pixmap(entry, rect)
         if pixmap is not None:
             painter.save()
-            painter.setClipPath(self._rounded_path(cover_rect, 3))
-            if str(entry.platform or "").strip().lower() in ("psp", "switch"):
-                # PSP/Switch 盒装图的实际比例由卡片底色承接留白，完整缩放保留封面边缘和文字，避免中心裁切。
-                painter.fillRect(cover_rect, QColor(SWITCH["panel_alt"]))
-                painter.drawPixmap(_cover_fit_rect(pixmap, cover_rect).topLeft(), pixmap)
-            else:
-                painter.drawPixmap(cover_rect.topLeft(), pixmap)
+            painter.setClipPath(self._rounded_path(rect, 5))
+            painter.drawPixmap(rect.topLeft(), pixmap)
             painter.restore()
+            border_color = QColor(SWITCH["accent"]) if selected else QColor(mix(SWITCH["line"], SWITCH["shadow_deep"], 0.28))
+            painter.setPen(QPen(border_color, 2 if selected else 1))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(rect, 5, 5)
         else:
-            painter.fillPath(self._rounded_path(cover_rect, 3), QColor(SWITCH["panel_alt"]))
+            case_fill = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
+            case_fill.setColorAt(0, QColor(SWITCH["card"]))
+            case_fill.setColorAt(1, QColor(mix(SWITCH["card"], SWITCH["shadow_soft"], 0.52)))
+            border_color = QColor(SWITCH["accent"]) if selected else QColor(mix(SWITCH["line"], SWITCH["shadow_deep"], 0.32))
+            painter.setPen(QPen(border_color, 2 if selected else 1))
+            painter.setBrush(case_fill)
+            painter.drawRoundedRect(rect, 6, 6)
+            painter.setPen(QPen(QColor(255, 255, 255, 180), 1))
+            painter.drawLine(int(rect.left() + 8), int(rect.top() + 4), int(rect.right() - 8), int(rect.top() + 4))
             painter.setPen(QColor(SWITCH["muted_strong"]))
             painter.setFont(QFont(FONT_FAMILY, 11, QFont.Weight.DemiBold))
-            painter.drawText(cover_rect.adjusted(12, 12, -12, -12), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, entry.display_name or "无封面")
-        pip = QColor(PLATFORM_COLORS.get(entry.platform, SWITCH["accent"]))
-        painter.fillRect(QRectF(rect.left() + 2, rect.top() + 10, 3, rect.height() - 20), pip)
-        painter.setPen(QPen(QColor(255, 255, 255, 180), 1))
-        painter.drawLine(int(rect.left() + 8), int(rect.top() + 4), int(rect.right() - 8), int(rect.top() + 4))
+            painter.drawText(rect.adjusted(12, 12, -12, -12), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, entry.display_name or "无封面")
         contact = QLinearGradient(0, rect.bottom(), 0, rect.bottom() + 13)
         contact.setColorAt(0, QColor(52, 61, 72, 92))
         contact.setColorAt(1, QColor(52, 61, 72, 0))
@@ -836,10 +885,22 @@ class DetailDrawer(QFrame):
         field_grid = QGridLayout()
         field_grid.setHorizontalSpacing(8)
         field_grid.setVerticalSpacing(5)
+
+        self.source_selector_label = QLabel("存档来源")
+        self.source_selector_label.setObjectName("fieldKey")
+        self.source_selector = QComboBox()
+        self.source_selector.setObjectName("sourceSelector")
+        self.source_selector.setFixedHeight(26)
+        self.source_selector.currentIndexChanged.connect(self._on_source_changed)
+        self.source_selector_label.setVisible(False)
+        self.source_selector.setVisible(False)
+        field_grid.addWidget(self.source_selector_label, 0, 0)
+        field_grid.addWidget(self.source_selector, 0, 1)
+
         for row, (label, key) in enumerate((
             ("Title ID", "title_id"), ("游戏状态", "status"), ("版本数量", "versions"),
             ("存档大小", "size"), ("最近备份", "last_backup"), ("存档位置", "path"),
-        )):
+        ), start=1):
             key_label = QLabel(label)
             key_label.setObjectName("fieldKey")
             value = QLabel("—")
@@ -974,7 +1035,54 @@ class DetailDrawer(QFrame):
             return
         self.cover.setPixmap(_scaled_pixmap_for_dpr(pixmap, self.cover.size(), self.devicePixelRatioF()))
 
+    def selected_entry(self) -> SaveEntry:
+        return getattr(self, "_current_sub_entry", None) or getattr(self, "_entry", None)
+
+    def _on_source_changed(self, index: int) -> None:
+        if hasattr(self, "_sub_entries") and 0 <= index < len(self._sub_entries):
+            sub = self._sub_entries[index]
+            self._current_sub_entry = sub
+            if hasattr(self, "_state") and self._state is not None:
+                self._update_fields_for_entry(self._state, sub)
+
+    def _update_fields_for_entry(self, state: AppState, entry: SaveEntry) -> list[Snapshot]:
+        result = state.resolve_save_identity(entry)
+        identity = result.identity
+        self.fields["title_id"].setText((identity.title_id if identity else None) or entry.title_id or "—")
+        status = state.save_status(entry)
+        self.fields["status"].setText(status_label(status))
+        versions = state.versions_for_entry(entry)
+        ordered_versions = list(reversed(versions))
+        self.fields["versions"].setText(f"{len(versions)} 个版本")
+        self.fields["size"].setText(self._immediate_size(entry))
+        self.fields["last_backup"].setText(_fmt_time(status.last_backup_at))
+        self.fields["path"].setText(_short_path(entry.path))
+        self.fields["path"].setToolTip(str(entry.path))
+
+        self.versions.setRowCount(len(ordered_versions))
+        for row, snapshot in enumerate(ordered_versions):
+            number = len(ordered_versions) - row
+            first = QTableWidgetItem(f"●   v{number}")
+            first.setForeground(QColor(SWITCH["accent"] if row == 0 else SWITCH["muted_strong"]))
+            self.versions.setItem(row, 0, first)
+            self.versions.setItem(row, 1, QTableWidgetItem(_fmt_time(snapshot.created_at)))
+            self.versions.setItem(row, 2, QTableWidgetItem("…"))
+        self.version_count.setText(f"{len(ordered_versions)} 个版本")
+        if ordered_versions:
+            self.versions.selectRow(0)
+        self.delete_version.setEnabled(bool(ordered_versions))
+        self._schedule_size_update(state, entry, ordered_versions)
+        self._versions = ordered_versions
+        self.version_changed.emit(0 if ordered_versions else -1)
+        return ordered_versions
+
     def set_entry(self, state: AppState, entry: SaveEntry) -> list[Snapshot]:
+        self._state = state
+        self._entry = entry
+        subs = (entry.extra or {}).get("sub_entries") or [entry]
+        self._sub_entries = subs
+        self._current_sub_entry = subs[0] if subs else entry
+
         result = state.resolve_save_identity(entry)
         identity = result.identity
         metadata = state.cached_save_metadata(identity)
@@ -990,16 +1098,25 @@ class DetailDrawer(QFrame):
         self.star.blockSignals(False)
         self._sync_star_icon()
         self.platform.setText(PLATFORM_LABELS.get(entry.platform, entry.platform))
-        status = state.save_status(entry)
-        versions = state.versions_for_entry(entry)
-        ordered_versions = list(reversed(versions))
-        self.fields["title_id"].setText((identity.title_id if identity else None) or entry.title_id or "—")
-        self.fields["status"].setText(status_label(status))
-        self.fields["versions"].setText(f"{len(versions)} 个版本")
-        self.fields["size"].setText(self._immediate_size(entry))
-        self.fields["last_backup"].setText(_fmt_time(status.last_backup_at))
-        self.fields["path"].setText(_short_path(entry.path))
-        self.fields["path"].setToolTip(str(entry.path))
+
+        if len(subs) > 1:
+            from .game_grouping import format_sub_entry_label
+            self.source_selector.blockSignals(True)
+            self.source_selector.clear()
+            for sub in subs:
+                self.source_selector.addItem(format_sub_entry_label(sub), sub)
+            curr_idx = next((i for i, s in enumerate(subs) if s.path == entry.path), 0)
+            self.source_selector.setCurrentIndex(curr_idx)
+            self._current_sub_entry = subs[curr_idx]
+            self.source_selector.blockSignals(False)
+            self.source_selector.setVisible(True)
+            self.source_selector_label.setVisible(True)
+        else:
+            self.source_selector.setVisible(False)
+            self.source_selector_label.setVisible(False)
+
+        ordered_versions = self._update_fields_for_entry(state, self._current_sub_entry)
+
         resolution = state.resolve_save_cover(entry, result=result)
         self.set_cover_path(resolution.path, entry.platform)
         ambiguous = result.status == STATUS_AMBIGUOUS and bool(result.candidates)
@@ -1023,18 +1140,7 @@ class DetailDrawer(QFrame):
                 item.setData(Qt.ItemDataRole.UserRole, candidate)
                 self.candidates.addItem(item)
             self.candidates.setCurrentRow(0)
-        self.versions.setRowCount(len(ordered_versions))
-        for row, snapshot in enumerate(ordered_versions):
-            number = len(ordered_versions) - row
-            first = QTableWidgetItem(f"●   v{number}")
-            first.setForeground(QColor(SWITCH["accent"] if row == 0 else SWITCH["muted_strong"]))
-            self.versions.setItem(row, 0, first)
-            self.versions.setItem(row, 1, QTableWidgetItem(_fmt_time(snapshot.created_at)))
-            self.versions.setItem(row, 2, QTableWidgetItem("…"))
-        self.version_count.setText(f"{len(ordered_versions)} 个版本")
-        if ordered_versions:
-            self.versions.selectRow(0)
-        self.delete_version.setEnabled(bool(ordered_versions))
+
         self.note.blockSignals(True)
         self.note.setText(state.game_note(entry))
         self.note.blockSignals(False)
@@ -1042,7 +1148,6 @@ class DetailDrawer(QFrame):
         self.primary.setProperty("dangerPrimary", state.library_mode)
         self.primary.style().unpolish(self.primary)
         self.primary.style().polish(self.primary)
-        self._schedule_size_update(state, entry, ordered_versions)
         return ordered_versions
 
     def _schedule_size_update(
@@ -1117,6 +1222,69 @@ class DetailDrawer(QFrame):
         if size >= 1024:
             return f"{size / 1024:.0f} KB"
         return f"{size} B"
+
+
+class ViewSwitcher(QFrame):
+    """顶栏右上角显著的视图切换器：在掌机设备存档与本地存档库之间无缝切换。"""
+
+    mode_changed = Signal(bool)  # False: 设备存档, True: 本地存档
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("viewSwitcher")
+        self.setFixedHeight(38)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(2)
+
+        self.btn_device = QToolButton()
+        self.btn_device.setText("设备存档")
+        self.btn_device.setIcon(_icon("fa6s.gamepad", SWITCH["ink"], 0.82))
+        self.btn_device.setIconSize(QSize(15, 15))
+        self.btn_device.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.btn_device.setCheckable(True)
+        self.btn_device.setChecked(True)
+        self.btn_device.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_device.setFixedHeight(30)
+        self.btn_device.setObjectName("viewSegmentDevice")
+        self.btn_device.setToolTip("查看当前连接的掌机设备中的实时存档")
+
+        self.btn_library = QToolButton()
+        self.btn_library.setText("本地存档")
+        self.btn_library.setIcon(_icon("fa6s.box-archive", SWITCH["ink"], 0.82))
+        self.btn_library.setIconSize(QSize(15, 15))
+        self.btn_library.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.btn_library.setCheckable(True)
+        self.btn_library.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_library.setFixedHeight(30)
+        self.btn_library.setObjectName("viewSegmentLibrary")
+        self.btn_library.setToolTip("查看保存在电脑本地存档库中的所有备份与历史版本")
+
+        self._group = QButtonGroup(self)
+        self._group.addButton(self.btn_device)
+        self._group.addButton(self.btn_library)
+        self._group.setExclusive(True)
+
+        layout.addWidget(self.btn_device)
+        layout.addWidget(self.btn_library)
+
+        self.btn_device.clicked.connect(lambda: self.mode_changed.emit(False))
+        self.btn_library.clicked.connect(lambda: self.mode_changed.emit(True))
+
+    def set_library_mode(self, library_mode: bool) -> None:
+        self.btn_device.blockSignals(True)
+        self.btn_library.blockSignals(True)
+        if library_mode:
+            self.btn_library.setChecked(True)
+            self.btn_library.setIcon(_icon("fa6s.box-archive", SWITCH["ink"], 0.82))
+            self.btn_device.setIcon(_icon("fa6s.gamepad", SWITCH["muted_strong"], 0.82))
+        else:
+            self.btn_device.setChecked(True)
+            self.btn_device.setIcon(_icon("fa6s.gamepad", SWITCH["ink"], 0.82))
+            self.btn_library.setIcon(_icon("fa6s.box-archive", SWITCH["muted_strong"], 0.82))
+        self.btn_device.blockSignals(False)
+        self.btn_library.blockSignals(False)
 
 
 class VajSaveWindow(QMainWindow):
@@ -1195,36 +1363,89 @@ class VajSaveWindow(QMainWindow):
         brand.addWidget(brand_tag)
         top.addWidget(menu)
         top.addLayout(brand)
-        top.addStretch(1)
+        top.addSpacing(16)
+
         self.search = QLineEdit()
         self.search.setObjectName("searchField")
         self.search.setPlaceholderText("搜索游戏名、Title ID 或其他信息…")
         self.search.addAction(_icon("fa6s.magnifying-glass", SWITCH["muted_strong"]), QLineEdit.ActionPosition.LeadingPosition)
-        self.search.setFixedWidth(360)
+        self.search.setFixedWidth(280)
         self.search.setFixedHeight(38)
         top.addWidget(self.search)
-        self.sort = _button("最近备份时间", "fa6s.arrow-down-wide-short")
-        self.sort.setFixedHeight(38)
-        self.only_updates = _button("仅显示有更新", "fa6s.square", checkable=True)
-        self.only_updates.setFixedHeight(38)
-        self.starred_only = _button("只看收藏", "fa6s.star", checkable=True)
-        self.starred_only.setObjectName("starredOnly")
-        self.starred_only.setFixedHeight(38)
-        self.backup_updated = _button("备份有更新", "fa6s.cloud-arrow-up")
-        self.backup_updated.setObjectName("backupUpdated")
-        self.backup_updated.setFixedHeight(38)
-        self.settings = _button("设置", "fa6s.gear")
-        for button in (
-            self.sort,
-            self.only_updates,
-            self.starred_only,
-            self.backup_updated,
-            self.settings,
-        ):
-            top.addWidget(button)
+
+        self.filter_button = QToolButton()
+        self.filter_button.setObjectName("filterButton")
+        self.filter_button.setText("筛选")
+        self.filter_button.setIcon(_icon("fa6s.sliders", SWITCH["ink"], 0.82))
+        self.filter_button.setIconSize(QSize(16, 16))
+        self.filter_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.filter_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.filter_button.setFixedHeight(38)
+        self.filter_button.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self.filter_menu = QMenu(self)
+        self.filter_menu.setObjectName("filterMenu")
+        self.filter_menu.aboutToShow.connect(self._update_filter_menu)
+
+        self.sort_group = QActionGroup(self)
+        self.sort_group.setExclusive(True)
+
+        self.action_sort_recent = self.filter_menu.addAction(_icon("fa6s.clock", SWITCH["muted_strong"]), "按最近备份时间")
+        self.action_sort_recent.setCheckable(True)
+        self.action_sort_recent.setChecked(True)
+        self.sort_group.addAction(self.action_sort_recent)
+        self.action_sort_recent.triggered.connect(lambda: self._set_sort_mode("recent"))
+
+        self.action_sort_name = self.filter_menu.addAction(_icon("fa6s.arrow-down-a-z", SWITCH["muted_strong"]), "按游戏名称")
+        self.action_sort_name.setCheckable(True)
+        self.sort_group.addAction(self.action_sort_name)
+        self.action_sort_name.triggered.connect(lambda: self._set_sort_mode("name"))
+
+        self.action_sort_platform = self.filter_menu.addAction(_icon("fa6s.gamepad", SWITCH["muted_strong"]), "按平台分类")
+        self.action_sort_platform.setCheckable(True)
+        self.sort_group.addAction(self.action_sort_platform)
+        self.action_sort_platform.triggered.connect(lambda: self._set_sort_mode("platform"))
+
+        self.filter_menu.addSeparator()
+
+        self.action_only_updates = self.filter_menu.addAction(_icon("fa6s.square-check", SWITCH["muted_strong"]), "仅显示有更新")
+        self.action_only_updates.setCheckable(True)
+        self.action_only_updates.triggered.connect(self._toggle_updates)
+
+        self.action_starred_only = self.filter_menu.addAction(_icon("fa6s.star", SWITCH["muted_strong"]), "只看收藏")
+        self.action_starred_only.setCheckable(True)
+        self.action_starred_only.triggered.connect(self._toggle_starred)
+
+        self.filter_menu.addSeparator()
+
+        self.action_backup_updated = self.filter_menu.addAction(_icon("fa6s.cloud-arrow-up", SWITCH["accent"]), "备份有更新", self._backup_updated)
+        self.action_reset_filters = self.filter_menu.addAction(_icon("fa6s.arrow-rotate-left", SWITCH["muted_strong"]), "重置筛选与排序", self._reset_filters)
+
+        self.filter_button.setMenu(self.filter_menu)
+        top.addWidget(self.filter_button)
+
+        # 兼容性属性映射与点击代理
+        self.sort = self.filter_button
+        self.only_updates = self.action_only_updates
+        self.starred_only = self.action_starred_only
+        self.backup_updated = self.action_backup_updated
+        self.action_only_updates.click = self.action_only_updates.trigger
+        self.action_starred_only.click = self.action_starred_only.trigger
+        self.action_backup_updated.click = self.action_backup_updated.trigger
+
+        top.addStretch(1)
+
         self.stats = QLabel("已备份 0 款游戏 · 0 个版本")
         self.stats.setObjectName("statsLabel")
         top.addWidget(self.stats)
+
+        top.addSpacing(6)
+        self.view_switcher = ViewSwitcher()
+        top.addWidget(self.view_switcher)
+
+        self.settings = _button("设置", "fa6s.gear")
+        self.settings.setFixedHeight(38)
+        top.addWidget(self.settings)
         outer.addWidget(topbar)
         self.body = QWidget()
         self.body.setObjectName("body")
@@ -1276,10 +1497,7 @@ class VajSaveWindow(QMainWindow):
 
     def _wire_events(self) -> None:
         self.search.textChanged.connect(self._search_changed)
-        self.sort.clicked.connect(self._cycle_sort)
-        self.only_updates.clicked.connect(self._toggle_updates)
-        self.starred_only.clicked.connect(self._toggle_starred)
-        self.backup_updated.clicked.connect(self._backup_updated)
+        self.view_switcher.mode_changed.connect(self._on_view_mode_changed)
         self.settings.clicked.connect(self._show_settings)
         self.watch.clicked.connect(self._toggle_watch)
         self.log_button.clicked.connect(self._show_logs)
@@ -1316,6 +1534,19 @@ class VajSaveWindow(QMainWindow):
             #brandTag, #statsLabel {{ font-size: 11px; }}
             QLineEdit, QTableWidget, QListWidget, QComboBox {{ background: {CONTROL_WHITE}; border: 1px solid {SWITCH['border_soft']}; border-radius: 7px; padding: 7px 10px; selection-background-color: {SWITCH['selected']}; }}
             #searchField {{ background: {SWITCH['surface_alt']}; border-radius: 9px; }}
+            #filterButton {{ background: {CONTROL_WHITE}; border: 1px solid {SWITCH['border_soft']}; border-radius: 7px; padding: 7px 12px; font-size: 13px; color: {SWITCH['ink']}; }}
+            #filterButton:hover {{ background: {SWITCH['card']}; border-color: {mix(SWITCH['border_soft'], SWITCH['shadow_deep'], 0.34)}; }}
+            #filterButton[activeFilter='true'] {{ background: {SWITCH['selected_soft']}; border-color: {SWITCH['accent']}; color: {SWITCH['accent']}; font-weight: 600; }}
+            #filterButton::menu-indicator {{ image: none; width: 0; }}
+            #viewSwitcher {{ background: {mix(SWITCH['fog_panel'], SWITCH['border_soft'], 0.45)}; border: 1px solid {SWITCH['border_soft']}; border-radius: 9px; }}
+            #viewSwitcher QToolButton {{ background: transparent; border: 0; border-radius: 7px; padding: 4px 14px; font-size: 12px; font-weight: 500; color: {SWITCH['muted_strong']}; }}
+            #viewSwitcher QToolButton:hover:!checked {{ background: {SWITCH['surface_alt']}; color: {SWITCH['ink']}; }}
+            #viewSwitcher QToolButton:checked {{ background: {SWITCH['card']}; color: {SWITCH['ink']}; font-weight: 700; border: 1px solid {mix(SWITCH['border_soft'], SWITCH['shadow_soft'], 0.28)}; }}
+            QMenu {{ background: {SWITCH['card']}; border: 1px solid {SWITCH['border_soft']}; border-radius: 8px; padding: 6px; }}
+            QMenu::item {{ padding: 6px 20px 6px 12px; border-radius: 5px; font-size: 13px; color: {SWITCH['ink']}; }}
+            QMenu::item:selected {{ background: {SWITCH['selected_soft']}; color: {SWITCH['accent']}; }}
+            QMenu::item:disabled {{ color: {SWITCH['muted_strong']}; font-weight: 600; }}
+            QMenu::separator {{ height: 1px; background: {SWITCH['border_soft']}; margin: 4px 6px; }}
             QPushButton {{ background: {CONTROL_WHITE}; border: 1px solid {SWITCH['border_soft']}; border-radius: 7px; padding: 7px 12px; min-height: 20px; }}
             QPushButton:hover {{ background: {SWITCH['card']}; border-color: {mix(SWITCH['border_soft'], SWITCH['shadow_deep'], 0.34)}; }}
             QPushButton:pressed, QPushButton:checked {{ background: {SWITCH['selected_soft']}; border-color: {SWITCH['accent']}; }}
@@ -1432,7 +1663,8 @@ class VajSaveWindow(QMainWindow):
             )
         self.dock.set_current(self.state.selected_platform)
         self.dock.set_library_mode(self.state.library_mode)
-        self.starred_only.setChecked(self.state.starred_only)
+        self.view_switcher.set_library_mode(self.state.library_mode)
+        self._sync_filter_button_state()
         self.backup_updated.setEnabled(not self.state.library_mode and self.state.job_idle())
         stats = self.state.collection_stats()
         self.stats.setText(f"已备份 {stats.get('games', 0)} 款游戏 · {stats.get('versions', 0)} 个版本")
@@ -1624,22 +1856,78 @@ class VajSaveWindow(QMainWindow):
         self.state.set_platform_filter(platform)
         self.refresh_all(enrich=False)
 
+    def _set_sort_mode(self, mode: str) -> None:
+        self._sort_mode = mode
+        self.refresh_all(enrich=False)
+
     def _cycle_sort(self) -> None:
         modes = ("recent", "name", "platform")
-        labels = {"recent": "最近备份时间", "name": "名称", "platform": "平台"}
         self._sort_mode = modes[(modes.index(self._sort_mode) + 1) % len(modes)]
-        self.sort.setText(labels[self._sort_mode])
         self.refresh_all(enrich=False)
 
     def _toggle_updates(self) -> None:
         self.state.toggle_hide_unchanged()
-        self.only_updates.setChecked(self.state.hide_unchanged)
+        self._sync_filter_button_state()
         self.refresh_all(enrich=False)
 
     def _toggle_starred(self) -> None:
         self.state.toggle_starred_only()
-        self.starred_only.setChecked(self.state.starred_only)
+        self._sync_filter_button_state()
         self.refresh_all(enrich=False)
+
+    def _reset_filters(self) -> None:
+        if self.state.hide_unchanged:
+            self.state.toggle_hide_unchanged()
+        if self.state.starred_only:
+            self.state.toggle_starred_only()
+        self._sort_mode = "recent"
+        self._sync_filter_button_state()
+        self.refresh_all(enrich=False)
+
+    def _sync_filter_button_state(self) -> None:
+        active_filters = []
+        if self.state.hide_unchanged:
+            active_filters.append("仅更新")
+        if self.state.starred_only:
+            active_filters.append("仅收藏")
+        if active_filters:
+            self.filter_button.setText(f"筛选 ({' · '.join(active_filters)})")
+            self.filter_button.setProperty("activeFilter", True)
+        else:
+            self.filter_button.setText("筛选")
+            self.filter_button.setProperty("activeFilter", False)
+        self.filter_button.style().unpolish(self.filter_button)
+        self.filter_button.style().polish(self.filter_button)
+        self.action_only_updates.setChecked(self.state.hide_unchanged)
+        self.action_starred_only.setChecked(self.state.starred_only)
+
+    def _update_filter_menu(self) -> None:
+        self.action_sort_recent.setChecked(self._sort_mode == "recent")
+        self.action_sort_name.setChecked(self._sort_mode == "name")
+        self.action_sort_platform.setChecked(self._sort_mode == "platform")
+        self.action_only_updates.setChecked(self.state.hide_unchanged)
+        self.action_starred_only.setChecked(self.state.starred_only)
+        can_backup = not self.state.library_mode and self.state.job_idle()
+        self.action_backup_updated.setEnabled(can_backup)
+        updated_count = 0
+        if not self.state.library_mode:
+            updated_count = sum(
+                1 for s in self.state.visible_saves()
+                if self.state.save_status(s).status in ("new", "changed")
+            )
+        if updated_count > 0:
+            self.action_backup_updated.setText(f"备份有更新 ({updated_count} 款)")
+        else:
+            self.action_backup_updated.setText("备份有更新")
+        has_active = self.state.hide_unchanged or self.state.starred_only or self._sort_mode != "recent"
+        self.action_reset_filters.setEnabled(has_active)
+
+    def _on_view_mode_changed(self, library_mode: bool) -> None:
+        if self.state.library_mode == library_mode:
+            return
+        self._cancel_pending_device_scan()
+        self.state.set_library_mode(library_mode)
+        self.refresh_all()
 
     def _toggle_star(self) -> None:
         if self._selected is None:
@@ -1793,9 +2081,17 @@ class VajSaveWindow(QMainWindow):
         )
 
     def _open_location(self) -> None:
-        if not self._selected:
+        active = self.drawer.selected_entry() or self._selected
+        if not active:
             return
-        path = self._selected_snapshot.absolute_path(self.state.library_root) if self._selected_snapshot else Path(self._selected.path)
+        if self._selected_snapshot:
+            path = self._selected_snapshot.absolute_path(self.state.library_root)
+        else:
+            path = Path(active.path)
+            if not path.exists():
+                versions = self.state.versions_for_entry(active)
+                if versions:
+                    path = versions[0].absolute_path(self.state.library_root)
         ok, message = _open_path(path)
         self.status_text.setText(message)
         if not ok:
@@ -1893,9 +2189,7 @@ class VajSaveWindow(QMainWindow):
                 self._request_mount_scan(mount)
 
     def _browse_library(self) -> None:
-        self._cancel_pending_device_scan()
-        self.state.set_library_mode(not self.state.library_mode)
-        self.refresh_all()
+        self._on_view_mode_changed(not self.state.library_mode)
 
     def _toggle_watch(self) -> None:
         if self.watch.isChecked():

@@ -35,6 +35,7 @@ from vajsave.ui_theme import (  # noqa: E402
     PLATFORM_COLORS,
     SWITCH,
     darken,
+    gallery_case_size,
     mix,
 )
 
@@ -256,25 +257,25 @@ def _draw_topbar(draw, width: int, top_h: int, stats: dict, fonts: dict) -> None
     draw.text((82, 24), "vaj-save", font=fonts["title"], fill=ink, anchor="la")
     draw.text((82, 49), "守护每一段游戏时光", font=fonts["small"], fill=muted, anchor="la")
 
-    _rounded(draw, [410, 14, 770, 54], 9, SWITCH["surface_alt"], SWITCH["border_soft"])
-    draw.arc([428, 26, 441, 39], start=35, end=325, fill=muted, width=2)
-    draw.line([439, 37, 445, 43], fill=muted, width=2)
-    draw.text((458, 34), "搜索游戏名、Title ID 或其他信息…", font=fonts["small"], fill=muted, anchor="lm")
-    _rounded(draw, [784, 14, 930, 54], 8, SWITCH["card"], SWITCH["border_soft"])
-    draw.line([806, 25, 806, 43], fill=ink, width=2)
-    draw.line([802, 29, 806, 25, 810, 29], fill=ink, width=2)
-    draw.line([814, 43, 814, 25], fill=ink, width=2)
-    draw.line([810, 39, 814, 43, 818, 39], fill=ink, width=2)
-    draw.text((871, 34), "最近备份时间", font=fonts["small"], fill=ink, anchor="mm")
-    _rounded(draw, [944, 14, 1092, 54], 8, SWITCH["card"], SWITCH["border_soft"])
-    draw.rectangle([960, 27, 973, 40], outline=SWITCH["accent"], width=2)
-    draw.text((985, 34), "仅显示有更新", font=fonts["small"], fill=ink, anchor="lm")
-    draw.line([1128, 27, 1128, 41], fill=ink, width=2)
-    draw.line([1123, 31, 1133, 31], fill=ink, width=2)
-    draw.line([1125, 37, 1131, 37], fill=ink, width=2)
-    draw.text((1142, 34), "设置", font=fonts["small"], fill=ink, anchor="lm")
-    draw.text((1212, 34), "?  帮助", font=fonts["small"], fill=ink, anchor="lm")
-    draw.text((width - 20, 34), f"已备份 {stats['games']} 款游戏 · {stats['versions']} 个版本", font=fonts["small"], fill=muted, anchor="rm")
+    # Search & Filter on the left cluster
+    _rounded(draw, [270, 14, 550, 54], 9, SWITCH["surface_alt"], SWITCH["border_soft"])
+    draw.arc([288, 26, 301, 39], start=35, end=325, fill=muted, width=2)
+    draw.line([299, 37, 305, 43], fill=muted, width=2)
+    draw.text((318, 34), "搜索游戏名、Title ID 或其他信息…", font=fonts["small"], fill=muted, anchor="lm")
+    _rounded(draw, [562, 14, 652, 54], 8, SWITCH["card"], SWITCH["border_soft"])
+    draw.line([574, 28, 592, 28], fill=ink, width=2)
+    draw.line([578, 34, 588, 34], fill=ink, width=2)
+    draw.line([582, 40, 584, 40], fill=ink, width=2)
+    draw.text((602, 34), "筛选 ▾", font=fonts["small"], fill=ink, anchor="lm")
+
+    # Right cluster: stats, view switcher, settings
+    draw.text((width - 320, 34), f"已备份 {stats['games']} 款游戏 · {stats['versions']} 个版本", font=fonts["small"], fill=muted, anchor="rm")
+    _rounded(draw, [width - 300, 15, width - 110, 53], 9, mix(SWITCH["fog_panel"], SWITCH["border_soft"], 0.45), SWITCH["border_soft"])
+    _rounded(draw, [width - 297, 18, width - 208, 50], 7, SWITCH["card"], mix(SWITCH["border_soft"], SWITCH["shadow_soft"], 0.28), 1)
+    draw.text((width - 252, 34), "设备存档", font=fonts["small"], fill=ink, anchor="mm")
+    draw.text((width - 159, 34), "本地存档", font=fonts["small"], fill=muted, anchor="mm")
+    _rounded(draw, [width - 98, 14, width - 22, 54], 8, SWITCH["card"], SWITCH["border_soft"])
+    draw.text((width - 60, 34), "设置", font=fonts["small"], fill=ink, anchor="mm")
 
 
 def _draw_dock(draw, body_top: int, body_bottom: int, state: AppState, fonts: dict) -> int:
@@ -301,7 +302,7 @@ def _draw_dock(draw, body_top: int, body_bottom: int, state: AppState, fonts: di
 
     divider_y = body_top + 18 + len(PLATFORM_ORDER) * 66
     draw.line([22, divider_y, dock_w - 22, divider_y], fill=SWITCH["border_soft"])
-    actions = (("●", "DEMO 掌机"), ("⟳", "刷新设备"), ("＋", "添加设备"), ("▣", "其他设备"), ("⇩", "FTP 拉取"), ("□", "本地存档"))
+    actions = (("●", "DEMO 掌机"), ("⟳", "刷新设备"), ("＋", "添加设备"), ("▣", "其他设备"), ("⇩", "FTP 拉取"))
     for index, (icon, label) in enumerate(actions):
         y = divider_y + 18 + index * 34
         color = SWITCH["status_green"] if index == 0 else SWITCH["muted_strong"]
@@ -310,29 +311,29 @@ def _draw_dock(draw, body_top: int, body_bottom: int, state: AppState, fonts: di
     return dock_w
 
 
-def _case_geometry(platform: str, available_width: int = GALLERY_CARD_WIDTH) -> tuple[int, int]:
+def _case_geometry(platform: str, available_width: int = GALLERY_CARD_WIDTH, cover_aspect: Optional[float] = None) -> tuple[int, int]:
     """Mirror ``GalleryCanvas._case_size`` for the offline Pillow preview."""
-    ratios = {
-        "switch": 0.72,
-        "psp": 1.06,
-        "vita": 0.98,
-        "3ds": 0.90,
-        "nds": 0.90,
-        "gba": 1.18,
-    }
-    ratio = ratios.get(platform, 0.78)
-    max_w = max(1, int(available_width - 18))
-    max_h = GALLERY_DISPLAY_HEIGHT - 12
-    width = min(max_w, int(max_h * ratio))
-    height = min(max_h, int(width / ratio))
-    return max(1, width), max(1, height)
+    return gallery_case_size(
+        platform,
+        cell_width=available_width,
+        case_height=GALLERY_DISPLAY_HEIGHT,
+        cover_aspect=cover_aspect,
+    )
 
 
 def _draw_case(image, draw, save: SaveEntry, x: int, shelf_y: int, selected: bool, state: AppState, fonts: dict, available_width: int = GALLERY_CARD_WIDTH) -> None:
-    case_w, case_h = _case_geometry(save.platform, available_width)
-    # The cases sit directly on the rear edge of the tray.  The previous
-    # preview-only offset left a visible floating gap that the live Canvas did
-    # not have and made the shelf read like a detached stripe.
+    from PIL import Image
+
+    cover_path = resolve_cover(save, state.library_root)
+    cover_aspect = None
+    if cover_path:
+        try:
+            with Image.open(cover_path) as im:
+                if im.height > 0:
+                    cover_aspect = im.width / im.height
+        except Exception:
+            pass
+    case_w, case_h = _case_geometry(save.platform, available_width, cover_aspect=cover_aspect)
     y = shelf_y - case_h
     shadow = mix(SWITCH["line_strong"], SWITCH["window"], 0.38)
     contact_shadow = mix(darken(SWITCH["shadow_deep"], 0.10), SWITCH["fog_canvas"], 0.28)
@@ -344,23 +345,15 @@ def _draw_case(image, draw, save: SaveEntry, x: int, shelf_y: int, selected: boo
     if selected:
         _rounded(draw, [x - 8, y - 8, x + case_w + 8, shelf_y + 2], 12, SWITCH["selected_soft"], SWITCH["accent"], 3)
     _rounded(draw, [x + 7, y + 8, x + case_w + 9, shelf_y + 2], 8, shadow)
-    _rounded(draw, [x, y, x + case_w, shelf_y - 2], 7, SWITCH["card"], SWITCH["line_strong"], 2)
-    draw.line([x + 8, y + 1, x + case_w - 8, y + 1], fill=SWITCH["shelf_highlight"], width=1)
-    draw.line([x + case_w - 1, y + 8, x + case_w - 1, shelf_y - 10], fill=SWITCH["shadow_soft"], width=1)
-    draw.line([x + 8, shelf_y - 3, x + case_w - 8, shelf_y - 3], fill=SWITCH["shadow_soft"], width=1)
-    draw.line([x + 5, y + 4, x + case_w - 5, y + 4], fill=SWITCH["window"], width=2)
 
-    # The platform identity is a 3px pip only; the artwork itself owns all
-    # saturated colour (the same rule as the live Canvas gallery).
-    pip = PLATFORM_COLORS.get(save.platform, SWITCH["accent"])
-    draw.rectangle([x - 3, y + 12, x, y + case_h - 12], fill=pip)
-    cover_path = resolve_cover(save, state.library_root)
-    art_h = case_h - 12
-    thumb = load_thumbnail(cover_path, case_w - 12, art_h, radius=2) if cover_path else None
+    thumb = load_thumbnail(cover_path, case_w, case_h, radius=5) if cover_path else None
     if thumb is not None:
-        image.paste(thumb, (x + 6, y + 6), thumb)
+        image.paste(thumb, (x, y), thumb)
+        border = SWITCH["accent"] if selected else mix(SWITCH["line"], SWITCH["shadow_deep"], 0.28)
+        _rounded(draw, [x, y, x + case_w, y + case_h], 5, None, border, 2 if selected else 1)
     else:
-        draw.rectangle([x + 6, y + 6, x + case_w - 6, shelf_y - 8], fill=SWITCH["surface_alt"])
+        _rounded(draw, [x, y, x + case_w, shelf_y - 2], 6, SWITCH["card"], SWITCH["line_strong"], 2 if selected else 1)
+        draw.line([x + 8, y + 1, x + case_w - 8, y + 1], fill=SWITCH["shelf_highlight"], width=1)
         draw.text((x + case_w / 2, y + case_h / 2), save.display_name[:10], font=fonts["body"], fill=SWITCH["ink"], anchor="mm")
 
 

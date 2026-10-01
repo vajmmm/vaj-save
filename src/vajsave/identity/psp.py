@@ -41,10 +41,30 @@ def _find_param_sfo(directory) -> Optional[Path]:
     return None
 
 
+import re
+
+
+def _clean_psp_title_id(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    cleaned = str(raw).strip()
+    m = re.match(r"^([A-Za-z]{4}\d{5})", cleaned)
+    if m:
+        return m.group(1).upper()
+    return cleaned.upper() if cleaned else None
+
+
 def resolve(entry, ctx) -> GameIdentityResult:
-    entry_title_id = str(getattr(entry, "title_id", None) or "").strip()
+    entry_title_id = _clean_psp_title_id(getattr(entry, "title_id", None))
+    raw_title_id = str(getattr(entry, "title_id", None) or "").strip()
     display = str(getattr(entry, "display_name", None) or "").strip()
-    if entry_title_id and display and display != entry_title_id:
+    if (
+        entry_title_id
+        and display
+        and display != entry_title_id
+        and display != raw_title_id
+        and _clean_psp_title_id(display) != entry_title_id
+    ):
         identity = GameIdentity(
             identity_key=f"psp:{entry_title_id}",
             platform=PLATFORM,
@@ -57,9 +77,9 @@ def resolve(entry, ctx) -> GameIdentityResult:
     sfo_path = _find_param_sfo(entry.path)
     sfo_data = parse_sfo(sfo_path) if sfo_path is not None else {}
     title_id = (
-        sfo_data.get("TITLE_ID")
-        or sfo_data.get("SAVEDATA_DIRECTORY")
-        or entry.title_id
+        _clean_psp_title_id(sfo_data.get("TITLE_ID"))
+        or _clean_psp_title_id(sfo_data.get("SAVEDATA_DIRECTORY"))
+        or entry_title_id
     )
     title = sfo_data.get("TITLE") or entry.display_name or title_id
     source = SOURCE_SFO if sfo_data else SOURCE_METADATA

@@ -53,6 +53,8 @@ def test_specs_bundle_the_metadata_index():
         text = spec.read_text(encoding="utf-8")
         assert '"data"' in text
         assert 'src" / "vajsave" / "data' in text
+        assert '"artwork"' in text
+        assert 'src" / "vajsave" / "artwork' in text
 
 
 def test_bundled_index_is_readable_as_a_package_resource():
