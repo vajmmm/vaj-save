@@ -12,8 +12,11 @@ bad body can be rejected before it reaches the cache.
 
 from __future__ import annotations
 
+import logging
 import urllib.request
 from typing import Any, Callable, Optional
+
+logger = logging.getLogger("vajsave.artwork.downloader")
 
 DEFAULT_TIMEOUT = 5.0
 
@@ -52,9 +55,11 @@ class ArtworkDownloader:
         """Return the body of ``url`` or ``None`` on any failure or oversize."""
         if not url:
             return None
+        logger.debug("发起封面 HTTP 请求: %s", url)
         try:
             response = self._urlopen(url, timeout=self.timeout)
-        except Exception:  # noqa: BLE001 - 404/offline/timeout all mean "no cover"
+        except Exception as exc:  # noqa: BLE001 - 404/offline/timeout all mean "no cover"
+            logger.debug("封面 HTTP 请求未成功 [%s]: %s", exc, url)
             return None
         try:
             return self._read_response(response)
@@ -71,18 +76,23 @@ class ArtworkDownloader:
         if status is None:
             status = getattr(response, "code", None)
         if status is not None and int(status) != 200:
+            logger.debug("HTTP 状态码异常 (%s): %s", status, getattr(response, "url", ""))
             return None
         try:
             # Read one byte past the cap so an oversize body is detectable
             # without buffering the whole thing.
             data = response.read(self.max_bytes + 1)
-        except Exception:  # noqa: BLE001 - a broken connection is just "no cover"
+        except Exception as exc:  # noqa: BLE001 - a broken connection is just "no cover"
+            logger.debug("读取响应流失败 [%s]: %s", exc, getattr(response, "url", ""))
             return None
         if not data or len(data) > self.max_bytes:
+            logger.debug("下载数据为空或超出字节上限 (%d 字节)", len(data) if data else 0)
             return None
         if self._declared_length(response) not in (None, len(data)):
             # Content-Length promised more than arrived -> truncated download.
+            logger.debug("响应数据长度与 Content-Length 不符，丢弃截断数据")
             return None
+        logger.info("封面图片下载完成 (%d 字节): %s", len(data), getattr(response, "url", ""))
         return data
 
     @staticmethod

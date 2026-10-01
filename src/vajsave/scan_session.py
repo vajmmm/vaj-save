@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Union
+
+logger = logging.getLogger("vajsave.scan_session")
 
 from .device_registry import bound_sources_from_result, device_key_for
 from .library import (
@@ -177,6 +180,7 @@ class ScanSession:
         """在主线程切换到待扫描设备，并清除上一设备的展示状态。"""
         app = self.app
         path = Path(mount_point)
+        logger.info("准备切换并扫描目标设备: %s (自动触发=%s)", path, auto)
         if app.library_mode or app.current_mount != path:
             app.selected_platform = "all"
         app.library_mode = False
@@ -200,16 +204,23 @@ class ScanSession:
             # Pull the device into its cache on the scanning worker before the
             # cache is scanned, so Qt never needs a new dialog.  A failed pull
             # is reported as a warning and never raises into the UI thread.
+            logger.info("DBI MTP 设备检测到，正在拉取最新存档缓存: %s", path)
             pull = self.app.mtp.pull_mount(path)
             if not pull.ok:
                 pull_error = pull.error or "拉取失败"
+                logger.warning("DBI MTP 存档缓存拉取失败: %s", pull_error)
+            else:
+                logger.info("DBI MTP 存档缓存拉取完成: %s", path)
         key = device_key_for(path, extra)
         bound = None
         if key and not refresh:
             bound = self.app.device_registry.usable_sources(key, path) or None
+            if bound:
+                logger.info("找到设备可用绑定来源: %d 个", len(bound))
         try:
             res = self._invoke_scan(path, bound_sources=bound)
         except Exception as e:
+            logger.error("扫描过程抛出未捕获异常 [%s]: %s", path, e, exc_info=True)
             res = ScanResult(
                 root_path=str(path),
                 platform="unknown",
@@ -250,6 +261,12 @@ class ScanSession:
         counts = {"new": 0, "changed": 0, "unchanged": 0}
         for status in statuses.values():
             counts[status.status] = counts.get(status.status, 0) + 1
+        logger.info(
+            "初检存档状态完成: 共 %d 个存档 (新增 %d, 待核对 %d)",
+            len(res.saves),
+            counts.get("new", 0),
+            counts.get("checking", 0),
+        )
         return PreparedMountScan(
             mount_point=path,
             result=res,
@@ -285,6 +302,7 @@ class ScanSession:
             else:
                 pending.append(entry)
         if pending:
+            logger.info("开始深度核对 %d 个已建库存档的完整性哈希与版本变更...", len(pending))
             def _hash_one(item: SaveEntry) -> Tuple[str, Optional[str], Optional[BaseException]]:
                 try:
                     return item.path, _hash_tree(Path(item.path)), None
@@ -311,19 +329,25 @@ class ScanSession:
             for entry in pending:
                 digest, err = by_path[entry.path]
                 if err is not None:
-                    status_warnings.append(
-                        f"计算存档哈希失败: {entry.display_name or entry.path}: {err}"
-                    )
+                    msg = f"计算存档哈希失败: {entry.display_name or entry.path}: {err}"
+                    logger.warning(msg)
+                    status_warnings.append(msg)
                     statuses[entry.path] = classify_save_status(
                         entry, catalog, hash_error=True
                     )
                 else:
-                    statuses[entry.path] = classify_save_status(
-                        entry, catalog, digest=digest
-                    )
+                    st = classify_save_status(entry, catalog, digest=digest)
+                    statuses[entry.path] = st
+                    logger.debug("存档状态确认: [%s] %s -> %s", entry.platform, entry.display_name or entry.path, st.status)
         counts = {"new": 0, "changed": 0, "unchanged": 0}
         for status in statuses.values():
             counts[status.status] = counts.get(status.status, 0) + 1
+        logger.info(
+            "存档状态深度核对完毕: 新增 %d, 发生变更 %d, 已备份 %d",
+            counts.get("new", 0),
+            counts.get("changed", 0),
+            counts.get("unchanged", 0),
+        )
         return statuses, status_warnings, counts
 
     def prepare_backup_statuses(

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Set, Union
+
+logger = logging.getLogger("vajsave.scanner")
 
 from .device_registry import BoundSource
 from .models import SaveEntry, SaveSource, ScanResult
@@ -280,12 +283,15 @@ def _scan_root(
 ) -> ScanResult:
     root = Path(root_path)
     warnings: List[str] = []
+    logger.info("开始扫描设备目录: %s", root)
 
     try:
         # ``is_dir`` already reports false for a missing path. Avoiding a separate
         # ``exists`` call saves a full metadata round-trip on network-mounted cards.
         if not root.is_dir():
-            warnings.append(f"Target path does not exist or is not a directory: {root}")
+            msg = f"Target path does not exist or is not a directory: {root}"
+            logger.warning(msg)
+            warnings.append(msg)
             return ScanResult(
                 root_path=str(root),
                 platform="unknown",
@@ -295,7 +301,9 @@ def _scan_root(
             )
         root_resolved = root.resolve()
     except Exception as e:
-        warnings.append(f"Failed to access root path {root}: {e}")
+        msg = f"Failed to access root path {root}: {e}"
+        logger.warning(msg)
+        warnings.append(msg)
         return ScanResult(
             root_path=str(root),
             platform="unknown",
@@ -324,16 +332,22 @@ def _scan_root(
         allowed = {item.platform for item in bound_list}
         scanners = [item for item in all_scanners if item[0] in allowed]
         standard_root = True
+        logger.info("使用已绑定的来源路径进行扫描 (平台: %s)", ", ".join(sorted(allowed)))
     else:
         detected = _detected_platforms(root)
         # Recognised device roots use only scanners backed by an explicit shallow
         # fingerprint. Unknown paths retain the broad wrapper-compatible behaviour.
         scanners = [item for item in all_scanners if not detected or item[0] in detected]
         standard_root = bool(detected)
+        if detected:
+            logger.info("设备特征识别命中平台: %s", ", ".join(sorted(detected)))
+        else:
+            logger.info("未匹配到特定平台目录特征，执行全平台兼容器扫描")
     with scan_cache():
         total = len(scanners)
         for index, (platform_id, scan_fn) in enumerate(scanners, start=1):
             label = PLATFORM_PROGRESS_LABELS.get(platform_id, platform_id)
+            logger.info("正在执行平台扫描器 [%s] (%d/%d)...", label, index, total)
             emit_scan_progress(
                 f"正在扫描 {label}… 已发现 {len(saves)} 个存档",
                 index - 1,
@@ -362,6 +376,7 @@ def _scan_root(
                     seen_save_paths,
                     standard_root=standard_root,
                 )
+            logger.info("平台扫描器 [%s] 扫描完成，累计发现 %d 个存档", label, len(saves))
             emit_scan_progress(
                 f"正在扫描 {label}… 已发现 {len(saves)} 个存档",
                 index,
@@ -384,7 +399,9 @@ def _scan_root(
         cover = find_embedded_cover(entry.path, max_depth=1)
         if cover is not None:
             entry.cover_path = str(cover)
+            logger.info("发现存档内置封面: [%s] '%s' -> %s", entry.platform, entry.display_name or entry.path, cover)
 
+    logger.info("扫描完成: %s (主平台: %s, 识别存档数: %d, 来源数: %d)", root, platform, len(saves), len(sources))
     return ScanResult(
         root_path=str(root),
         platform=platform,

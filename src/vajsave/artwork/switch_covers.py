@@ -19,12 +19,15 @@ from __future__ import annotations
 
 import gzip
 import json
+import logging
 import re
 import threading
 import unicodedata
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
+logger = logging.getLogger("vajsave.artwork.switch")
 
 from .providers import Artwork, ArtworkProvider
 
@@ -443,9 +446,11 @@ class GameTDBSwitchProvider(ArtworkProvider):
         """Return Artwork candidates for a Title ID trying primary region then US/EN/JA/ZH."""
         match = self.lookup_by_title_id(title_id)
         if not match:
+            logger.debug("[GameTDB] Title ID %s 未在 GameTDB 实体库中匹配到盒装编号", title_id)
             return []
         gid, reg = match
         canonical = get_switch_title_for_id(title_id) or str(title_id)
+        logger.debug("[GameTDB] Title ID %s 命中 GameTDB: 编号 %s (主区域: %s)", title_id, gid, reg)
         artworks: List[Artwork] = []
         seen_regions = set()
         for r in (reg, "US", "EN", "JA", "ZH"):
@@ -561,7 +566,9 @@ class NlibSwitchProvider(ArtworkProvider):
         # Fast path: check local database first!
         known = get_switch_title_for_id(clean_id)
         if known:
+            logger.debug("[Nlib] 本地数据库命中 Title ID %s: '%s'", clean_id, known)
             return known
+        logger.debug("[Nlib] 本地未命中，正在向 Nlib-API 请求解析 Title ID %s...", clean_id)
         url = f"{NLIB_API_BASE}/{clean_id}?lang=en&fields=name"
         try:
             req = urllib.request.Request(
@@ -581,8 +588,12 @@ class NlibSwitchProvider(ArtworkProvider):
             raw = resp.read()
             payload = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
             name = payload.get("name")
-            return str(name).strip() if name else None
-        except Exception:  # noqa: BLE001
+            if name:
+                logger.info("[Nlib] Nlib-API 解析成功: Title ID %s -> '%s'", clean_id, name)
+                return str(name).strip()
+            return None
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[Nlib] Nlib-API 解析请求未完成 [%s]: %s", exc, url)
             return None
 
 
