@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QDialog,
+    QFrame,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -874,8 +875,25 @@ def test_topbar_exposes_starred_filter_and_backup_updated(qt_app, qt_state):
         assert window.backup_updated.text() == "备份有更新"
         assert window.cancel_job.text() == "取消"
         assert window.cancel_job.isHidden()
+        assert not hasattr(window, "help")
+        topbar = window.findChild(QFrame, "topbar")
+        topbar_button_texts = [btn.text() for btn in topbar.findChildren(QPushButton)]
+        assert "帮助" not in topbar_button_texts
         window.starred_only.click()
         assert qt_state.starred_only is True
+    finally:
+        window.close()
+
+
+def test_dock_omits_moved_actions(qt_app, qt_state):
+    window = VajSaveWindow(qt_state)
+    try:
+        dock_texts = [btn.text() for btn in window.dock.findChildren(QToolButton)]
+        assert "添加设备" not in dock_texts
+        assert "其他设备" not in dock_texts
+        assert "FTP 拉取" not in dock_texts
+        assert "刷新设备" in dock_texts
+        assert "本地存档" in dock_texts
     finally:
         window.close()
 
@@ -901,6 +919,9 @@ def test_main_settings_exposes_auto_backup_gb_gbc_and_browse(qt_app, qt_state):
         found["auto"] = dialog.findChild(QCheckBox, "autoBackupOnInsert")
         found["gb"] = dialog.findChild(QLineEdit, "gbRomDirectory")
         found["gbc"] = dialog.findChild(QLineEdit, "gbcRomDirectory")
+        found["add_dev"] = dialog.findChild(QPushButton, "addDeviceBtn")
+        found["choose_dev"] = dialog.findChild(QPushButton, "chooseDeviceBtn")
+        found["ftp"] = dialog.findChild(QPushButton, "ftpBtn")
         found["browse"] = [
             button for button in dialog.findChildren(QPushButton) if button.text() == "浏览…"
         ]
@@ -914,6 +935,9 @@ def test_main_settings_exposes_auto_backup_gb_gbc_and_browse(qt_app, qt_state):
         assert found["auto"].isChecked() is False
         assert found["gb"] is not None
         assert found["gbc"] is not None
+        assert found["add_dev"] is not None
+        assert found["choose_dev"] is not None
+        assert found["ftp"] is not None
         assert len(found["browse"]) >= 6
     finally:
         window.close()

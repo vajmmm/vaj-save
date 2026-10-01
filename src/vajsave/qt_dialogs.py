@@ -200,6 +200,9 @@ class LLMSettingsDialog(QDialog):
 
 class SettingsDialog(QDialog):
     llm_requested = Signal()
+    add_device_requested = Signal()
+    choose_device_requested = Signal()
+    ftp_requested = Signal()
 
     def __init__(self, state: AppState, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -208,6 +211,26 @@ class SettingsDialog(QDialog):
         self.setMinimumWidth(560)
         form = QFormLayout(self)
         library_row, self.library = _dir_row(self, str(state.library_root), "libraryDirectory")
+
+        device_row = QHBoxLayout()
+        device_row.setSpacing(8)
+        self.add_device_btn = _button("添加设备…", "fa6s.plus")
+        self.add_device_btn.setObjectName("addDeviceBtn")
+        self.add_device_btn.clicked.connect(self.add_device_requested.emit)
+
+        self.choose_device_btn = _button("其他设备…", "fa6s.display")
+        self.choose_device_btn.setObjectName("chooseDeviceBtn")
+        self.choose_device_btn.clicked.connect(self.choose_device_requested.emit)
+
+        self.ftp_btn = _button("FTP 拉取…", "fa6s.cloud-arrow-down")
+        self.ftp_btn.setObjectName("ftpBtn")
+        self.ftp_btn.clicked.connect(self.ftp_requested.emit)
+
+        device_row.addWidget(self.add_device_btn)
+        device_row.addWidget(self.choose_device_btn)
+        device_row.addWidget(self.ftp_btn)
+        device_row.addStretch(1)
+
         gba_row, self.gba = _dir_row(self, str(state.gba_rom_dir or ""), "gbaRomDirectory")
         nds_row, self.nds = _dir_row(self, str(state.nds_rom_dir or ""), "ndsRomDirectory")
         gb_row, self.gb = _dir_row(self, str(state.gb_rom_dir or ""), "gbRomDirectory")
@@ -220,6 +243,7 @@ class SettingsDialog(QDialog):
         self.auto_backup.setObjectName("autoBackupOnInsert")
         self.auto_backup.setChecked(state.auto_backup_on_insert)
         form.addRow("本地备份库", library_row)
+        form.addRow("掌机/外部设备", device_row)
         form.addRow("GBA ROM 目录", gba_row)
         form.addRow("NDS ROM 目录", nds_row)
         form.addRow("GB ROM 目录", gb_row)

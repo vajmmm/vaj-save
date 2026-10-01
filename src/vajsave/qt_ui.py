@@ -333,9 +333,6 @@ class PlatformDock(QFrame):
         layout.addLayout(row)
         actions = (
             ("刷新设备", "fa6s.arrows-rotate", self.refresh_requested),
-            ("添加设备", "fa6s.plus", self.add_requested),
-            ("其他设备", "fa6s.display", self.devices_requested),
-            ("FTP 拉取", "fa6s.cloud-arrow-down", self.ftp_requested),
             ("本地存档", "fa6s.folder", self.library_requested),
         )
         for text, icon_name, signal in actions:
@@ -1213,14 +1210,12 @@ class VajSaveWindow(QMainWindow):
         self.backup_updated.setObjectName("backupUpdated")
         self.backup_updated.setFixedHeight(38)
         self.settings = _button("设置", "fa6s.gear")
-        self.help = _button("帮助", "fa6s.circle-question")
         for button in (
             self.sort,
             self.only_updates,
             self.starred_only,
             self.backup_updated,
             self.settings,
-            self.help,
         ):
             top.addWidget(button)
         self.stats = QLabel("已备份 0 款游戏 · 0 个版本")
@@ -1277,7 +1272,6 @@ class VajSaveWindow(QMainWindow):
         self.starred_only.clicked.connect(self._toggle_starred)
         self.backup_updated.clicked.connect(self._backup_updated)
         self.settings.clicked.connect(self._show_settings)
-        self.help.clicked.connect(self._show_help)
         self.watch.clicked.connect(self._toggle_watch)
         self.cancel_job.clicked.connect(self.state.cancel_job)
         self.dock.platform_selected.connect(self._select_platform)
@@ -1921,12 +1915,52 @@ class VajSaveWindow(QMainWindow):
     def _show_settings(self) -> None:
         dialog = SettingsDialog(self.state, self)
         dialog.llm_requested.connect(lambda: self._open_llm_from_settings(dialog))
+        dialog.add_device_requested.connect(lambda: self._add_device_from_settings(dialog))
+        dialog.choose_device_requested.connect(lambda: self._choose_device_from_settings(dialog))
+        dialog.ftp_requested.connect(lambda: self._show_ftp_from_settings(dialog))
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         if not dialog.apply():
             QMessageBox.warning(self, "设置", "保留版本数必须是非负整数。")
         self._enrichment_attempted.clear()
         self.refresh_all()
+
+    def _add_device_from_settings(self, settings: SettingsDialog) -> None:
+        path = QFileDialog.getExistingDirectory(settings, "选择掌机或存档目录")
+        if path:
+            settings.apply()
+            settings.accept()
+            custom_path = self.state.register_custom_path(path)
+            self._request_mount_scan(custom_path)
+
+    def _choose_device_from_settings(self, settings: SettingsDialog) -> None:
+        self.state.refresh_volumes()
+        dialog = DevicePickerDialog(self.state.volumes, settings)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            mount = dialog.selected_mount()
+            if mount:
+                settings.apply()
+                settings.accept()
+                self._request_mount_scan(mount)
+
+    def _show_ftp_from_settings(self, settings: SettingsDialog) -> None:
+        dialog = FtpDialog(self.state, settings)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        dialog.configure()
+        settings.apply()
+        settings.accept()
+
+        def task(token):
+            return self.state.pull_ftp_saves(token=token)
+
+        def completed(result) -> None:
+            if result is not None and not getattr(result, "ok", True):
+                QMessageBox.warning(
+                    self, "FTP 拉取失败", getattr(result, "error", None) or "未知错误"
+                )
+
+        self._run_device_task(("ftp-pull",), task, completed, error_title="FTP 拉取失败")
 
     def _open_llm_from_settings(self, settings: SettingsDialog) -> None:
         if self._show_llm_settings(settings):
