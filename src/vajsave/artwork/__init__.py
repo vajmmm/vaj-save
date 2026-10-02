@@ -56,11 +56,26 @@ from .providers import (
     psp_title_candidates,
     sanitize_libretro_filename,
 )
+from .retroflow_covers import RetroFlowCoverProvider
 from .switch_covers import (
     GameTDBSwitchProvider,
     NlibSwitchProvider,
     normalize_switch_title,
     switch_title_candidates,
+)
+from .cleaner import delete_game_covers
+from .embedded import (
+    EMBEDDED_COVER_NAMES,
+    EMBEDDED_ICON_NAMES,
+    IMAGE_EXTENSIONS,
+    find_embedded_cover,
+)
+from .paths import (
+    DOWNLOADED_COVER_DIR,
+    downloaded_cover_path,
+    identity_hash,
+    resolve_cover,
+    user_cover_path,
 )
 from .service import (
     PLACEHOLDER,
@@ -71,6 +86,11 @@ from .service import (
     ArtworkResolution,
     ArtworkService,
     resolve_artwork,
+)
+from .thumbnails import (
+    DEFAULT_THUMBNAIL_RADIUS,
+    MAX_COVER_RESIZE_DIMENSION,
+    load_thumbnail,
 )
 
 # Historical aliases (pre-rename) kept so older imports keep working.
@@ -87,6 +107,7 @@ __all__ = [
     "LIBRETRO_SYSTEM_NAMES",
     "PSP_TITLE_ALIASES",
     "psp_title_candidates",
+    "RetroFlowCoverProvider",
     "GameTDBSwitchProvider",
     "NlibSwitchProvider",
     "normalize_switch_title",
@@ -119,6 +140,8 @@ __all__ = [
     "MANIFEST_FIELDS",
     "MAX_COVER_ASPECT_RATIO",
     "MAX_COVER_BYTES",
+    "MAX_COVER_RESIZE_DIMENSION",
+    "DEFAULT_THUMBNAIL_RADIUS",
     "is_portrait_image_bytes",
     "is_portrait_image_file",
     "is_valid_image_bytes",
@@ -130,4 +153,15 @@ __all__ = [
     "SOURCE_DOWNLOADED",
     "SOURCE_EMBEDDED",
     "SOURCE_PLACEHOLDER",
+    "delete_game_covers",
+    "find_embedded_cover",
+    "user_cover_path",
+    "downloaded_cover_path",
+    "resolve_cover",
+    "load_thumbnail",
+    "IMAGE_EXTENSIONS",
+    "EMBEDDED_ICON_NAMES",
+    "EMBEDDED_COVER_NAMES",
+    "DOWNLOADED_COVER_DIR",
+    "identity_hash",
 ]

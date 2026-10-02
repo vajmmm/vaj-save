@@ -38,7 +38,8 @@ from typing import Callable, Iterable, List, Optional, Sequence, Tuple, Union
 
 logger = logging.getLogger("vajsave.artwork.service")
 
-from ..covers import find_embedded_cover, user_cover_path
+from .embedded import find_embedded_cover
+from .paths import user_cover_path
 from .boxart_index import (
     ambiguous_boxart_matches,
     concatenation_boxart_candidates,
@@ -56,6 +57,7 @@ from .providers import (
     libretro_title_candidates,
     psp_title_candidates,
 )
+from .retroflow_covers import RetroFlowCoverProvider, clean_playstation_title_id
 from .switch_covers import (
     GameTDBSwitchProvider,
     NlibSwitchProvider,
@@ -235,6 +237,7 @@ class ArtworkService:
         if providers is None:
             self.providers: List[ArtworkProvider] = [
                 LibretroThumbnailProvider(),
+                RetroFlowCoverProvider(),
                 GameTDBSwitchProvider(),
                 NlibSwitchProvider(),
             ]
@@ -482,14 +485,111 @@ class ArtworkService:
                             )
                             if stored is not None:
                                 return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
+        elif plat == "vita":
+            # 1. Curated / regional Libretro candidate names
+            names = list(libretro_title_candidates(title))
+            if names:
+                logger.info("[vita] 尝试游戏名称候选匹配封面: %s", names[:5])
+            seen = set()
+            for candidate in names:
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
+                artwork = self.ref_for(plat, candidate)
+                if artwork is None:
+                    continue
+                stored = self._store_artwork(
+                    artwork, identity_key=identity_key, platform=plat
+                )
+                if stored is not None:
+                    return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
+
+            # 2. If Libretro candidate names 404, fallback to RetroFlow physical retail box art by Title ID
+            ps_tid = None
+            for cand_id in (
+                title_id,
+                getattr(entry, "title_id", None),
+                getattr(entry, "save_id", None),
+                identity_key,
+                title,
+            ):
+                cleaned = clean_playstation_title_id(cand_id)
+                if cleaned:
+                    ps_tid = cleaned
+                    break
+
+            if ps_tid:
+                logger.info("[vita] 正在尝试 RetroFlow 实体盒装封面 (Title ID: %s)...", ps_tid)
+                for provider in self.providers:
+                    if isinstance(provider, RetroFlowCoverProvider):
+                        for art in provider.cover_candidates_for_title_id("vita", ps_tid):
+                            stored = self._store_artwork(
+                                art, identity_key=identity_key, platform=plat
+                            )
+                            if stored is not None:
+                                return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
+
+            # 3. Last-resort fallback: Libretro directory listing
+            downloaded = self._download_from_listing(
+                plat, names, identity_key=identity_key
+            )
+            if downloaded is not None:
+                return downloaded
+        elif plat == "psp":
+            # PSP: 1. Curated / regional Libretro candidate names
+            names = list(psp_title_candidates(title, title_id))
+            if names:
+                logger.info("[psp] 尝试游戏名称候选匹配封面: %s", names[:5])
+            seen = set()
+            for candidate in names:
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
+                artwork = self.ref_for(plat, candidate)
+                if artwork is None:
+                    continue
+                stored = self._store_artwork(
+                    artwork, identity_key=identity_key, platform=plat
+                )
+                if stored is not None:
+                    return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
+
+            # 2. If Libretro candidate names 404, fallback to RetroFlow physical UMD retail box art by Title ID
+            ps_tid = None
+            for cand_id in (
+                title_id,
+                getattr(entry, "title_id", None),
+                getattr(entry, "save_id", None),
+                identity_key,
+                title,
+            ):
+                cleaned = clean_playstation_title_id(cand_id)
+                if cleaned:
+                    ps_tid = cleaned
+                    break
+
+            if ps_tid:
+                logger.info("[psp] 正在尝试 RetroFlow 实体盒装封面 (Title ID: %s)...", ps_tid)
+                for provider in self.providers:
+                    if isinstance(provider, RetroFlowCoverProvider):
+                        for art in provider.cover_candidates_for_title_id("psp", ps_tid):
+                            stored = self._store_artwork(
+                                art, identity_key=identity_key, platform=plat
+                            )
+                            if stored is not None:
+                                return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
+
+            # 3. Last-resort fallback: Libretro directory listing
+            downloaded = self._download_from_listing(
+                plat, names, identity_key=identity_key
+            )
+            if downloaded is not None:
+                return downloaded
         else:
             names = []
             if plat == "3ds" and title_id:
                 names.extend(self._3ds_names_for_title_id(title_id))
-            if plat == "psp":
-                names.extend(psp_title_candidates(title, title_id))
-            else:
-                names.extend(libretro_title_candidates(title))
+            names.extend(libretro_title_candidates(title))
             if names:
                 logger.info("[%s] 尝试游戏名称候选匹配封面: %s", plat, names[:5])
             seen = set()

@@ -9,6 +9,7 @@ from typing import Callable, List, Optional, Sequence, Set, Union
 logger = logging.getLogger("vajsave.scanner")
 
 from .device_registry import BoundSource
+from .homebrew import filter_homebrew_saves
 from .models import SaveEntry, SaveSource, ScanResult
 from .covers import find_embedded_cover
 from .platforms import gb, gba, gbc, nds, psp, switch, threeds, vita
@@ -388,6 +389,10 @@ def _scan_root(
     else:
         unique_platforms = list(dict.fromkeys(s.platform for s in sources))
         platform = unique_platforms[0]
+
+    # Filter out homebrew utilities, system tools, and non-game apps:
+    # homebrew software does not have actual game saves and is excluded from save management.
+    saves = filter_homebrew_saves(saves)
 
     # Fill embedded cover icons during the scan: a bounded, read-only lookup of
     # well-known icon names inside each save folder (never a disk-wide walk).

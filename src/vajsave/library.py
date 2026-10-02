@@ -3,111 +3,72 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
-import os
-import re
 import shutil
 import stat
 import sys
 import threading
-from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from .artwork import delete_game_covers
+from .artwork.cleaner import (
+    _cover_stems_for_game as _cover_stems,
+    _delete_cover_file,
+    _downloaded_cover_keys,
+)
+from .library_models import (
+    _UNSAFE,
+    BackupResult,
+    Catalog,
+    GameDeletion,
+    GameRecord,
+    SaveBackupStatus,
+    Snapshot,
+    game_key,
+    sanitize_name,
+)
+from .library_status import (
+    _parse_iso_datetime,
+    classify_save_status,
+    path_mtime_iso,
+)
 from .models import SaveEntry
 from .persistence import atomic_write_json
+from .save_tree import (
+    _HASH_CACHE_MAX,
+    _HASH_CHUNK,
+    _cache_get,
+    _cache_put,
+    _copy_dir,
+    _dir_file_list,
+    _file_fingerprint,
+    _hash_cache,
+    _hash_cache_lock,
+    _update_from_file,
+    copy_save_tree,
+    hash_tree,
+)
+from .settings_store import (
+    APP_CONFIG_ENV,
+    APP_CONFIG_NAME,
+    APP_DIR_NAME,
+    config_path,
+    default_library_root,
+    load_app_config,
+    save_app_config,
+)
 
-_UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 CATALOG_NAME = "catalog.json"
 SETTINGS_NAME = "settings.json"
-APP_CONFIG_NAME = "config.json"
-APP_DIR_NAME = "vaj-save"
-APP_CONFIG_ENV = "VAJSAVE_CONFIG_PATH"
 DEFAULT_KEEP_LAST = 10
-_HASH_CHUNK = 1024 * 1024
-_HASH_CACHE_MAX = 2048
-_hash_cache: Dict[Tuple[Any, ...], str] = {}
-_hash_cache_lock = threading.Lock()
 
 # In-process cache of parsed catalogs, keyed by (resolved catalog path,
-# mtime_ns, size). The stored :class:`Catalog` is treated as immutable: every
-# ``load_catalog`` returns a deep copy, and ``save_catalog`` stores a copy, so
-# callers that mutate the object they got (or are about to write) can never
-# corrupt the cache seen by another thread. A changed mtime/size simply misses,
-# and a corrupt read is never cached, so a broken file self-heals once fixed.
+# mtime_ns, size). The stored :class:`Catalog` is treated as immutable.
 _CATALOG_CACHE_MAX = 128
-_catalog_cache: Dict[Tuple[str, int, int], "Catalog"] = {}
+_catalog_cache: Dict[Tuple[str, int, int], Catalog] = {}
 _catalog_cache_lock = threading.Lock()
-
-
-def default_library_root() -> Path:
-    return Path.home() / "Documents" / "vaj-save"
-
-
-def config_path() -> Path:
-    """Location of the application config file (never inside the library root).
-
-    ``VAJSAVE_CONFIG_PATH`` overrides everything (used by tests).
-    """
-    override = os.environ.get(APP_CONFIG_ENV)
-    if override:
-        return Path(override)
-    if sys.platform == "win32":
-        base = os.environ.get("APPDATA")
-        base_path = Path(base) if base else Path.home() / "AppData" / "Roaming"
-        return base_path / APP_DIR_NAME / APP_CONFIG_NAME
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / APP_DIR_NAME / APP_CONFIG_NAME
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    base_path = Path(xdg) if xdg else Path.home() / ".config"
-    return base_path / APP_DIR_NAME / APP_CONFIG_NAME
-
-
-def load_app_config() -> Dict[str, Any]:
-    """Read the app config. Missing/corrupt/unreadable files degrade to {}."""
-    path = config_path()
-    try:
-        if not path.is_file():
-            return {}
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    return data
-
-
-def save_app_config(config: Dict[str, Any]) -> bool:
-    """Persist the app config atomically. Returns False on write failure."""
-    path = config_path()
-    tmp = path.with_name(path.name + ".tmp")
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(path)
-    except (OSError, TypeError, ValueError):
-        # TypeError/ValueError guard against a non-serialisable caller payload;
-        # drop any half-written temp file so it cannot linger next to the config.
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
-        return False
-    return True
-
-
-def sanitize_name(name: str, fallback: str = "untitled") -> str:
-    cleaned = _UNSAFE.sub("_", (name or "").strip()).strip(" .")
-    return cleaned or fallback
-
-
-def game_key(entry: SaveEntry) -> str:
-    platform = sanitize_name(entry.platform or "unknown", "unknown")
-    title = sanitize_name(entry.title_id or entry.display_name or "untitled")
-    slot = sanitize_name(entry.slot or entry.user or "default", "default")
-    return f"{platform}:{title}:{slot}"
 
 
 def destination_for(
@@ -120,336 +81,6 @@ def destination_for(
     title = sanitize_name(entry.title_id or entry.display_name or "untitled")
     slot = sanitize_name(entry.slot or entry.user or "default", "default")
     return Path(library_root) / platform / title / slot / stamp
-
-
-def _update_from_file(digest: Any, path: Path) -> None:
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(_HASH_CHUNK)
-            if not chunk:
-                break
-            digest.update(chunk)
-
-
-def _file_fingerprint(path: Path) -> Tuple[Any, ...]:
-    st = path.stat()
-    return ("file", str(path.resolve()), st.st_mtime_ns, st.st_size)
-
-
-def _dir_file_list(root: Path) -> List[Tuple[Path, str, int, int]]:
-    files: List[Tuple[Path, str, int, int]] = []
-    root_str = str(root)
-    for dirpath, dirnames, filenames in os.walk(root_str, followlinks=False):
-        dirnames[:] = [
-            d for d in dirnames if not os.path.islink(os.path.join(dirpath, d))
-        ]
-        for fname in filenames:
-            fpath = os.path.join(dirpath, fname)
-            if os.path.islink(fpath):
-                continue
-            try:
-                st = os.stat(fpath)
-                if not stat.S_ISREG(st.st_mode):
-                    continue
-            except OSError:
-                continue
-            child = Path(fpath)
-            rel = child.relative_to(root).as_posix()
-            files.append((child, rel, st.st_mtime_ns, st.st_size))
-    files.sort(key=lambda item: item[1])
-    return files
-
-
-def _cache_get(key: Tuple[Any, ...]) -> Optional[str]:
-    with _hash_cache_lock:
-        return _hash_cache.get(key)
-
-
-def _cache_put(key: Tuple[Any, ...], value: str) -> None:
-    with _hash_cache_lock:
-        if len(_hash_cache) >= _HASH_CACHE_MAX:
-            _hash_cache.clear()
-        _hash_cache[key] = value
-
-
-def hash_tree(path: Path) -> str:
-    """Stable sha256 of a file or directory (skips symlinks). Streamed; stat-cacheable."""
-    root = Path(path)
-    if not root.exists():
-        raise FileNotFoundError(f"存档路径不存在: {root}")
-    if root.is_symlink():
-        raise ValueError(f"跳过符号链接: {root}")
-    if root.is_file():
-        cache_key = _file_fingerprint(root)
-        cached = _cache_get(cache_key)
-        if cached is not None:
-            return cached
-        digest = hashlib.sha256()
-        digest.update(b"file\0")
-        _update_from_file(digest, root)
-        hexdigest = digest.hexdigest()
-        _cache_put(cache_key, hexdigest)
-        return hexdigest
-
-    listed = _dir_file_list(root)
-    cache_key = ("dir", str(root.resolve()), tuple((rel, mtime, size) for _p, rel, mtime, size in listed))
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        return cached
-    digest = hashlib.sha256()
-    for child, rel, _mtime, size in listed:
-        digest.update(rel.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(str(size).encode("ascii"))
-        digest.update(b"\0")
-        _update_from_file(digest, child)
-    hexdigest = digest.hexdigest()
-    _cache_put(cache_key, hexdigest)
-    return hexdigest
-
-
-def copy_save_tree(source: Path, dest_dir: Path) -> Path:
-    """Copy a file or directory into dest_dir, skipping symlinks."""
-    source = Path(source)
-    dest_dir = Path(dest_dir)
-    if not source.exists():
-        raise FileNotFoundError(f"存档路径不存在: {source}")
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    target = dest_dir / source.name
-    if source.is_symlink():
-        raise ValueError(f"跳过符号链接: {source}")
-    if source.is_file():
-        shutil.copyfile(source, target, follow_symlinks=False)
-        return target
-    if not source.is_dir():
-        raise ValueError(f"无法复制: {source}")
-    _copy_dir(source, target)
-    return target
-
-
-def _copy_dir(source: Path, dest: Path) -> None:
-    dest.mkdir(parents=True, exist_ok=True)
-    for child in sorted(source.iterdir()):
-        if child.is_symlink():
-            continue
-        next_dest = dest / child.name
-        if child.is_dir():
-            _copy_dir(child, next_dest)
-        elif child.is_file():
-            shutil.copyfile(child, next_dest, follow_symlinks=False)
-
-
-@dataclass
-class Snapshot:
-    id: str
-    created_at: str
-    sha256: str
-    source_path: str
-    path: str
-    slot: Optional[str] = None
-    user: Optional[str] = None
-
-    def absolute_path(self, library_root: Path) -> Path:
-        return Path(library_root) / self.path
-
-
-@dataclass
-class GameRecord:
-    id: str
-    platform: str
-    title_id: str
-    display_name: str
-    versions: List[Snapshot] = field(default_factory=list)
-    starred: bool = False
-    note: str = ""
-    # ROM identity key (``<platform>:sha1:<hex>`` / ``<platform>:<title_id>`` ...)
-    # captured when the backup ran, so browsing the local library can hit the
-    # identity-hash cover cache without re-resolving against a device. ``None``
-    # for legacy records: a missing key is never fabricated, so an unidentified
-    # game keeps its placeholder cover.
-    identity_key: Optional[str] = None
-
-    def find_hash(self, digest: str) -> Optional[Snapshot]:
-        for snap in self.versions:
-            if snap.sha256 == digest:
-                return snap
-        return None
-
-
-@dataclass
-class BackupResult:
-    game: GameRecord
-    snapshot: Snapshot
-    is_new: bool
-    path: Path
-
-
-@dataclass
-class GameDeletion:
-    """Outcome of deleting one catalog game from the local library.
-
-    ``ok`` is only true when the catalog entry was fully removed and nothing
-    failed; a partial failure keeps the affected snapshots (and the catalog
-    entry) so the delete is never reported as a full success.
-    """
-
-    game_id: str
-    found: bool = False
-    removed: bool = False
-    snapshots_removed: int = 0
-    snapshots_retained: int = 0
-    covers_removed: List[str] = field(default_factory=list)
-    errors: List[str] = field(default_factory=list)
-
-    @property
-    def ok(self) -> bool:
-        return self.found and self.removed and not self.errors
-
-
-@dataclass
-class SaveBackupStatus:
-    """Compare a live save against the latest library snapshot only."""
-
-    status: str  # "new" | "changed" | "unchanged"
-    source_mtime: Optional[str] = None
-    last_backup_at: Optional[str] = None
-    mtime_stale: bool = False
-    sha256: Optional[str] = None
-
-
-def path_mtime_iso(path: Union[Path, str]) -> Optional[str]:
-    """ISO mtime of the path itself (file or directory root; no tree walk)."""
-    try:
-        target = Path(path)
-        if not target.exists():
-            return None
-        return datetime.fromtimestamp(target.stat().st_mtime).isoformat(timespec="seconds")
-    except OSError:
-        return None
-
-
-def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value)
-    except ValueError:
-        return None
-
-
-def classify_save_status(
-    entry: SaveEntry,
-    catalog: Catalog,
-    *,
-    digest: Optional[str] = None,
-    hash_error: bool = False,
-) -> SaveBackupStatus:
-    """Classify entry vs latest snapshot hash. mtime only annotates changed saves."""
-    source_mtime = path_mtime_iso(entry.path)
-    game = catalog.games.get(game_key(entry))
-    latest: Optional[Snapshot] = game.versions[-1] if game and game.versions else None
-    last_backup_at = latest.created_at if latest else None
-
-    if hash_error:
-        # Hash failed: keep row actionable as new; do not infer from history.
-        return SaveBackupStatus(
-            status="new",
-            source_mtime=source_mtime,
-            last_backup_at=last_backup_at,
-            mtime_stale=False,
-            sha256=None,
-        )
-
-    if latest is None:
-        return SaveBackupStatus(
-            status="new",
-            source_mtime=source_mtime,
-            last_backup_at=None,
-            mtime_stale=False,
-            sha256=digest,
-        )
-
-    if digest is None:
-        try:
-            digest = hash_tree(Path(entry.path))
-        except (OSError, ValueError, FileNotFoundError):
-            return SaveBackupStatus(
-                status="new",
-                source_mtime=source_mtime,
-                last_backup_at=last_backup_at,
-                mtime_stale=False,
-                sha256=None,
-            )
-
-    if digest == latest.sha256:
-        # Content match wins; ignore mtime jitter on FAT/USB.
-        return SaveBackupStatus(
-            status="unchanged",
-            source_mtime=source_mtime,
-            last_backup_at=last_backup_at,
-            mtime_stale=False,
-            sha256=digest,
-        )
-
-    mtime_stale = False
-    src_dt = _parse_iso_datetime(source_mtime)
-    bak_dt = _parse_iso_datetime(last_backup_at)
-    if src_dt is not None and bak_dt is not None and src_dt < bak_dt:
-        mtime_stale = True
-
-    return SaveBackupStatus(
-        status="changed",
-        source_mtime=source_mtime,
-        last_backup_at=last_backup_at,
-        mtime_stale=mtime_stale,
-        sha256=digest,
-    )
-
-
-class Catalog:
-    def __init__(self, games: Optional[Dict[str, GameRecord]] = None) -> None:
-        self.games: Dict[str, GameRecord] = games or {}
-
-    def to_dict(self) -> Dict[str, Any]:
-        games: List[Dict[str, Any]] = []
-        for game in self.games.values():
-            data = asdict(game)
-            # Keep catalogs clean for games whose identity is unknown yet.
-            if data.get("identity_key") is None:
-                data.pop("identity_key", None)
-            games.append(data)
-        return {"version": 1, "games": games}
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Catalog":
-        games: Dict[str, GameRecord] = {}
-        for raw in data.get("games") or []:
-            versions = []
-            for item in raw.get("versions") or []:
-                versions.append(
-                    Snapshot(
-                        id=item.get("id") or "",
-                        created_at=item.get("created_at") or "",
-                        sha256=item.get("sha256") or "",
-                        source_path=item.get("source_path") or "",
-                        path=item.get("path") or "",
-                        slot=item.get("slot"),
-                        user=item.get("user"),
-                    )
-                )
-            raw_key = raw.get("identity_key")
-            record = GameRecord(
-                id=raw["id"],
-                platform=raw.get("platform") or "unknown",
-                title_id=raw.get("title_id") or "",
-                display_name=raw.get("display_name") or "",
-                versions=versions,
-                starred=bool(raw.get("starred")),
-                note=str(raw.get("note") or ""),
-                identity_key=(str(raw_key).strip() or None) if raw_key else None,
-            )
-            games[record.id] = record
-        return cls(games)
 
 
 def catalog_path(library_root: Path) -> Path:
@@ -649,7 +280,11 @@ def _delete_snapshot_payload(snapshot: Snapshot, library_root: Path) -> bool:
         return False
 
 
-def prune_game_versions(game: GameRecord, library_root: Path, keep_last: int) -> None:
+def prune_game_versions(
+    game: GameRecord,
+    library_root: Path,
+    keep_last: Optional[int] = None,
+) -> None:
     """Drop oldest in-library versions beyond keep_last. keep_last<=0 means no prune.
 
     Deletes disk first; catalog entry is removed only after successful delete or
@@ -657,6 +292,8 @@ def prune_game_versions(game: GameRecord, library_root: Path, keep_last: int) ->
     deletes retain their catalog entries. Newest keep_last entries are never
     candidates for removal.
     """
+    if keep_last is None:
+        keep_last = load_keep_last(library_root)
     if keep_last <= 0:
         return
     # Only the oldest prefix beyond keep_last is eligible; skip (retain) entries
@@ -671,97 +308,8 @@ def prune_game_versions(game: GameRecord, library_root: Path, keep_last: int) ->
             i += 1
 
 
-def _delete_cover_file(path: Path, covers_root: Path) -> bool:
-    """Delete a cover file only when it resolves strictly inside ``covers_root``."""
-    try:
-        if path.is_symlink() or not path.is_file():
-            return False
-        root_resolved = Path(covers_root).resolve()
-        resolved = path.resolve()
-    except OSError:
-        return False
-    if resolved == root_resolved:
-        return False
-    try:
-        resolved.relative_to(root_resolved)
-    except ValueError:
-        return False
-    try:
-        resolved.unlink()
-    except OSError:
-        return False
-    return True
-
-
-def _cover_stems(game: GameRecord) -> List[str]:
-    """User-cover file-name stems for a game (title id, then display name)."""
-    stems: List[str] = []
-    for raw in (game.title_id, game.display_name):
-        cleaned = sanitize_name(raw or "", "").strip(" .")
-        if cleaned and cleaned.lower() not in {stem.lower() for stem in stems}:
-            stems.append(cleaned)
-    return stems
-
-
-def _downloaded_cover_keys(game: GameRecord, cache: Any) -> List[str]:
-    """Identity keys whose downloaded cover belongs to ``game``.
-
-    A persisted ``identity_key`` is authoritative. A legacy record without one is
-    only matched when the manifest names exactly one cover for this platform and
-    title; anything ambiguous is left alone (the app never guesses a hash cover).
-    """
-    if game.identity_key:
-        return [game.identity_key]
-    title = str(game.display_name or "").strip().lower()
-    platform = str(game.platform or "").strip()
-    if not title:
-        return []
-    matches = set()
-    for key, record in cache.manifest().items():
-        if str(record.get("platform", "")).strip() != platform:
-            continue
-        canonical = str(record.get("canonical_title", "")).strip().lower()
-        if canonical and canonical == title:
-            matches.add(str(key))
-    return list(matches) if len(matches) == 1 else []
-
-
-def _delete_game_covers(library_root: Path, game: GameRecord) -> Tuple[List[str], List[str]]:
-    """Remove this game's downloaded + user covers; return (removed, errors)."""
-    from .artwork.cache import CoverCache
-    from .covers import DOWNLOADED_COVER_DIR, IMAGE_EXTENSIONS
-
-    removed: List[str] = []
-    errors: List[str] = []
-    covers_root = Path(library_root) / DOWNLOADED_COVER_DIR
-    try:
-        cache = CoverCache(covers_root)
-        for key in _downloaded_cover_keys(game, cache):
-            for path in cache.remove(game.platform, key):
-                removed.append(str(path))
-    except Exception as exc:  # noqa: BLE001 - a cover failure must not abort the delete
-        errors.append(f"封面删除失败: {exc}")
-    directory = covers_root / sanitize_name(game.platform or "unknown", "unknown")
-    targets = {
-        f"{stem}.{ext}".lower()
-        for stem in _cover_stems(game)
-        for ext in IMAGE_EXTENSIONS
-    }
-    if targets:
-        try:
-            entries = list(directory.iterdir())
-        except OSError:
-            entries = []
-        for entry in entries:
-            # Match like ``user_cover_path`` does: case-insensitively.
-            if entry.name.lower() not in targets:
-                continue
-            try:
-                if _delete_cover_file(entry, covers_root):
-                    removed.append(str(entry))
-            except OSError as exc:
-                errors.append(f"封面删除失败: {exc}")
-    return removed, errors
+# Internal cover helpers re-exported/aliased for compatibility
+_delete_game_covers = delete_game_covers
 
 
 def delete_game(library_root: Path, game_id: str) -> GameDeletion:
@@ -802,7 +350,7 @@ def delete_game(library_root: Path, game_id: str) -> GameDeletion:
     if not retained:
         result.removed = True
 
-    covers_removed, cover_errors = _delete_game_covers(root, game)
+    covers_removed, cover_errors = delete_game_covers(root, game)
     result.covers_removed = covers_removed
     result.errors.extend(cover_errors)
     return result
@@ -819,9 +367,7 @@ def backup_save(
 
     ``identity_key`` is the ROM identity resolved by the caller. It is stored on
     the :class:`GameRecord` so browsing the local library can hit covers cached
-    under ``covers/<platform>/<sha1(identity_key)>.png``. A missing key backfills
-    an existing record; an unresolved key (``None``) never erases a stored one,
-    and the catalog id itself (:func:`game_key`) is never derived from it.
+    under ``covers/<platform>/<sha1(identity_key)>.png``.
     """
     root = Path(library_root)
     digest = hash_tree(Path(entry.path))
@@ -841,15 +387,10 @@ def backup_save(
         )
         catalog.games[key] = game
     elif resolved_key and not game.identity_key:
-        # Backfill a missing key on an existing record, but never overwrite a
-        # stored key (with None or a different value): the recorded identity is
-        # what already-cached covers are keyed by.
         game.identity_key = resolved_key
         catalog_dirty = True
     existing = game.find_hash(digest)
     if existing is not None:
-        # Identical content reuses the snapshot and must not prune. A backfilled
-        # identity_key still has to be persisted.
         if catalog_dirty:
             save_catalog(root, catalog)
         return BackupResult(game=game, snapshot=existing, is_new=False, path=existing.absolute_path(root))
@@ -904,10 +445,6 @@ def versions_for(catalog: Catalog, entry: SaveEntry) -> List[Snapshot]:
     return list(game.versions)
 
 
-# --- local library browsing -------------------------------------------------
-
-# ``source_id`` stamped on synthetic rows that represent a catalog game rather
-# than a live device save.
 LIBRARY_SOURCE_ID = "library"
 
 
@@ -923,11 +460,7 @@ def game_recency(game: GameRecord) -> str:
 
 
 def library_game_slot(game_id: str) -> Optional[str]:
-    """Recover the slot component from a catalog id ``platform:title:slot``.
-
-    ``game_key`` sanitizes every component (colons are stripped), so a catalog id
-    always splits into exactly three parts.
-    """
+    """Recover the slot component from a catalog id ``platform:title:slot``."""
     parts = str(game_id or "").split(":")
     if len(parts) == 3:
         return parts[2]
@@ -935,12 +468,7 @@ def library_game_slot(game_id: str) -> Optional[str]:
 
 
 def game_entry(game: GameRecord, library_root: Union[Path, str]) -> SaveEntry:
-    """A synthetic save row representing one catalog game for library browsing.
-
-    The row points at the newest snapshot (so versions/export/restore operate on
-    real library payload) and carries the catalog id in ``extra`` so every
-    lookup keeps resolving against the same :class:`GameRecord`.
-    """
+    """A synthetic save row representing one catalog game for library browsing."""
     root = Path(library_root)
     latest = latest_snapshot(game)
     if latest is not None:
@@ -950,8 +478,6 @@ def game_entry(game: GameRecord, library_root: Union[Path, str]) -> SaveEntry:
     extra: Dict[str, Any] = {"library_game_id": game.id}
     identity_key = getattr(game, "identity_key", None)
     if identity_key:
-        # Carried on the row so cover/metadata lookups keep using the ROM
-        # identity the cache was written under, without a per-row catalog read.
         extra["identity_key"] = identity_key
     return SaveEntry(
         platform=game.platform or "unknown",
@@ -1021,3 +547,54 @@ def collection_stats(library_root: Path) -> Dict[str, int]:
         "versions": sum(len(game.versions) for game in catalog.games.values()),
         "starred": sum(1 for game in catalog.games.values() if game.starred),
     }
+
+
+__all__ = [
+    "APP_CONFIG_ENV",
+    "APP_CONFIG_NAME",
+    "APP_DIR_NAME",
+    "CATALOG_NAME",
+    "DEFAULT_KEEP_LAST",
+    "LIBRARY_SOURCE_ID",
+    "SETTINGS_NAME",
+    "BackupResult",
+    "Catalog",
+    "GameDeletion",
+    "GameRecord",
+    "SaveBackupStatus",
+    "Snapshot",
+    "backup_save",
+    "catalog_entries",
+    "catalog_path",
+    "classify_save_status",
+    "collection_stats",
+    "config_path",
+    "copy_save_tree",
+    "default_library_root",
+    "delete_game",
+    "destination_for",
+    "ensure_game",
+    "export_snapshot_zip",
+    "game_entry",
+    "game_key",
+    "game_recency",
+    "hash_tree",
+    "import_save",
+    "is_inside_library",
+    "latest_snapshot",
+    "library_game_slot",
+    "load_app_config",
+    "load_catalog",
+    "load_keep_last",
+    "parse_keep_last",
+    "path_mtime_iso",
+    "prune_game_versions",
+    "restore_snapshot",
+    "sanitize_name",
+    "save_app_config",
+    "save_catalog",
+    "save_keep_last",
+    "set_game_meta",
+    "settings_path",
+    "versions_for",
+]

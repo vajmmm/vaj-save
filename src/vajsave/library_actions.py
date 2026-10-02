@@ -29,6 +29,7 @@ from .library import (
     set_game_meta,
     versions_for,
 )
+from .homebrew import is_homebrew_or_tool
 from .models import SaveEntry
 from .platforms.catalog import PLATFORM_LABELS, PLATFORM_ORDER
 from .scan_session import _hash_tree, build_status_text
@@ -115,7 +116,11 @@ class LibraryActions:
         """
         app = self.app
         catalog = load_catalog(app.library_root)
-        entries = catalog_entries(catalog, app.library_root)
+        entries = [
+            e
+            for e in catalog_entries(catalog, app.library_root)
+            if not is_homebrew_or_tool(e)
+        ]
         app._backup_statuses = {}
         for entry in entries:
             game = catalog.games.get(entry.extra.get("library_game_id"))

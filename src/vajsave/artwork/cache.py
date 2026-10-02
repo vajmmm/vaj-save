@@ -31,15 +31,22 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+import hashlib
+
 logger = logging.getLogger("vajsave.artwork.cache")
 
-from ..covers import DOWNLOADED_COVER_DIR, identity_hash
 from ..persistence import atomic_write_bytes, atomic_write_json
 
 # Directory (under the library root) that holds the covers/ tree.
+DOWNLOADED_COVER_DIR = "covers"
 COVER_CACHE_DIR = DOWNLOADED_COVER_DIR
 MANIFEST_NAME = "manifest.json"
 _VERSION = 1
+
+
+def identity_hash(identity_key: Any) -> str:
+    """Stable on-disk name for a game identity: ``sha1(identity_key)`` hex."""
+    return hashlib.sha1(str(identity_key or "").encode("utf-8")).hexdigest()
 
 # Fields every manifest record must carry (the acceptance contract).
 MANIFEST_FIELDS = (
