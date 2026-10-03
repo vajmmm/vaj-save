@@ -137,6 +137,13 @@ class FakeRemoteFtpClient:
         base = str(remote_path or "/").rstrip("/")
         return f"{base}/{name}" if base else f"/{name}"
 
+    def __enter__(self) -> "FakeRemoteFtpClient":
+        return self.connect()
+
+    def __exit__(self, *_exc: object) -> bool:
+        self.close()
+        return False
+
     def connect(self) -> "FakeRemoteFtpClient":
         self.commands.append("CONNECT")
         self.connected = True
@@ -189,6 +196,38 @@ class FakeRemoteFtpClient:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(bytes(data))
         return len(data)
+
+    def make_dir(self, remote_path: str) -> None:
+        self.commands.append(("MKD", remote_path))
+        parts = [part for part in str(remote_path).split("/") if part]
+        curr = self.tree
+        for part in parts:
+            if part not in curr:
+                curr[part] = {}
+            curr = curr[part]
+
+    def upload(self, local_path: Path, remote_path: str) -> int:
+        self.commands.append(("STOR", remote_path))
+        data = Path(local_path).read_bytes()
+        parts = [part for part in str(remote_path).split("/") if part]
+        curr = self.tree
+        for part in parts[:-1]:
+            if part not in curr:
+                curr[part] = {}
+            curr = curr[part]
+        curr[parts[-1]] = data
+        return len(data)
+
+    def upload_dir(self, local_dir: Path, remote_dir: str, token: object = None) -> int:
+        self.make_dir(remote_dir)
+        total = 0
+        for child in sorted(Path(local_dir).iterdir()):
+            child_remote = f"{remote_dir.rstrip('/')}/{child.name}"
+            if child.is_dir():
+                total += self.upload_dir(child, child_remote, token=token)
+            elif child.is_file():
+                total += self.upload(child, child_remote)
+        return total
 
 
 def fake_client_factory(tree: Dict[str, Any], **kwargs: Any):

@@ -35,6 +35,37 @@ FTP_CACHE_DIRNAME = "ftp-cache"
 # Bounded recursion so a malformed/looping server listing cannot run away.
 _MAX_DEPTH = 16
 
+# Top-level directories that never contain save files (games, updates, media).
+# Skipping them prevents runaway scans over full console filesystems.
+SKIP_DIR_NAMES = frozenset(
+    {
+        "app",
+        "appmeta",
+        "patch",
+        "addcont",
+        "license",
+        "bgdl",
+        "video",
+        "music",
+        "picture",
+        "photos",
+        "nintendo",
+        "emummc",
+        "iso",
+        "games",
+        "gamez",
+        "ps3iso",
+        "psxiso",
+        "ps2iso",
+        "pspiso",
+        "wbfs",
+        "install",
+        "luma",
+        "$recycle.bin",
+        "system volume information",
+    }
+)
+
 
 @dataclass
 class FtpPullResult:
@@ -163,8 +194,10 @@ def _mirror(
         clean = sanitize_component(entry.name)
         if clean is None:
             continue
+        if entry.is_dir and (clean.lower() in SKIP_DIR_NAMES or entry.name.lower() in SKIP_DIR_NAMES):
+            continue
         target = _safe_local_join(local_dir, clean)
-        remote_child = remote_dir.rstrip("/") + "/" + clean
+        remote_child = remote_dir.rstrip("/") + "/" + (entry.name if entry.name.endswith(":") else clean)
         child_rel = _relative_posix(rel, clean)
         if entry.is_dir:
             child_files, child_bytes = _mirror(
@@ -241,15 +274,57 @@ def pull_preset(
         staging.mkdir(parents=True, exist_ok=True)
         old_root = final if final.is_dir() else None
         manifest = load_manifest(final) if old_root is not None else {}
-        files, total = _mirror(
-            client,
-            profile.path or "/",
-            staging,
-            old_root=old_root,
-            manifest=manifest,
-            files_out=files_out,
-            token=token,
-        )
+
+        target_paths = getattr(profile, "target_paths", ())
+        used_target = False
+        files = 0
+        total = 0
+
+        # If preset specifies targeted save paths and default path was kept, try targeted sync
+        if target_paths and (not profile.path or profile.path == "/"):
+            for target in target_paths:
+                _throw_if_cancelled(token)
+                try:
+                    entries = client.list_dir(target)
+                except Exception:
+                    continue
+                used_target = True
+                clean_parts = [
+                    sanitize_component(p)
+                    for p in target.replace("\\", "/").split("/")
+                    if p
+                ]
+                clean_parts = [p for p in clean_parts if p is not None]
+                if not clean_parts:
+                    continue
+                sub_staging = staging
+                for part in clean_parts:
+                    sub_staging = _safe_local_join(sub_staging, part)
+                sub_staging.mkdir(parents=True, exist_ok=True)
+
+                sub_files, sub_bytes = _mirror(
+                    client,
+                    target,
+                    sub_staging,
+                    old_root=old_root,
+                    manifest=manifest,
+                    files_out=files_out,
+                    token=token,
+                    rel="/".join(clean_parts),
+                )
+                files += sub_files
+                total += sub_bytes
+
+        if not used_target:
+            files, total = _mirror(
+                client,
+                profile.path or "/",
+                staging,
+                old_root=old_root,
+                manifest=manifest,
+                files_out=files_out,
+                token=token,
+            )
     except _FtpPullCancelled:
         _remove_tree(staging)
         if client is not None:

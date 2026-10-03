@@ -37,6 +37,11 @@ LIBRETRO_SYSTEM_NAMES = {
     "psp": "Sony - PlayStation Portable",
     "vita": "Sony - PlayStation Vita",
     "3ds": "Nintendo - Nintendo 3DS",
+    "ps3": "Sony - PlayStation 3",
+    "ps4": "Sony - PlayStation 4",
+    "wiiu": "Nintendo - Wii U",
+    "wii": "Nintendo - Wii",
+    "x360": "Microsoft - Xbox 360",
 }
 
 # libretro's canonical thumbnail sub-directories.

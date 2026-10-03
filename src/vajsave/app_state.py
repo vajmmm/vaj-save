@@ -156,6 +156,7 @@ class AppState:
         self._job_slot = JobSlot()
         self.warnings: List[str] = []
         self.library_mode: bool = False
+        self.selected_category: str = "all"
         self.selected_platform: str = "all"
         self.search_query: str = ""
         self.starred_only: bool = False
@@ -471,6 +472,9 @@ class AppState:
 
     def set_platform_filter(self, platform: str) -> None:
         return self.library_actions.set_platform_filter(platform)
+
+    def set_category(self, category: str) -> None:
+        return self.library_actions.set_category(category)
 
     def import_save(self, entry: SaveEntry) -> Optional[Path]:
         return self.library_actions.import_save(entry)

@@ -12,7 +12,7 @@ from .device_registry import BoundSource
 from .homebrew import filter_homebrew_saves
 from .models import SaveEntry, SaveSource, ScanResult
 from .covers import find_embedded_cover
-from .platforms import gb, gba, gbc, nds, psp, switch, threeds, vita
+from .platforms import gb, gba, gbc, nds, psp, ps3, ps4, switch, threeds, vita, wii, wiiu, x360
 from .platforms.common import (
     ScanProgress,
     collect_unique_dirs,
@@ -119,6 +119,44 @@ def _detected_platforms(base: Path) -> Set[str]:
     if any(has_dir(rel) for rel in ("roms/gbc", "EDGB", "GBOS")):
         detected.add("gbc")
 
+    if (
+        has_dir("PS3/SAVEDATA")
+        or has_dir("dev_hdd0/home")
+        or has_dir("dev_usb000/PS3/SAVEDATA")
+        or has_dir("dev_usb001/PS3/SAVEDATA")
+    ):
+        detected.add("ps3")
+
+    if (
+        has_dir("PS4/SAVEDATA")
+        or has_dir("user/home")
+        or has_dir("data/apollo")
+    ):
+        detected.add("ps4")
+
+    if (
+        has_dir("storage_mlc/usr/save/00050000")
+        or has_dir("storage_usb/usr/save/00050000")
+        or has_dir("usr/save/00050000")
+        or has_dir("wiiu/backups")
+        or has_dir("wiiu/saves")
+    ):
+        detected.add("wiiu")
+
+    if (
+        has_dir("savegames")
+        or has_dir("wiisaves")
+        or has_dir("title/00010000")
+    ):
+        detected.add("wii")
+
+    if (
+        has_dir("Content")
+        or has_dir("Hdd1/Content")
+        or has_dir("Usb0/Content")
+    ):
+        detected.add("x360")
+
     return detected
 
 
@@ -209,6 +247,49 @@ def guess_platform(root: Union[Path, str]) -> Optional[str]:
     if has_dir("roms/gbc"):
         return "gbc"
 
+    # PlayStation 3
+    if (
+        has_dir("PS3/SAVEDATA")
+        or has_dir("dev_hdd0/home")
+        or has_dir("dev_usb000/PS3/SAVEDATA")
+        or has_dir("dev_usb001/PS3/SAVEDATA")
+    ):
+        return "ps3"
+
+    # PlayStation 4
+    if (
+        has_dir("PS4/SAVEDATA")
+        or has_dir("user/home")
+        or has_dir("data/apollo")
+    ):
+        return "ps4"
+
+    # Nintendo Wii U
+    if (
+        has_dir("storage_mlc/usr/save/00050000")
+        or has_dir("storage_usb/usr/save/00050000")
+        or has_dir("usr/save/00050000")
+        or has_dir("wiiu/backups")
+        or has_dir("wiiu/saves")
+    ):
+        return "wiiu"
+
+    # Nintendo Wii
+    if (
+        has_dir("savegames")
+        or has_dir("wiisaves")
+        or has_dir("title/00010000")
+    ):
+        return "wii"
+
+    # Microsoft Xbox 360
+    if (
+        has_dir("Content")
+        or has_dir("Hdd1/Content")
+        or has_dir("Usb0/Content")
+    ):
+        return "x360"
+
     return None
 
 
@@ -221,6 +302,11 @@ PLATFORM_PROGRESS_LABELS = {
     "gb": "GB",
     "gbc": "GBC",
     "gba": "GBA",
+    "ps3": "PS3",
+    "ps4": "PS4",
+    "wiiu": "Wii U",
+    "wii": "Wii",
+    "x360": "Xbox 360",
 }
 
 
@@ -327,6 +413,11 @@ def _scan_root(
         ("gb", gb.scan_gb),
         ("gbc", gbc.scan_gbc),
         ("gba", gba.scan_gba),
+        ("ps3", ps3.scan_ps3),
+        ("ps4", ps4.scan_ps4),
+        ("wiiu", wiiu.scan_wiiu),
+        ("wii", wii.scan_wii),
+        ("x360", x360.scan_x360),
     )
     bound_list = [item for item in (bound_sources or ()) if item is not None]
     if bound_list:

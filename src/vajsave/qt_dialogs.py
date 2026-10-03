@@ -34,9 +34,11 @@ from .artwork import (
     default_base_url,
     default_model,
 )
+from .ftp_session import parse_port
 from .library import load_keep_last
 from .library_import import MANIFEST_NAME
 from .models import SaveEntry, VolumeInfo
+from .remote_ftp import FtpProfile, RemoteFtpClient, get_preset
 from .ui_theme import SWITCH
 
 
@@ -283,41 +285,147 @@ class SettingsDialog(QDialog):
         return state.set_keep_last(self.keep.text()) is not None
 
 
+PRESET_HINTS = {
+    "vita": "提示：在 PS Vita 的 VitaShell 中按 SELECT 键启动 FTP（默认端口 1337）",
+    "switch": "提示：在 Switch 上运行 sys-ftpd-light 后台模块或 JKSV/ftpd（默认端口 5000）",
+    "3ds": "提示：在 3DS 上启动 FTPD 应用，屏幕将显示当前 IP（默认端口 5000）",
+    "psp": "提示：在 PSP 上运行 PSP-FTPD 并连接 Wi-Fi 热点（默认端口 21）",
+    "nds": "提示：在烧录卡上运行 ftpd-nds 并连接 Wi-Fi 热点（默认端口 21）",
+    "ps3": "提示：在 PS3 上安装并开启 webMAN MOD 后台 FTP（默认端口 21）",
+    "ps4": "提示：在 PS4 上开启 GoldHEN 的 FTP 服务（默认端口 2121）",
+    "wiiu": "提示：在 Wii U 上运行 FTPiiU Everywhere 或 Aroma FTP 插件（默认端口 21）",
+    "wii": "提示：在 Wii 的 Homebrew Channel 中运行 ftpii 应用（默认端口 21）",
+    "x360": "提示：在 Xbox 360 上运行 Aurora 极光桌面或 DashLaunch FTP 服务（默认端口 21）",
+    "checkpoint": "提示：专用于 Checkpoint 导出的存档网络服务器（默认端口 5000）",
+    "ftpd": "提示：通用 FTP 协议，适用于各种自制设备与服务（默认端口 21）",
+}
+
+
+def _clean_host_and_port(raw_host: str, raw_port: str) -> tuple[str, str]:
+    text = str(raw_host or "").strip()
+    port = str(raw_port or "").strip()
+    if text.startswith("ftp://"):
+        text = text[6:]
+    elif text.startswith("http://"):
+        text = text[7:]
+    text = text.rstrip("/")
+    if ":" in text:
+        parts = text.split(":", 1)
+        text = parts[0]
+        if parts[1].isdigit():
+            port = parts[1]
+    return text, port
+
+
 class FtpDialog(QDialog):
     def __init__(self, state: AppState, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.state = state
-        self.setWindowTitle("FTP 只读拉取")
+        self.setWindowTitle("连接无线设备 / FTP 同步")
+        self.setMinimumWidth(400)
         form = QFormLayout(self)
+        form.setSpacing(8)
+
         self.preset = QComboBox()
         for profile in state.ftp_presets():
             self.preset.addItem(profile.label, profile.key)
         self.preset.setCurrentIndex(max(0, self.preset.findData(state.ftp_preset_key)))
-        self.host = QLineEdit(state.ftp_host)
+
+        self.hint = QLabel()
+        self.hint.setWordWrap(True)
+        self.hint.setStyleSheet(f"color: {SWITCH['muted_strong']}; font-size: 11px;")
+
+        self.host = QLineEdit(state.ftp_host or "192.168.")
+        self.host.setPlaceholderText("例如: 192.168.1.100 或直接粘贴屏幕地址")
         self.port = QLineEdit(str(state.ftp_port or ""))
-        self.user = QLineEdit(state.ftp_user)
+        self.user = QLineEdit(state.ftp_user or "anonymous")
         self.password = QLineEdit(state._ftp_password if state.ftp_remember_password else "")
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
         self.remember = QCheckBox("记住密码")
         self.remember.setObjectName("rememberFtpPassword")
         self.remember.setChecked(state.ftp_remember_password)
-        form.addRow("预设", self.preset)
-        form.addRow("主机", self.host)
+
+        current_key = self.preset.currentData()
+        current_profile = get_preset(current_key)
+        if not self.port.text().strip():
+            self.port.setText(str(current_profile.port or ""))
+        self._last_default_port = str(current_profile.port or "")
+        self.hint.setText(PRESET_HINTS.get(current_profile.key, current_profile.description))
+
+        self.preset.currentIndexChanged.connect(self._on_preset_changed)
+
+        form.addRow("设备平台", self.preset)
+        form.addRow("", self.hint)
+        form.addRow("主机 IP", self.host)
         form.addRow("端口", self.port)
-        form.addRow("用户", self.user)
+        form.addRow("用户名", self.user)
         form.addRow("密码", self.password)
         form.addRow("", self.remember)
+
+        test_row = QHBoxLayout()
+        self.btn_test = QPushButton("测试连接")
+        self.btn_test.setFixedWidth(80)
+        self.btn_test.clicked.connect(self._test_connection)
+        self.test_status = QLabel("")
+        self.test_status.setWordWrap(True)
+        self.test_status.setStyleSheet("font-size: 11px;")
+        test_row.addWidget(self.btn_test)
+        test_row.addWidget(self.test_status, 1)
+        form.addRow("", test_row)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
+        ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if ok_btn:
+            ok_btn.setText("连接并同步")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
 
+    def _test_connection(self) -> None:
+        clean_host, clean_port = _clean_host_and_port(self.host.text(), self.port.text())
+        self.host.setText(clean_host)
+        if clean_port:
+            self.port.setText(clean_port)
+        parsed_port = parse_port(clean_port) or 21
+        self.test_status.setText("正在测试连接…")
+        self.test_status.setStyleSheet(f"color: {SWITCH['muted_strong']}; font-size: 11px;")
+
+        factory = getattr(self.state, "_ftp_client_factory", None) or (
+            lambda p: RemoteFtpClient(p, timeout=5.0)
+        )
+        profile = FtpProfile(
+            key="test",
+            label="test",
+            host=clean_host,
+            port=parsed_port,
+            user=self.user.text() or "anonymous",
+            password=self.password.text(),
+        )
+        try:
+            with factory(profile) as client:
+                pass
+            self.test_status.setText("● 连接成功！掌机在线")
+            self.test_status.setStyleSheet(f"color: {SWITCH['status_green']}; font-size: 11px; font-weight: bold;")
+        except Exception as exc:
+            self.test_status.setText(f"● 无法连接: {exc}")
+            self.test_status.setStyleSheet("color: #dc3545; font-size: 11px;")
+
+    def _on_preset_changed(self) -> None:
+        key = self.preset.currentData()
+        profile = get_preset(key)
+        current_port = self.port.text().strip()
+        if not current_port or current_port == self._last_default_port:
+            self.port.setText(str(profile.port or ""))
+        self._last_default_port = str(profile.port or "")
+        self.hint.setText(PRESET_HINTS.get(profile.key, profile.description))
+
     def configure(self) -> None:
+        clean_host, clean_port = _clean_host_and_port(self.host.text(), self.port.text())
         self.state.configure_ftp(
-            self.host.text(),
-            self.port.text(),
+            clean_host,
+            clean_port,
             self.user.text(),
             self.password.text(),
             self.preset.currentData(),

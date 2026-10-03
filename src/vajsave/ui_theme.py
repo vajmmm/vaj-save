@@ -78,6 +78,11 @@ PLATFORM_COLORS: Dict[str, str] = {
     "gb": "#9aa56a",
     "gbc": "#ff6b8a",
     "gba": "#30d158",
+    "ps3": "#ff334b",
+    "ps4": "#003791",
+    "wiiu": "#009ac7",
+    "wii": "#5ea2d6",
+    "x360": "#52b043",
 }
 
 # Legacy row metrics remain exported for integrations that still import them;
@@ -119,6 +124,11 @@ GALLERY_CASE_ASPECT: Dict[str, float] = {
     "gba": 0.90,
     "gb": 0.92,
     "gbc": 0.92,
+    "ps3": 0.72,
+    "ps4": 0.72,
+    "wiiu": 0.71,
+    "wii": 0.71,
+    "x360": 0.71,
 }
 # Relative height against ``GALLERY_CELL_HEIGHT``/``CASE_H``. Switch and PSP
 # render at full height; the near-square handheld boxes are intentionally
@@ -133,6 +143,11 @@ GALLERY_CASE_SCALE: Dict[str, float] = {
     "gba": 0.66,
     "gb": 0.62,
     "gbc": 0.62,
+    "ps3": 1.0,
+    "ps4": 1.0,
+    "wiiu": 1.0,
+    "wii": 1.0,
+    "x360": 1.0,
 }
 GALLERY_CASE_DEFAULT_ASPECT = 0.78
 GALLERY_CASE_DEFAULT_SCALE = 0.80

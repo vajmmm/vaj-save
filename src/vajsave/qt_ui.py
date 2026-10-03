@@ -64,10 +64,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtSvg import QSvgRenderer
 
 from .app_state import PLATFORM_LABELS, PLATFORM_ORDER, AppState
+from .platforms.catalog import CONSOLE_PLATFORMS, HANDHELD_PLATFORMS
 from .artwork import MAX_COVER_ASPECT_RATIO, ArtworkLoader
-from .baidu_api import BaiduCredentialStore, BaiduNetdiskClient, BaiduSyncError
-from .baidu_sync import BaiduLibrarySync, SyncResult
-from .baidu_sync_dialog import BaiduSyncDialog
 from .identity import STATUS_AMBIGUOUS, STATUS_PARTIAL, STATUS_RESOLVED
 from .library import Snapshot
 from .models import SaveEntry
@@ -163,11 +161,25 @@ def _render_platform_logo(platform: str, svg: bytes, dpr: float) -> QPixmap:
     return canvas
 
 
+_PLATFORM_FA_ICONS = {
+    "all": "fa6s.table-cells-large",
+    "ps3": "fa6b.playstation",
+    "ps4": "fa6b.playstation",
+    "wii": "fa6s.gamepad",
+    "wiiu": "fa6s.tv",
+    "x360": "fa6b.xbox",
+}
+
+
 def _platform_icon(platform: str) -> QIcon:
     """按原始宽高比渲染官方平台标识，并统一为 Dock 的中性色。"""
     if platform in _PLATFORM_ICON_CACHE:
         return _PLATFORM_ICON_CACHE[platform]
-    if platform == "all" or platform not in _PLATFORM_LOGOS:
+    if platform in _PLATFORM_FA_ICONS:
+        icon = _icon(_PLATFORM_FA_ICONS[platform], SWITCH["muted_strong"], 0.88)
+        _PLATFORM_ICON_CACHE[platform] = icon
+        return icon
+    if platform not in _PLATFORM_LOGOS:
         icon = _icon("fa6s.table-cells-large", SWITCH["muted_strong"], 0.88)
         _PLATFORM_ICON_CACHE[platform] = icon
         return icon
@@ -287,22 +299,22 @@ def _button(text: str, icon_name: Optional[str] = None, *, primary: bool = False
 
 
 class PlatformButton(QToolButton):
-    """Dock 平台筛选按钮；“全部”显示名称，其余只显示品牌字标。"""
+    """Dock 平台筛选按钮；“全部”及主机平台显示名称，掌机显示品牌字标。"""
 
     def __init__(self, platform: str, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.platform = platform
         self.setIcon(_platform_icon(platform))
-        self.setIconSize(QSize(68, 28))
         label = PLATFORM_LABELS.get(platform, platform)
         self.setText(label)
         self.setToolTip(label)
         self.setAccessibleName(label)
-        self.setToolButtonStyle(
-            Qt.ToolButtonStyle.ToolButtonTextUnderIcon
-            if platform == "all"
-            else Qt.ToolButtonStyle.ToolButtonIconOnly
-        )
+        if platform in _PLATFORM_FA_ICONS:
+            self.setIconSize(QSize(28, 22))
+            self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+        else:
+            self.setIconSize(QSize(68, 28))
+            self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.setCheckable(True)
         self.setAutoExclusive(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -310,8 +322,58 @@ class PlatformButton(QToolButton):
         self.setProperty("platform", True)
 
 
+class CategorySwitcher(QFrame):
+    """Dock 顶部分类切换：掌机 vs 主机。"""
+
+    category_changed = Signal(str)
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("dockCategorySwitcher")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(2)
+
+        self.btn_handheld = QToolButton(self)
+        self.btn_handheld.setText("掌机")
+        self.btn_handheld.setCheckable(True)
+        self.btn_handheld.setChecked(True)
+        self.btn_handheld.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_handheld.setObjectName("btnCategoryHandheld")
+        self.btn_handheld.setFixedHeight(24)
+
+        self.btn_console = QToolButton(self)
+        self.btn_console.setText("主机")
+        self.btn_console.setCheckable(True)
+        self.btn_console.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_console.setObjectName("btnCategoryConsole")
+        self.btn_console.setFixedHeight(24)
+
+        self._group = QButtonGroup(self)
+        self._group.addButton(self.btn_handheld)
+        self._group.addButton(self.btn_console)
+        self._group.setExclusive(True)
+
+        layout.addWidget(self.btn_handheld, 1)
+        layout.addWidget(self.btn_console, 1)
+
+        self.btn_handheld.clicked.connect(lambda: self.category_changed.emit("handheld"))
+        self.btn_console.clicked.connect(lambda: self.category_changed.emit("console"))
+
+    def set_category(self, category: str) -> None:
+        self.btn_handheld.blockSignals(True)
+        self.btn_console.blockSignals(True)
+        if category == "console":
+            self.btn_console.setChecked(True)
+        else:
+            self.btn_handheld.setChecked(True)
+        self.btn_handheld.blockSignals(False)
+        self.btn_console.blockSignals(False)
+
+
 class PlatformDock(QFrame):
     platform_selected = Signal(str)
+    category_selected = Signal(str)
     refresh_requested = Signal()
     add_requested = Signal()
     devices_requested = Signal()
@@ -324,14 +386,24 @@ class PlatformDock(QFrame):
         self.setObjectName("platformDock")
         self.setFixedWidth(DOCK_WIDTH)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(9, 10, 9, 9)
+        layout.setContentsMargins(9, 8, 9, 9)
         layout.setSpacing(2)
+
+        self.current_category = "handheld"
+        self.category_switcher = CategorySwitcher(self)
+        self.category_switcher.category_changed.connect(self._on_category_changed)
+        layout.addWidget(self.category_switcher)
+        layout.addSpacing(2)
+
         self.buttons: dict[str, PlatformButton] = {}
         for key in PLATFORM_ORDER:
-            button = PlatformButton(key)
+            button = PlatformButton(key, self)
             button.clicked.connect(lambda _checked=False, platform=key: self.platform_selected.emit(platform))
             layout.addWidget(button)
             self.buttons[key] = button
+            if key in CONSOLE_PLATFORMS:
+                button.hide()
+
         self.buttons["all"].setChecked(True)
         layout.addStretch(1)
         line = QFrame()
@@ -350,6 +422,7 @@ class PlatformDock(QFrame):
         layout.addLayout(row)
         actions = (
             ("刷新设备", "fa6s.arrows-rotate", self.refresh_requested),
+            ("无线设备 (FTP)", "fa6s.wifi", self.ftp_requested),
         )
         for text, icon_name, signal in actions:
             layout.addWidget(self._action_button(text, icon_name, signal))
@@ -357,6 +430,29 @@ class PlatformDock(QFrame):
         self.import_zip.setObjectName("importZipDock")
         self.import_zip.hide()
         layout.addWidget(self.import_zip)
+
+    def _on_category_changed(self, category: str, emit: bool = True) -> None:
+        if category == self.current_category and not emit:
+            return
+        self.current_category = category
+        if category == "console":
+            for k in HANDHELD_PLATFORMS:
+                if k in self.buttons:
+                    self.buttons[k].hide()
+            for k in CONSOLE_PLATFORMS:
+                if k in self.buttons:
+                    self.buttons[k].show()
+        else:
+            for k in CONSOLE_PLATFORMS:
+                if k in self.buttons:
+                    self.buttons[k].hide()
+            for k in HANDHELD_PLATFORMS:
+                if k in self.buttons:
+                    self.buttons[k].show()
+        self.buttons["all"].setChecked(True)
+        if emit:
+            self.category_selected.emit(category)
+            self.platform_selected.emit("all")
 
     @staticmethod
     def _action_button(text: str, icon_name: str, signal) -> QToolButton:
@@ -371,8 +467,20 @@ class PlatformDock(QFrame):
         return button
 
     def set_current(self, platform: str) -> None:
+        if platform in CONSOLE_PLATFORMS:
+            if self.current_category != "console":
+                self.category_switcher.set_category("console")
+                self._on_category_changed("console", emit=False)
+        elif platform in HANDHELD_PLATFORMS:
+            if self.current_category != "handheld":
+                self.category_switcher.set_category("handheld")
+                self._on_category_changed("handheld", emit=False)
         if platform in self.buttons:
             self.buttons[platform].setChecked(True)
+
+    def set_category(self, category: str) -> None:
+        self.category_switcher.set_category(category)
+        self._on_category_changed(category, emit=True)
 
     def set_library_mode(self, enabled: bool) -> None:
         self.import_zip.setVisible(enabled)
@@ -1293,6 +1401,8 @@ class VajSaveWindow(QMainWindow):
     def __init__(self, state: Optional[AppState] = None) -> None:
         super().__init__()
         self.state = state or AppState()
+        if self.state.selected_category == "all":
+            self.state.selected_category = "handheld"
         self._selected: Optional[SaveEntry] = None
         self._versions: list[Snapshot] = []
         self._selected_snapshot: Optional[Snapshot] = None
@@ -1349,9 +1459,6 @@ class VajSaveWindow(QMainWindow):
         menu_actions = QMenu(self)
         menu_actions.addAction("导入 ZIP", self._import_zip)
         menu_actions.addAction("打开备份库", self._open_library)
-        menu_actions.addSeparator()
-        menu_actions.addAction("配置百度网盘…", self._configure_baidu_sync)
-        menu_actions.addAction("同步到百度网盘", self._sync_baidu_library)
         menu.setMenu(menu_actions)
         brand = QVBoxLayout()
         brand.setSpacing(0)
@@ -1503,6 +1610,7 @@ class VajSaveWindow(QMainWindow):
         self.log_button.clicked.connect(self._show_logs)
         self.cancel_job.clicked.connect(self.state.cancel_job)
         self.dock.platform_selected.connect(self._select_platform)
+        self.dock.category_selected.connect(self._select_category)
         self.dock.refresh_requested.connect(self._refresh_devices)
         self.dock.add_requested.connect(self._add_device)
         self.dock.devices_requested.connect(self._choose_device)
@@ -1554,6 +1662,9 @@ class VajSaveWindow(QMainWindow):
             QPushButton[primary='true']:hover {{ background: {SWITCH['accent_hover']}; }}
             QPushButton[dangerPrimary='true'] {{ background: {SWITCH['danger']}; }}
             #platformDock {{ background: {SWITCH['fog_panel']}; border-right: 1px solid {SWITCH['border_soft']}; }}
+            #dockCategorySwitcher {{ background: {SWITCH['surface_alt']}; border-radius: 7px; padding: 2px; }}
+            #dockCategorySwitcher QToolButton {{ background: transparent; border: 0; border-radius: 5px; font-size: 11px; font-weight: 600; color: {SWITCH['muted_strong']}; padding: 3px 0; }}
+            #dockCategorySwitcher QToolButton:checked {{ background: {SWITCH['card']}; color: {SWITCH['ink']}; font-weight: 700; }}
             QToolButton[platform='true'] {{ background: transparent; border: 0; border-radius: 9px; padding: 4px 2px; font-size: 11px; }}
             QToolButton[platform='true']:checked {{ background: {SWITCH['dock_selected']}; color: {SWITCH['accent']}; }}
             QToolButton[dockAction='true'] {{ background: transparent; border: 0; text-align: left; padding: 6px 4px; font-size: 11px; }}
@@ -1854,6 +1965,10 @@ class VajSaveWindow(QMainWindow):
 
     def _select_platform(self, platform: str) -> None:
         self.state.set_platform_filter(platform)
+        self.refresh_all(enrich=False)
+
+    def _select_category(self, category: str) -> None:
+        self.state.set_category(category)
         self.refresh_all(enrich=False)
 
     def _set_sort_mode(self, mode: str) -> None:
@@ -2322,59 +2437,6 @@ class VajSaveWindow(QMainWindow):
 
         self._run_device_task(
             ("import-zip", str(zip_path)), task, lambda _result: None, error_title="导入 ZIP"
-        )
-
-    def _configure_baidu_sync(self) -> None:
-        BaiduSyncDialog(self._device_loader, parent=self).exec()
-
-    def _sync_baidu_library(self) -> None:
-        store = BaiduCredentialStore()
-        try:
-            credentials = store.load()
-        except BaiduSyncError as exc:
-            QMessageBox.warning(self, "百度网盘同步", str(exc))
-            return
-        if credentials is None or not credentials.connected:
-            QMessageBox.information(
-                self, "百度网盘同步", "请先在菜单中配置并连接百度网盘。"
-            )
-            return
-        message = (
-            f"将本地存档内容及游戏名称、备注、收藏状态、版本信息和 ROM 身份键上传到\n"
-            f"/apps/{credentials.app_name}/。本机源路径不会上传。\n\n"
-            "同步只追加新文件，不会删除网盘文件，也不会从网盘下载或恢复。继续吗？"
-        )
-        if QMessageBox.question(self, "同步到百度网盘", message) != QMessageBox.StandardButton.Yes:
-            return
-
-        sync = BaiduLibrarySync(BaiduNetdiskClient(store))
-
-        def task(token):
-            return sync.sync(
-                self.state.library_root,
-                token=token,
-                report=self.state._report_job_progress,
-            )
-
-        def completed(result: SyncResult) -> None:
-            if result.cancelled:
-                QMessageBox.information(
-                    self,
-                    "百度网盘同步已取消",
-                    f"已上传 {len(result.uploaded)} 个文件，跳过 {len(result.skipped)} 个已存在文件。",
-                )
-                return
-            self.status_text.setText(
-                f"百度网盘同步完成：新增 {len(result.uploaded)} 个，跳过 {len(result.skipped)} 个"
-            )
-            QMessageBox.information(
-                self,
-                "百度网盘同步完成",
-                f"新增 {len(result.uploaded)} 个文件，跳过 {len(result.skipped)} 个已存在文件。",
-            )
-
-        self._run_device_task(
-            ("baidu-library-sync",), task, completed, error_title="百度网盘同步失败"
         )
 
     def closeEvent(self, event) -> None:  # noqa: N802

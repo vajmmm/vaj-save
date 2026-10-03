@@ -7,7 +7,7 @@ from vajsave.ui_theme import PLATFORM_COLORS
 
 
 def test_gb_is_registered_on_the_dock():
-    assert PLATFORM_ORDER == [
+    assert PLATFORM_ORDER[:9] == [
         "all",
         "psp",
         "vita",

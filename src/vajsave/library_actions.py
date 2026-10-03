@@ -32,6 +32,7 @@ from .library import (
 from .homebrew import is_homebrew_or_tool
 from .models import SaveEntry
 from .platforms.catalog import PLATFORM_LABELS, PLATFORM_ORDER
+from .remote_ftp import RemoteFtpClient, get_preset
 from .scan_session import _hash_tree, build_status_text
 
 if TYPE_CHECKING:
@@ -186,8 +187,15 @@ class LibraryActions:
     def visible_saves(self) -> List[SaveEntry]:
         app = self.app
         saves = self.all_saves()
+        category = getattr(app, "selected_category", "all")
         if app.selected_platform not in (None, "", "all"):
             saves = [save for save in saves if save.platform == app.selected_platform]
+        elif category == "handheld":
+            from .platforms.catalog import HANDHELD_PLATFORMS
+            saves = [save for save in saves if save.platform in HANDHELD_PLATFORMS]
+        elif category == "console":
+            from .platforms.catalog import CONSOLE_PLATFORMS
+            saves = [save for save in saves if save.platform in CONSOLE_PLATFORMS]
         query = (app.search_query or "").strip().lower()
         if query:
             def _matches_query(s: SaveEntry) -> bool:
@@ -391,6 +399,17 @@ class LibraryActions:
         elif app.current_result:
             app.status_text = f"{label} · {count} 个存档 | [只读]"
 
+    def set_category(self, category: str) -> None:
+        app = self.app
+        app.selected_category = category or "all"
+        app.selected_platform = "all"
+        count = len(self.visible_saves())
+        cat_label = "掌机" if app.selected_category == "handheld" else ("主机" if app.selected_category == "console" else "全部")
+        if app.library_mode:
+            app.status_text = f"本地存档库 · {cat_label} · {count} 款游戏 | [只读]"
+        elif app.current_result:
+            app.status_text = f"{cat_label} · {count} 个存档 | [只读]"
+
     def _identity_key_for_backup(self, entry: SaveEntry) -> Optional[str]:
         """Best-effort ROM identity key to persist with a backup.
 
@@ -474,11 +493,55 @@ class LibraryActions:
         self, snapshot: Snapshot, destination: Union[Path, str]
     ) -> Optional[Path]:
         app = self.app
+        dest_path = Path(destination)
         try:
-            restored = restore_snapshot(snapshot, app.library_root, Path(destination))
+            restored = restore_snapshot(snapshot, app.library_root, dest_path)
         except Exception as e:
             app.warnings.append(f"恢复失败: {e}")
             app.status_text = f"恢复失败: {e}"
             return None
+
+        # Check if the destination belongs to an active FTP volume
+        ftp_extra = None
+        for vol in getattr(app, "volumes", []):
+            try:
+                vol_path = Path(vol.mount_point)
+                if vol_path == dest_path or vol_path in dest_path.parents or dest_path == restored or vol_path in restored.parents:
+                    if getattr(vol, "extra", {}).get("ftp"):
+                        ftp_extra = vol.extra
+                        break
+            except Exception:
+                pass
+
+        if ftp_extra:
+            try:
+                preset_key = ftp_extra.get("ftp_preset", getattr(app, "ftp_preset_key", "default"))
+                profile = app.ftp._ftp_profile(get_preset(preset_key))
+                cache_dir = app.ftp_cache_dir(preset_key)
+                rel = restored.relative_to(cache_dir).as_posix()
+                # Map drive specifier prefixes like ux0/, ms0/, fat/ to remote paths
+                remote_target = f"/{rel}"
+                if rel.startswith("ux0/"):
+                    remote_target = f"ux0:/{rel[4:]}"
+                elif rel.startswith("ms0/"):
+                    remote_target = f"ms0:/{rel[4:]}"
+                elif rel.startswith("fat/"):
+                    remote_target = f"fat:/{rel[4:]}"
+
+                factory = getattr(app, "_ftp_client_factory", None) or (
+                    lambda p: RemoteFtpClient(p, read_only=False)
+                )
+                with factory(profile) as client:
+                    if restored.is_dir():
+                        client.upload_dir(restored, remote_target)
+                    else:
+                        client.upload(restored, remote_target)
+                app.status_text = f"已恢复版本 {snapshot.id} 并无线同步至掌机 ({profile.label})"
+                return restored
+            except Exception as exc:
+                app.warnings.append(f"本地缓存已恢复，但无线同步到掌机失败: {exc}")
+                app.status_text = f"本地已恢复，无线同步失败 · {exc}"
+                return restored
+
         app.status_text = f"已恢复版本 {snapshot.id} 到 {restored}"
         return restored
