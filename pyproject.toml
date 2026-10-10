@@ -56,8 +56,4 @@ pythonpath = ["src"]
 omit = [
     "*/app.py",
     "*/qt_ui.py",
-    "*/pixel_style.py",
-    "src/vajsave/app.py",
-    "src/vajsave/qt_ui.py",
-    "src/vajsave/pixel_style.py",
 ]

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""为 vaj-save 收藏架界面生成离线示意图和真实 Canvas 抓取。
+"""为 vaj-save 收藏架界面生成离线示意图和真实 Qt 抓取。
 
 ``home-preview.png`` 由 Pillow 使用应用主题 Token 绘制，不依赖显示服务；图片会
-明确标注“示意图 · 非真实截图”。若 Tk 与 Ghostscript 可用，脚本还会抓取真实的
-``save_list`` Canvas 并生成 EPS/PNG。任何可选能力不可用时，离线示意图仍会生成。
+明确标注“示意图 · 非真实截图”。脚本还会用 Qt offscreen 平台构建真实窗口，抓取
+``qt-window-selected.png`` 与 ``save-gallery.png``。无显示服务或抓取失败时，
+离线示意图仍会生成。
 """
 
 from __future__ import annotations
@@ -214,26 +215,6 @@ def build_offscreen_app(state: AppState):
         window.gallery.canvas.selection_changed.emit(window.gallery.canvas.selected_entries())
         QTest.qWait(220)
     return qapp, window
-
-
-def _rasterize(eps_path: Path, png_path: Path) -> bool:
-    try:
-        if "GS_LIB" not in os.environ:
-            cellar = Path("/usr/local/Cellar/ghostscript")
-            if cellar.is_dir():
-                inits = [str(p) for p in cellar.glob("**/Resource/Init") if p.is_dir()]
-                inits.sort(key=lambda p: ("10.04" not in p, p))
-                if inits:
-                    os.environ["GS_LIB"] = ":".join(inits)
-        from PIL import Image
-
-        with Image.open(eps_path) as image:
-            image.load()
-            image.convert("RGB").save(png_path)
-        return True
-    except Exception as exc:  # noqa: BLE001 - Ghostscript 是可选能力
-        print(f"[ui-preview] Ghostscript 不可用，保留 {eps_path.name}（{exc}）", file=sys.stderr)
-        return False
 
 
 def capture_canvases(app, out_dir: Path) -> List[Path]:

@@ -16,7 +16,6 @@ a = Analysis(
     pathex=[str(project_root / "src")],
     binaries=[],
     datas=[
-        (str(project_root / "assets"), "assets"),
         (str(project_root / "src" / "vajsave" / "data"), "vajsave/data"),
         (str(project_root / "src" / "vajsave" / "artwork"), "vajsave/artwork"),
     ] + qtawesome_datas,
