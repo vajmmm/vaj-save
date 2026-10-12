@@ -194,9 +194,6 @@ class LibraryActions:
         elif category == "handheld":
             from .platforms.catalog import HANDHELD_PLATFORMS
             saves = [save for save in saves if save.platform in HANDHELD_PLATFORMS]
-        elif category == "console":
-            from .platforms.catalog import CONSOLE_PLATFORMS
-            saves = [save for save in saves if save.platform in CONSOLE_PLATFORMS]
         query = (app.search_query or "").strip().lower()
         if query:
             def _matches_query(s: SaveEntry) -> bool:
@@ -416,7 +413,7 @@ class LibraryActions:
         app.selected_category = category or "all"
         app.selected_platform = "all"
         count = len(self.visible_saves())
-        cat_label = "掌机" if app.selected_category == "handheld" else ("主机" if app.selected_category == "console" else "全部")
+        cat_label = "掌机" if app.selected_category == "handheld" else "全部"
         if app.library_mode:
             app.status_text = f"本地存档库 · {cat_label} · {count} 款游戏 | [只读]"
         elif app.current_result:

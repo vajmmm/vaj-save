@@ -29,11 +29,6 @@ SWITCH_PRESET_KEY = "switch"
 THREEDS_PRESET_KEY = "3ds"
 PSP_PRESET_KEY = "psp"
 NDS_PRESET_KEY = "nds"
-PS3_PRESET_KEY = "ps3"
-PS4_PRESET_KEY = "ps4"
-WIIU_PRESET_KEY = "wiiu"
-WII_PRESET_KEY = "wii"
-X360_PRESET_KEY = "x360"
 FTPD_PRESET_KEY = "ftpd"
 DEFAULT_PRESET_KEY = CHECKPOINT_PRESET_KEY
 
@@ -326,84 +321,6 @@ NDS_PRESET = FtpProfile(
     ),
 )
 
-PS3_PRESET = FtpProfile(
-    key=PS3_PRESET_KEY,
-    label="PS3 实机",
-    port=21,
-    path="/",
-    description="PlayStation 3 (webMAN MOD · 默认端口 21)",
-    target_paths=(
-        "dev_hdd0/home",
-        "/dev_hdd0/home",
-        "dev_usb000/PS3/SAVEDATA",
-        "dev_usb001/PS3/SAVEDATA",
-        "PS3/SAVEDATA",
-    ),
-)
-
-PS4_PRESET = FtpProfile(
-    key=PS4_PRESET_KEY,
-    label="PS4 实机",
-    port=2121,
-    path="/",
-    description="PlayStation 4 (GoldHEN FTP · 默认端口 2121)",
-    target_paths=(
-        "user/home",
-        "/user/home",
-        "data/apollo",
-        "/data/apollo",
-        "PS4/SAVEDATA",
-    ),
-)
-
-WIIU_PRESET = FtpProfile(
-    key=WIIU_PRESET_KEY,
-    label="Wii U 实机",
-    port=21,
-    path="/",
-    description="Wii U 实机 (FTPiiU Everywhere · 默认端口 21)",
-    target_paths=(
-        "storage_mlc/usr/save/00050000",
-        "/storage_mlc/usr/save/00050000",
-        "storage_usb/usr/save/00050000",
-        "/storage_usb/usr/save/00050000",
-        "usr/save/00050000",
-        "wiiu/backups",
-        "/wiiu/backups",
-    ),
-)
-
-WII_PRESET = FtpProfile(
-    key=WII_PRESET_KEY,
-    label="Wii 实机",
-    port=21,
-    path="/",
-    description="Wii 实机 (ftpii · 默认端口 21)",
-    target_paths=(
-        "savegames",
-        "/savegames",
-        "wiisaves",
-        "title/00010000",
-        "/title/00010000",
-    ),
-)
-
-X360_PRESET = FtpProfile(
-    key=X360_PRESET_KEY,
-    label="Xbox 360 实机",
-    port=21,
-    path="/",
-    description="Xbox 360 (Aurora / DashLaunch · 默认端口 21)",
-    target_paths=(
-        "Hdd1/Content",
-        "Hdd1:/Content",
-        "Content",
-        "/Content",
-        "Usb0/Content",
-        "Usb0:/Content",
-    ),
-)
-
 FTPD_PRESET = FtpProfile(
     key=FTPD_PRESET_KEY,
     label="通用 FTP",
@@ -419,11 +336,6 @@ _PRESETS: Tuple[FtpProfile, ...] = (
     THREEDS_PRESET,
     PSP_PRESET,
     NDS_PRESET,
-    PS3_PRESET,
-    PS4_PRESET,
-    WIIU_PRESET,
-    WII_PRESET,
-    X360_PRESET,
     FTPD_PRESET,
 )
 

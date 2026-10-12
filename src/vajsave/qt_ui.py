@@ -64,7 +64,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtSvg import QSvgRenderer
 
 from .app_state import PLATFORM_LABELS, PLATFORM_ORDER, AppState
-from .platforms.catalog import CONSOLE_PLATFORMS, HANDHELD_PLATFORMS
+
 from .artwork import MAX_COVER_ASPECT_RATIO, ArtworkLoader
 from .identity import STATUS_AMBIGUOUS, STATUS_PARTIAL, STATUS_RESOLVED
 from .library import Snapshot
@@ -163,11 +163,6 @@ def _render_platform_logo(platform: str, svg: bytes, dpr: float) -> QPixmap:
 
 _PLATFORM_FA_ICONS = {
     "all": "fa6s.table-cells-large",
-    "ps3": "fa6b.playstation",
-    "ps4": "fa6b.playstation",
-    "wii": "fa6s.gamepad",
-    "wiiu": "fa6s.tv",
-    "x360": "fa6b.xbox",
 }
 
 
@@ -322,58 +317,8 @@ class PlatformButton(QToolButton):
         self.setProperty("platform", True)
 
 
-class CategorySwitcher(QFrame):
-    """Dock 顶部分类切换：掌机 vs 主机。"""
-
-    category_changed = Signal(str)
-
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("dockCategorySwitcher")
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(2)
-
-        self.btn_handheld = QToolButton(self)
-        self.btn_handheld.setText("掌机")
-        self.btn_handheld.setCheckable(True)
-        self.btn_handheld.setChecked(True)
-        self.btn_handheld.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_handheld.setObjectName("btnCategoryHandheld")
-        self.btn_handheld.setFixedHeight(24)
-
-        self.btn_console = QToolButton(self)
-        self.btn_console.setText("主机")
-        self.btn_console.setCheckable(True)
-        self.btn_console.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_console.setObjectName("btnCategoryConsole")
-        self.btn_console.setFixedHeight(24)
-
-        self._group = QButtonGroup(self)
-        self._group.addButton(self.btn_handheld)
-        self._group.addButton(self.btn_console)
-        self._group.setExclusive(True)
-
-        layout.addWidget(self.btn_handheld, 1)
-        layout.addWidget(self.btn_console, 1)
-
-        self.btn_handheld.clicked.connect(lambda: self.category_changed.emit("handheld"))
-        self.btn_console.clicked.connect(lambda: self.category_changed.emit("console"))
-
-    def set_category(self, category: str) -> None:
-        self.btn_handheld.blockSignals(True)
-        self.btn_console.blockSignals(True)
-        if category == "console":
-            self.btn_console.setChecked(True)
-        else:
-            self.btn_handheld.setChecked(True)
-        self.btn_handheld.blockSignals(False)
-        self.btn_console.blockSignals(False)
-
-
 class PlatformDock(QFrame):
     platform_selected = Signal(str)
-    category_selected = Signal(str)
     refresh_requested = Signal()
     add_requested = Signal()
     devices_requested = Signal()
@@ -389,20 +334,12 @@ class PlatformDock(QFrame):
         layout.setContentsMargins(9, 8, 9, 9)
         layout.setSpacing(2)
 
-        self.current_category = "handheld"
-        self.category_switcher = CategorySwitcher(self)
-        self.category_switcher.category_changed.connect(self._on_category_changed)
-        layout.addWidget(self.category_switcher)
-        layout.addSpacing(2)
-
         self.buttons: dict[str, PlatformButton] = {}
         for key in PLATFORM_ORDER:
             button = PlatformButton(key, self)
             button.clicked.connect(lambda _checked=False, platform=key: self.platform_selected.emit(platform))
             layout.addWidget(button)
             self.buttons[key] = button
-            if key in CONSOLE_PLATFORMS:
-                button.hide()
 
         self.buttons["all"].setChecked(True)
         layout.addStretch(1)
@@ -431,29 +368,6 @@ class PlatformDock(QFrame):
         self.import_zip.hide()
         layout.addWidget(self.import_zip)
 
-    def _on_category_changed(self, category: str, emit: bool = True) -> None:
-        if category == self.current_category and not emit:
-            return
-        self.current_category = category
-        if category == "console":
-            for k in HANDHELD_PLATFORMS:
-                if k in self.buttons:
-                    self.buttons[k].hide()
-            for k in CONSOLE_PLATFORMS:
-                if k in self.buttons:
-                    self.buttons[k].show()
-        else:
-            for k in CONSOLE_PLATFORMS:
-                if k in self.buttons:
-                    self.buttons[k].hide()
-            for k in HANDHELD_PLATFORMS:
-                if k in self.buttons:
-                    self.buttons[k].show()
-        self.buttons["all"].setChecked(True)
-        if emit:
-            self.category_selected.emit(category)
-            self.platform_selected.emit("all")
-
     @staticmethod
     def _action_button(text: str, icon_name: str, signal) -> QToolButton:
         button = QToolButton()
@@ -467,20 +381,8 @@ class PlatformDock(QFrame):
         return button
 
     def set_current(self, platform: str) -> None:
-        if platform in CONSOLE_PLATFORMS:
-            if self.current_category != "console":
-                self.category_switcher.set_category("console")
-                self._on_category_changed("console", emit=False)
-        elif platform in HANDHELD_PLATFORMS:
-            if self.current_category != "handheld":
-                self.category_switcher.set_category("handheld")
-                self._on_category_changed("handheld", emit=False)
         if platform in self.buttons:
             self.buttons[platform].setChecked(True)
-
-    def set_category(self, category: str) -> None:
-        self.category_switcher.set_category(category)
-        self._on_category_changed(category, emit=True)
 
     def set_library_mode(self, enabled: bool) -> None:
         self.import_zip.setVisible(enabled)
@@ -1401,8 +1303,6 @@ class VajSaveWindow(QMainWindow):
     def __init__(self, state: Optional[AppState] = None) -> None:
         super().__init__()
         self.state = state or AppState()
-        if self.state.selected_category == "all":
-            self.state.selected_category = "handheld"
         self._selected: Optional[SaveEntry] = None
         self._versions: list[Snapshot] = []
         self._selected_snapshot: Optional[Snapshot] = None
@@ -1610,7 +1510,6 @@ class VajSaveWindow(QMainWindow):
         self.log_button.clicked.connect(self._show_logs)
         self.cancel_job.clicked.connect(self.state.cancel_job)
         self.dock.platform_selected.connect(self._select_platform)
-        self.dock.category_selected.connect(self._select_category)
         self.dock.refresh_requested.connect(self._refresh_devices)
         self.dock.add_requested.connect(self._add_device)
         self.dock.devices_requested.connect(self._choose_device)
@@ -1662,9 +1561,6 @@ class VajSaveWindow(QMainWindow):
             QPushButton[primary='true']:hover {{ background: {SWITCH['accent_hover']}; }}
             QPushButton[dangerPrimary='true'] {{ background: {SWITCH['danger']}; }}
             #platformDock {{ background: {SWITCH['fog_panel']}; border-right: 1px solid {SWITCH['border_soft']}; }}
-            #dockCategorySwitcher {{ background: {SWITCH['surface_alt']}; border-radius: 7px; padding: 2px; }}
-            #dockCategorySwitcher QToolButton {{ background: transparent; border: 0; border-radius: 5px; font-size: 11px; font-weight: 600; color: {SWITCH['muted_strong']}; padding: 3px 0; }}
-            #dockCategorySwitcher QToolButton:checked {{ background: {SWITCH['card']}; color: {SWITCH['ink']}; font-weight: 700; }}
             QToolButton[platform='true'] {{ background: transparent; border: 0; border-radius: 9px; padding: 4px 2px; font-size: 11px; }}
             QToolButton[platform='true']:checked {{ background: {SWITCH['dock_selected']}; color: {SWITCH['accent']}; }}
             QToolButton[dockAction='true'] {{ background: transparent; border: 0; text-align: left; padding: 6px 4px; font-size: 11px; }}
@@ -1965,10 +1861,6 @@ class VajSaveWindow(QMainWindow):
 
     def _select_platform(self, platform: str) -> None:
         self.state.set_platform_filter(platform)
-        self.refresh_all(enrich=False)
-
-    def _select_category(self, category: str) -> None:
-        self.state.set_category(category)
         self.refresh_all(enrich=False)
 
     def _set_sort_mode(self, mode: str) -> None:

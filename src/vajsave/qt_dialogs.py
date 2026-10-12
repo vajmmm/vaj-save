@@ -347,11 +347,6 @@ PRESET_HINTS = {
     "3ds": "提示：在 3DS 上启动 FTPD 应用，屏幕将显示当前 IP（默认端口 5000）",
     "psp": "提示：在 PSP 上运行 PSP-FTPD 并连接 Wi-Fi 热点（默认端口 21）",
     "nds": "提示：在烧录卡上运行 ftpd-nds 并连接 Wi-Fi 热点（默认端口 21）",
-    "ps3": "提示：在 PS3 上安装并开启 webMAN MOD 后台 FTP（默认端口 21）",
-    "ps4": "提示：在 PS4 上开启 GoldHEN 的 FTP 服务（默认端口 2121）",
-    "wiiu": "提示：在 Wii U 上运行 FTPiiU Everywhere 或 Aroma FTP 插件（默认端口 21）",
-    "wii": "提示：在 Wii 的 Homebrew Channel 中运行 ftpii 应用（默认端口 21）",
-    "x360": "提示：在 Xbox 360 上运行 Aurora 极光桌面或 DashLaunch FTP 服务（默认端口 21）",
     "checkpoint": "提示：专用于 Checkpoint 导出的存档网络服务器（默认端口 5000）",
     "ftpd": "提示：通用 FTP 协议，适用于各种自制设备与服务（默认端口 21）",
 }
