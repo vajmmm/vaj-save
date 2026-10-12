@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Iterable, List, Optional
 
 from .identity.naming import normalize_title
 from .models import SaveEntry
+from .save_progress import progress_text
 
 if TYPE_CHECKING:
     from .app_state import AppState
@@ -98,6 +99,9 @@ def format_sub_entry_label(entry: SaveEntry) -> str:
     slot = getattr(entry, "slot", None)
     if slot:
         parts.append(f"槽位: {slot}")
+    progress = progress_text(entry)
+    if progress:
+        parts.append(progress)
 
     if len(parts) == 1:
         p = Path(entry.path)

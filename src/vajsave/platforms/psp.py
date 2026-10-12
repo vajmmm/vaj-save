@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import List, Set
 
 from ..models import SaveEntry, SaveSource
+from ..save_progress import progress_extra
 from ..sfo import parse_sfo
 from .common import (
     collect_unique_dirs,
@@ -80,6 +81,7 @@ def _scan_psp_savedata_dir(
                 title_id=title_id,
                 display_name=title,
                 path=str(item),
+                extra=progress_extra(sfo_data),
             )
         )
         emit_scan_progress(f"正在扫描 PSP… {index}/{total}", index, total)
@@ -123,6 +125,7 @@ def _scan_single_psp_save(
             title_id=title_id,
             display_name=title,
             path=str(save_dir),
+            extra=progress_extra(sfo_data),
         )
     )
 

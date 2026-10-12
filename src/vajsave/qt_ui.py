@@ -908,7 +908,7 @@ class DetailDrawer(QFrame):
         field_grid.addWidget(self.source_selector, 0, 1)
 
         for row, (label, key) in enumerate((
-            ("Title ID", "title_id"), ("游戏状态", "status"), ("版本数量", "versions"),
+            ("Title ID", "title_id"), ("进度", "progress"), ("游戏状态", "status"), ("版本数量", "versions"),
             ("存档大小", "size"), ("最近备份", "last_backup"), ("存档位置", "path"),
         ), start=1):
             key_label = QLabel(label)
@@ -1059,6 +1059,13 @@ class DetailDrawer(QFrame):
         result = state.resolve_save_identity(entry)
         identity = result.identity
         self.fields["title_id"].setText((identity.title_id if identity else None) or entry.title_id or "—")
+        from .save_progress import progress_text
+
+        progress = progress_text(entry)
+        self.fields["progress"].setText(progress or "—")
+        shown = progress or getattr(self, "_identity_subtitle", "")
+        self.subtitle.setText(shown)
+        self.subtitle.setVisible(bool(shown))
         status = state.save_status(entry)
         self.fields["status"].setText(status_label(status))
         versions = state.versions_for_entry(entry)
@@ -1100,6 +1107,7 @@ class DetailDrawer(QFrame):
         subtitle = ""
         if identity and identity.title and identity.title != name:
             subtitle = identity.title
+        self._identity_subtitle = subtitle
         self.name.setText(name)
         self.subtitle.setText(subtitle)
         self.subtitle.setVisible(bool(subtitle))

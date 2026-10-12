@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Set
 
 from ..covers import MAX_COVER_BYTES, find_embedded_cover
 from ..models import SaveEntry, SaveSource
+from ..save_progress import progress_extra
 from ..sfo import parse_sfo
 from .common import (
     collect_unique_dirs,
@@ -286,6 +287,7 @@ def _scan_vita_native_dir(
                 display_name=title,
                 path=str(item),
                 cover_path=str(cover_path) if cover_path is not None else None,
+                extra=progress_extra(sfo_data),
             )
         )
         emit_scan_progress(f"正在扫描 PS Vita… {index}/{total}", index, total)
@@ -323,6 +325,8 @@ def _scan_vita_exported_dir(
         if item_key is None or item_key in seen_save_paths:
             continue
         title_id = item.name
+        sfo_path = _find_vita_param_sfo(item, root_resolved, warnings)
+        sfo_data = parse_sfo(sfo_path) if sfo_path else {}
         title, cover_path = _enrich_vita_entry(
             item,
             title_id,
@@ -341,6 +345,7 @@ def _scan_vita_exported_dir(
                 display_name=title,
                 path=str(item),
                 cover_path=str(cover_path) if cover_path is not None else None,
+                extra=progress_extra(sfo_data),
             )
         )
 
