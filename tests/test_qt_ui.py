@@ -927,6 +927,7 @@ def test_ftp_dialog_exposes_remember_password(qt_app, qt_state):
     assert box is not None
     assert box.text() == "记住密码"
     assert box.isChecked() is False
+    assert dialog.preset.count() > 1
 
 
 def test_ambiguous_rom_lists_candidates_and_keeps_manual_bind(qt_app, qt_state, monkeypatch):

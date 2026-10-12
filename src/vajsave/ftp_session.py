@@ -10,6 +10,7 @@ from .ftp_fetch import FtpPullResult, cache_dir_for, ftp_cache_root, pull_preset
 from .models import VolumeInfo
 from .remote_ftp import (
     DEFAULT_PRESET_KEY,
+    FTP_PLATFORM_ORDER,
     FtpProfile,
     get_preset,
     preset_keys,
@@ -36,6 +37,24 @@ def parse_port(value: object) -> Optional[int]:
 def resolve_ftp_preset_key(config: dict) -> str:
     configured = "" if config.get("ftp_preset") is None else str(config.get("ftp_preset")).strip().lower()
     return configured if configured in preset_keys() else DEFAULT_PRESET_KEY
+
+
+def normalize_ftp_platforms(value: object) -> Optional[tuple]:
+    """Platforms selected for an ftpd pull.
+
+    ``None`` means the setting was never stored, so every platform is pulled.
+    A list or tuple is an explicit selection and may be empty.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
+        return None
+    chosen = set()
+    for item in value:
+        text = str(item or "").strip().lower()
+        if text in FTP_PLATFORM_ORDER:
+            chosen.add(text)
+    return tuple(key for key in FTP_PLATFORM_ORDER if key in chosen)
 
 
 class FtpSession:
@@ -66,7 +85,9 @@ class FtpSession:
     def ftp_cache_dir(self, preset_key: Optional[str] = None) -> Path:
         """Local cache directory that a preset is pulled into."""
         app = self.app
-        return cache_dir_for(app.library_root, preset_key or app.ftp_preset_key)
+        key = preset_key or app.ftp_preset_key
+        profile = self._ftp_profile(get_preset(key))
+        return cache_dir_for(app.library_root, profile.key, profile.host)
 
     def set_ftp_preset(self, key: object) -> Optional[str]:
         """Persist the active FTP preset; unknown keys are rejected with ``None``."""
@@ -87,6 +108,7 @@ class FtpSession:
         password: Optional[str] = None,
         preset_key: Optional[str] = None,
         remember_password: Optional[bool] = None,
+        platforms: object = None,
     ) -> FtpProfile:
         """Update FTP connection settings.
 
@@ -108,6 +130,8 @@ class FtpSession:
             app.ftp_remember_password = bool(remember_password)
         if password is not None:
             app._ftp_password = str(password)
+        if isinstance(platforms, (list, tuple)):
+            app.ftp_platforms = normalize_ftp_platforms(platforms)
         config = app.settings.load()
         config["ftp_host"] = app.ftp_host
         config["ftp_port"] = app.ftp_port
@@ -117,6 +141,8 @@ class FtpSession:
             config["ftp_password"] = app._ftp_password
         else:
             config.pop("ftp_password", None)
+        if app.ftp_platforms is not None:
+            config["ftp_platforms"] = list(app.ftp_platforms)
         app.settings.save(config)
         return self.current_ftp_preset()
 
@@ -125,10 +151,10 @@ class FtpSession:
         app = self.app
         mount = Path(path)
         volume = VolumeInfo(
-            name=f"FTP · {profile.label}",
+            name=f"FTP · {profile.label} · {profile.host}",
             mount_point=mount,
             is_removable=False,
-            extra={"ftp": True, "ftp_preset": profile.key},
+            extra={"ftp": True, "ftp_preset": profile.key, "ftp_host": profile.host},
         )
         for index, existing in enumerate(app.volumes):
             if Path(existing.mount_point) == mount:

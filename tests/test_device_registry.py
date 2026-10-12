@@ -57,6 +57,17 @@ def test_merge_keeps_existing_present_roots(tmp_path):
 def test_device_key_custom_and_ftp(tmp_path):
     assert device_key_for(tmp_path, {"custom": True}) == f"path:{tmp_path.resolve()}"
     assert device_key_for(tmp_path, {"ftp": True, "ftp_preset": "checkpoint"}) == "ftp:checkpoint"
+    assert device_key_for(
+        tmp_path,
+        {"ftp": True, "ftp_preset": "checkpoint", "ftp_host": "192.168.1.50"},
+    ) == "ftp:192.168.1.50:checkpoint"
+    assert device_key_for(
+        tmp_path,
+        {"ftp": True, "ftp_preset": "ftpd", "ftp_host": "10.0.0.2"},
+    ) != device_key_for(
+        tmp_path,
+        {"ftp": True, "ftp_preset": "ftpd", "ftp_host": "10.0.0.3"},
+    )
     assert device_key_for(tmp_path, {"usb": "vid:pid"}) is None
 
 

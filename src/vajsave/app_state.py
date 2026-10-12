@@ -21,7 +21,7 @@ from .device_registry import DeviceRegistry
 from .device_session import DeviceSession
 from .enrichment import UNSET as _UNSET
 from .enrichment import Enrichment
-from .ftp_session import FtpSession, parse_port, resolve_ftp_preset_key
+from .ftp_session import FtpSession, normalize_ftp_platforms, parse_port, resolve_ftp_preset_key
 from .ftp_fetch import FtpPullResult
 from .identity import GameIdentity, GameIdentityResolver, GameIdentityResult
 from .jobs import CancelToken, JobProgress, JobSlot
@@ -47,6 +47,7 @@ from .restore_targets import remember_restore_dir, suggested_restore_dir as sugg
 from .scan_session import PreparedBackupStatuses, PreparedMountScan, ScanSession
 from .scanner import scan
 from .settings_store import SettingsStore
+from . import threeds_sd
 from .volume import FakeVolumeProvider, MountedVolumeProvider, VolumeProvider
 
 # Re-exported so ``from vajsave.app_state import PLATFORM_ORDER, PLATFORM_LABELS``
@@ -92,6 +93,13 @@ class AppState:
             self.gbc_rom_dir,
         ) = self._resolve_rom_dirs()
         self.libretro_dir: Optional[Path] = self._resolve_libretro_dir()
+        # 3DS encrypted-SD direct read: key file paths plus lazily derived keys.
+        self.threeds_key_files: Tuple[Optional[Path], Optional[Path]] = (
+            self._resolve_threeds_key_files()
+        )
+        self.threeds_keys_error: Optional[str] = None
+        self._threeds_keys: Optional[threeds_sd.ThreedsKeys] = None
+        self._threeds_keys_loaded = False
         self._identity_resolver: Optional[GameIdentityResolver] = None
         self._metadata_service: Optional[GameMetadataResolver] = None
         self._artwork_service: Optional[ArtworkService] = None
@@ -114,6 +122,8 @@ class AppState:
             if self.ftp_remember_password
             else ""
         )
+        # ``None`` pulls every platform. A tuple is the user's explicit selection.
+        self.ftp_platforms = normalize_ftp_platforms(ftp_config.get("ftp_platforms"))
 
         # MTP (Windows WPD) discovery + pull.  Both hooks are injectable so
         # tests never touch a real portable device.  Off Windows the default
@@ -229,6 +239,19 @@ class AppState:
         """Read the persisted libretro metadata directory (invalid value -> None)."""
         return AppState._coerce_dir(SettingsStore().load().get("libretro_dir"))
 
+    @staticmethod
+    def _resolve_threeds_key_files() -> Tuple[Optional[Path], Optional[Path]]:
+        """Read the persisted 3DS key file paths (``movable.sed``, ``boot9``).
+
+        ``_coerce_dir`` only normalises the string; it does not require a
+        directory, so it is safe for these two file paths.
+        """
+        config = SettingsStore().load()
+        return (
+            AppState._coerce_dir(config.get(threeds_sd.MOVABLE_SED_CONFIG_KEY)),
+            AppState._coerce_dir(config.get(threeds_sd.BOOT9_CONFIG_KEY)),
+        )
+
     def set_library_root(self, library_root: Union[Path, str]) -> Path:
         return self.library_actions.set_library_root(library_root)
 
@@ -301,6 +324,53 @@ class AppState:
     def set_libretro_dir(self, value: object = None) -> Optional[Path]:
         return self.enrichment.set_libretro_dir(value)
 
+    @property
+    def threeds_keys(self) -> Optional[threeds_sd.ThreedsKeys]:
+        """Key material for the 3DS encrypted-SD direct read.
+
+        ``None`` means "not configured or unusable"; the reason, when there is
+        one, is available as :attr:`threeds_keys_error`. The scan then keeps
+        treating ``Nintendo 3DS/`` as an opaque container.
+        """
+        if self._threeds_keys_loaded:
+            return self._threeds_keys
+        self._threeds_keys_loaded = True
+        self._threeds_keys = None
+        self.threeds_keys_error = None
+        movable_sed, boot9 = self.threeds_key_files
+        if movable_sed is None:
+            return None
+        try:
+            self._threeds_keys = threeds_sd.ThreedsKeys.from_paths(movable_sed, boot9)
+        except threeds_sd.ThreedsSdError as exc:
+            self.threeds_keys_error = str(exc)
+        return self._threeds_keys
+
+    def set_threeds_key_files(
+        self,
+        movable_sed: object = None,
+        boot9: object = None,
+    ) -> Optional[threeds_sd.ThreedsKeys]:
+        """Persist the 3DS key file paths and rebuild the cached keys.
+
+        Only the paths are stored; the key files themselves are never copied
+        into the library or written to the config.
+        """
+        paths = (self._coerce_dir(movable_sed), self._coerce_dir(boot9))
+        config = self.settings.load()
+        for key, path in zip(
+            (threeds_sd.MOVABLE_SED_CONFIG_KEY, threeds_sd.BOOT9_CONFIG_KEY), paths
+        ):
+            if path is not None:
+                config[key] = str(path)
+            else:
+                config.pop(key, None)
+        self.settings.save(config)
+        self.threeds_key_files = paths
+        self._threeds_keys_loaded = False
+        self._threeds_keys = None
+        return self.threeds_keys
+
     def ftp_presets(self) -> List[FtpProfile]:
         return self.ftp.ftp_presets()
 
@@ -321,6 +391,7 @@ class AppState:
         password: Optional[str] = None,
         preset_key: Optional[str] = None,
         remember_password: Optional[bool] = None,
+        platforms: object = None,
     ) -> FtpProfile:
         return self.ftp.configure_ftp(
             host=host,
@@ -329,6 +400,7 @@ class AppState:
             password=password,
             preset_key=preset_key,
             remember_password=remember_password,
+            platforms=platforms,
         )
 
     def pull_ftp_saves(self, token: object = None) -> FtpPullResult:

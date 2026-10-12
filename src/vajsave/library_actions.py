@@ -34,6 +34,7 @@ from .models import SaveEntry
 from .platforms.catalog import PLATFORM_LABELS, PLATFORM_ORDER
 from .remote_ftp import RemoteFtpClient, get_preset
 from .scan_session import _hash_tree, build_status_text
+from . import threeds_sd
 
 if TYPE_CHECKING:
     from .app_state import AppState
@@ -253,6 +254,8 @@ class LibraryActions:
         if self.library_game_id(entry) is not None:
             game = load_catalog(app.library_root).games.get(self.library_game_id(entry))
             status = self._library_status(game)
+        elif threeds_sd.is_encrypted_sd_entry(entry):
+            status = self._refresh_entry_status(entry)
         else:
             status = classify_save_status(entry, load_catalog(app.library_root))
         app._backup_statuses[entry.path] = status
@@ -272,6 +275,15 @@ class LibraryActions:
         self.app.hide_unchanged = not self.app.hide_unchanged
         return self.app.hide_unchanged
 
+    def _status_source(self, entry: SaveEntry) -> Path:
+        """Path whose bytes decide this entry's status.
+
+        Encrypted 3DS SD saves are compared by their *decrypted* payload so a
+        re-scan does not report every save as changed. Missing keys raise, and
+        the caller records the message on the entry as a hash error.
+        """
+        return threeds_sd.hash_source(entry, self.app.threeds_keys)
+
     def _refresh_entry_status(
         self, entry: SaveEntry, catalog: Optional[Catalog] = None
     ) -> SaveBackupStatus:
@@ -280,8 +292,8 @@ class LibraryActions:
         hash_error = False
         digest: Optional[str] = None
         try:
-            digest = _hash_tree(Path(entry.path))
-        except (OSError, ValueError, FileNotFoundError) as e:
+            digest = _hash_tree(self._status_source(entry))
+        except (OSError, ValueError, FileNotFoundError, threeds_sd.ThreedsSdError) as e:
             hash_error = True
             app.warnings.append(f"计算存档哈希失败: {entry.display_name or entry.path}: {e}")
         status = classify_save_status(
@@ -422,6 +434,26 @@ class LibraryActions:
         except Exception:  # noqa: BLE001 - identity is best-effort; backup proceeds
             return None
 
+    def _decrypted_source(self, entry: SaveEntry) -> Optional[Path]:
+        """Decrypt an encrypted 3DS SD save and return the local plaintext path.
+
+        Returns ``None`` after recording a clear message when the key files are
+        missing or unusable, so the caller can drop the backup without raising.
+        """
+        app = self.app
+        keys = app.threeds_keys
+        if keys is None:
+            message = app.threeds_keys_error or "未配置 movable.sed / boot9"
+            app.warnings.append(f"3DS 直读不可用: {message}")
+            app.status_text = f"3DS 直读不可用: {message}"
+            return None
+        try:
+            return threeds_sd.materialized_path(entry, keys)
+        except Exception as e:  # noqa: BLE001 - 解密失败要给出可读原因
+            app.warnings.append(f"3DS 存档解密失败: {entry.display_name or entry.path}: {e}")
+            app.status_text = f"3DS 存档解密失败: {e}"
+            return None
+
     def import_save(self, entry: SaveEntry) -> Optional[Path]:
         """Backup one save into the versioned local library. Never writes to the source volume."""
         app = self.app
@@ -433,8 +465,18 @@ class LibraryActions:
             app.status_text = "本地存档库无需备份"
             return None
         identity_key = self._identity_key_for_backup(entry)
+        source_override: Optional[Path] = None
+        if threeds_sd.is_encrypted_sd_entry(entry):
+            source_override = self._decrypted_source(entry)
+            if source_override is None:
+                return None
         try:
-            result = backup_save(entry, app.library_root, identity_key=identity_key)
+            result = backup_save(
+                entry,
+                app.library_root,
+                identity_key=identity_key,
+                source_override=source_override,
+            )
         except Exception as e:
             app.warnings.append(f"备份失败: {e}")
             app.status_text = f"备份失败: {e}"

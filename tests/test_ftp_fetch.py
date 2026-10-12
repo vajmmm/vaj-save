@@ -16,6 +16,7 @@ from vajsave.ftp_fetch import (
     FTP_CACHE_DIRNAME,
     FtpPullResult,
     cache_dir_for,
+    cache_dir_in,
     ftp_cache_root,
     pull_preset,
 )
@@ -48,6 +49,11 @@ def _checkpoint_profile(host: str = "192.168.1.50") -> FtpProfile:
     )
 
 
+def _pulled(cache_root: Path, profile: FtpProfile | None = None) -> Path:
+    profile = profile or _checkpoint_profile()
+    return cache_dir_in(cache_root, profile.key, profile.host)
+
+
 # -- presets -----------------------------------------------------------------
 
 
@@ -58,6 +64,8 @@ def test_default_preset_is_checkpoint_with_ftpd_fallback():
     assert default_preset().key == DEFAULT_PRESET_KEY == CHECKPOINT_PRESET_KEY
     # An unknown key resolves back to the default instead of raising.
     assert get_preset("does-not-exist").key == CHECKPOINT_PRESET_KEY
+    assert "Nintendo 3DS" in get_preset("3ds").target_paths
+    assert "PSP/SAVEDATA" in get_preset("psp").target_paths
 
 
 def test_profile_repr_hides_password():
@@ -78,7 +86,7 @@ def test_pull_preset_mirrors_tree_into_cache(tmp_path: Path):
     assert isinstance(result, FtpPullResult)
     assert result.ok is True
     assert result.preset_key == CHECKPOINT_PRESET_KEY
-    assert result.path == cache_root / CHECKPOINT_PRESET_KEY
+    assert result.path == _pulled(cache_root)
     assert result.files == 2
     assert result.total_bytes > 0
     assert (
@@ -115,7 +123,7 @@ def test_failed_first_pull_leaves_no_cache(tmp_path: Path):
 
     assert result.ok is False
     assert "permission denied" in result.error
-    assert not (cache_root / CHECKPOINT_PRESET_KEY).exists()
+    assert not _pulled(cache_root).exists()
     # No hidden staging directory survives a failed pull.
     assert list(cache_root.glob(".*")) == []
 
@@ -145,9 +153,9 @@ def test_failed_pull_keeps_previous_cache_intact(tmp_path: Path):
     assert bad.ok is False
     # The previous, complete cache is still there and still scannable.
     assert saved_file.read_bytes() == b"MOON-SAVE"
-    assert (cache_root / CHECKPOINT_PRESET_KEY).exists()
+    assert _pulled(cache_root).exists()
     assert list(cache_root.glob(".*staging*")) == []
-    assert scan(cache_root / CHECKPOINT_PRESET_KEY).saves
+    assert scan(_pulled(cache_root)).saves
 
 
 def test_empty_remote_is_a_successful_empty_device(tmp_path: Path):
@@ -178,7 +186,7 @@ def test_unsafe_remote_names_cannot_escape_cache(tmp_path: Path):
     assert result.ok is True
     # Only the safe file was written, and nothing escaped the cache.
     assert result.files == 1
-    assert (cache_root / CHECKPOINT_PRESET_KEY / "3ds" / "good" / "main").read_bytes() == b"ok"
+    assert (_pulled(cache_root) / "3ds" / "good" / "main").read_bytes() == b"ok"
     assert not (lib / "evil").exists()
     assert not (tmp_path / "evil").exists()
     assert not (tmp_path / "pwned").exists()
@@ -188,6 +196,11 @@ def test_cache_dir_for_sanitizes_preset_key(tmp_path: Path):
     assert cache_dir_for(tmp_path, "checkpoint") == tmp_path / FTP_CACHE_DIRNAME / "checkpoint"
     # A hostile key cannot climb out of the cache root.
     assert cache_dir_for(tmp_path, "../../etc") == tmp_path / FTP_CACHE_DIRNAME / "default"
+    assert cache_dir_for(tmp_path, "ftpd", "192.168.1.50") == (
+        tmp_path / FTP_CACHE_DIRNAME / "192.168.1.50" / "ftpd"
+    )
+    assert ":" not in cache_dir_for(tmp_path, "ftpd", "::1").name
+    assert cache_dir_for(tmp_path, "ftpd", "::1").parent.name == "__1"
 
 
 # -- password handling -------------------------------------------------------
@@ -897,3 +910,107 @@ def test_remote_delete_is_not_copied_into_new_cache(tmp_path: Path):
     from vajsave.ftp_manifest import load_manifest
 
     assert "drop.sav" not in load_manifest(second.path)
+
+
+def _targeted_profile(host: str = "10.0.0.8", target_paths: tuple = ()) -> FtpProfile:
+    return FtpProfile(
+        key="3ds",
+        label="Nintendo 3DS",
+        host=host,
+        path="/",
+        target_paths=target_paths,
+    )
+
+
+def _card_tree() -> dict:
+    return {
+        "PSP": {"SAVEDATA": {"ULUS12345": {"DATA.BIN": b"PSP-SAVE"}}},
+        "Nintendo 3DS": {
+            "id0": {
+                "id1": {
+                    "title": {
+                        "00040000": {
+                            "000f7000": {
+                                "content": {"game.app": b"NOT-A-SAVE"},
+                                "data": {"00000001.sav": b"ENC-SAVE"},
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "SAVER": {"demo.sav": b"GBA-SAVE"},
+        "roms": {"movie": {"clip.mp4": b"VIDEO"}},
+        "album": {"pic.jpg": b"PHOTO"},
+    }
+
+
+def test_ftpd_pulls_only_save_roots_and_skips_installed_content(tmp_path: Path):
+    cache_root = ftp_cache_root(tmp_path / "lib")
+    profile = _targeted_profile(
+        target_paths=("PSP/SAVEDATA", "Nintendo 3DS", "SAVER")
+    )
+    result = pull_preset(profile, cache_root, client_factory=fake_client_factory(_card_tree()))
+
+    assert result.ok is True
+    assert result.path == _pulled(cache_root, profile)
+    assert (result.path / "PSP" / "SAVEDATA" / "ULUS12345" / "DATA.BIN").read_bytes() == b"PSP-SAVE"
+    assert (
+        result.path / "Nintendo 3DS" / "id0" / "id1" / "title" / "00040000" / "000f7000" / "data" / "00000001.sav"
+    ).read_bytes() == b"ENC-SAVE"
+    assert not (
+        result.path / "Nintendo 3DS" / "id0" / "id1" / "title" / "00040000" / "000f7000" / "content"
+    ).exists()
+    assert (result.path / "SAVER" / "demo.sav").read_bytes() == b"GBA-SAVE"
+    assert not (result.path / "roms" / "movie").exists()
+    assert not (result.path / "album").exists()
+
+    scanned = scan(result.path)
+    source_ids = {source.source_id for source in scanned.sources}
+    assert "psp" in source_ids
+    assert "3ds_sd" in source_ids or "3ds_sd_direct" in source_ids
+    assert any(save.platform == "gba" for save in scanned.saves)
+
+
+def test_missing_allowlisted_root_does_not_fail_the_pull(tmp_path: Path):
+    cache_root = ftp_cache_root(tmp_path / "lib")
+    profile = _targeted_profile(target_paths=("PSP/SAVEDATA", "SAVER"))
+    result = pull_preset(
+        profile,
+        cache_root,
+        client_factory=fake_client_factory({"PSP": {"SAVEDATA": {"SLOT": {"DATA.BIN": b"ok"}}}}),
+    )
+    assert result.ok is True
+    assert result.files == 1
+    assert (result.path / "PSP" / "SAVEDATA" / "SLOT" / "DATA.BIN").read_bytes() == b"ok"
+    assert not (result.path / "SAVER").exists()
+
+
+def test_allowlisted_root_error_fails_the_pull(tmp_path: Path):
+    cache_root = ftp_cache_root(tmp_path / "lib")
+    profile = _targeted_profile(target_paths=("PSP/SAVEDATA",))
+    result = pull_preset(
+        profile,
+        cache_root,
+        client_factory=fake_client_factory(
+            {"PSP": {"SAVEDATA": {"SLOT": {"DATA.BIN": b"ok"}}}},
+            fail_paths={"/PSP/SAVEDATA/SLOT/DATA.BIN", "PSP/SAVEDATA/SLOT/DATA.BIN"},
+            error_message="permission denied",
+        ),
+    )
+    assert result.ok is False
+    assert "permission denied" in result.error
+    assert not _pulled(cache_root, profile).exists()
+
+
+def test_two_hosts_keep_separate_caches(tmp_path: Path):
+    cache_root = ftp_cache_root(tmp_path / "lib")
+    first = _checkpoint_profile("10.0.0.1")
+    second = _checkpoint_profile("10.0.0.2")
+    left = pull_preset(first, cache_root, client_factory=fake_client_factory(checkpoint_ftp_tree()))
+    right = pull_preset(second, cache_root, client_factory=fake_client_factory(checkpoint_ftp_tree()))
+    assert left.ok and right.ok
+    assert left.path != right.path
+    assert left.path.is_dir() and right.path.is_dir()
+    assert (left.path / "3ds").is_dir()
+    assert (right.path / "3ds").is_dir()

@@ -37,6 +37,48 @@ X360_PRESET_KEY = "x360"
 FTPD_PRESET_KEY = "ftpd"
 DEFAULT_PRESET_KEY = CHECKPOINT_PRESET_KEY
 
+# Platforms a card-wide ftpd server can be asked to pull. Order matches the dock.
+FTP_PLATFORM_ORDER: Tuple[str, ...] = (
+    "psp",
+    "vita",
+    "switch",
+    "3ds",
+    "nds",
+    "gb",
+    "gbc",
+    "gba",
+)
+
+# Card-relative save roots, and which platforms need each one.
+# JKSV is shared by Switch JKSV and 3DS JKSM. SAVER holds GB/GBC/GBA saves.
+_SD_ROOT_SPECS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    ("PSP/SAVEDATA", ("psp",)),
+    ("pspemu/PSP/SAVEDATA", ("psp", "vita")),
+    ("ux0/pspemu/PSP/SAVEDATA", ("psp", "vita")),
+    ("user/00/savedata", ("vita",)),
+    ("ux0/user/00/savedata", ("vita",)),
+    ("data/savegames", ("vita",)),
+    ("ux0/data/savegames", ("vita",)),
+    ("switch/Checkpoint/saves", ("switch",)),
+    ("JKSV", ("switch", "3ds")),
+    ("switch/DBI/saves", ("switch",)),
+    ("Nintendo 3DS", ("3ds",)),
+    ("3ds/Checkpoint/saves", ("3ds",)),
+    ("roms/nds", ("nds",)),
+    ("roms/gb", ("gb",)),
+    ("roms/gbc", ("gbc",)),
+    ("SAVER", ("gba", "gb", "gbc")),
+    ("GBASYS/SAVE", ("gba",)),
+    ("EDGBA/gamedata", ("gba",)),
+    ("SAVEGAME", ("gba",)),
+    ("SAVES", ("gba",)),
+    (".superfw", ("gba",)),
+    ("EDGB", ("gb",)),
+    ("GBOS", ("gb",)),
+)
+
+_WINDOWS_INVALID_CHARS = '<>:"|?*'
+
 # Filesystem-mutating FTP verbs. ``ensure_read_only`` rejects these so this
 # client can never be tricked into writing to (or deleting from) a console.
 MUTATING_COMMANDS = frozenset(
@@ -107,6 +149,55 @@ def join_remote(base: str, name: str) -> str:
         raise RemoteFtpError(f"不安全的远程文件名: {name!r}")
     base = (base or "/").rstrip("/")
     return f"{base}/{clean}" if base else f"/{clean}"
+
+
+def sd_root_paths(platforms: object = None) -> Tuple[str, ...]:
+    """Card-relative directories to pull for ``platforms``.
+
+    ``None`` means every platform. An empty selection returns no roots, which
+    the puller treats as "download nothing" rather than the whole card.
+    """
+    if platforms is None:
+        selected = set(FTP_PLATFORM_ORDER)
+    elif isinstance(platforms, (str, bytes)) or not isinstance(platforms, (list, tuple, set, frozenset)):
+        selected = set()
+    else:
+        selected = set()
+        for item in platforms:
+            text = str(item or "").strip().lower()
+            if text in FTP_PLATFORM_ORDER:
+                selected.add(text)
+    seen: List[str] = []
+    for path, owners in _SD_ROOT_SPECS:
+        if path not in seen and selected.intersection(owners):
+            seen.append(path)
+    return tuple(seen)
+
+
+def skip_dir_names_for(root: str) -> frozenset:
+    """Directory names to leave untouched while mirroring ``root``.
+
+    ``Nintendo 3DS/*/content`` is installed software, not a save. Skipping it
+    keeps an ftpd pull of the encrypted SD from downloading the game itself.
+    """
+    name = str(root or "").replace("\\", "/").strip("/").lower()
+    if name == "nintendo 3ds":
+        return frozenset({"content"})
+    return frozenset()
+
+
+def cache_host_component(host: object) -> str:
+    """A single path segment for ``host``, safe on Windows and POSIX."""
+    raw = str(host or "").strip()
+    if not raw:
+        return "unknown"
+    cleaned = "".join(
+        "_" if (ch in _WINDOWS_INVALID_CHARS or ch in "\\/" or ord(ch) < 32) else ch
+        for ch in raw
+    ).rstrip(" .")
+    if not cleaned or cleaned in (".", "..") or sanitize_component(cleaned) is None:
+        return "unknown"
+    return cleaned[:80]
 
 
 def redact(text: object, *secrets: str) -> str:
@@ -198,6 +289,7 @@ THREEDS_PRESET = FtpProfile(
     path="/",
     description="Nintendo 3DS (FTPD · 默认端口 5000)",
     target_paths=(
+        "Nintendo 3DS",
         "3ds/Checkpoint/saves",
         "JKSV",
         "roms/nds/saves",

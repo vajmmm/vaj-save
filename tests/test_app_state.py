@@ -1314,6 +1314,14 @@ def test_set_ftp_preset_switches_and_persists(tmp_path):
     assert AppState(provider=FakeVolumeProvider([]), library_root=lib).ftp_preset_key == "ftpd"
 
 
+def test_threeds_ftp_preset_includes_encrypted_sd(tmp_path):
+    lib = tmp_path / "lib"
+    state = AppState(provider=FakeVolumeProvider([]), library_root=lib)
+    assert state.set_ftp_preset("3ds") == "3ds"
+    assert "Nintendo 3DS" in state.current_ftp_preset().target_paths
+    assert "3ds/Checkpoint/saves" in state.current_ftp_preset().target_paths
+
+
 def test_pull_ftp_selects_cache_as_device(tmp_path):
     factory = fake_client_factory(checkpoint_ftp_tree())
     lib = tmp_path / "lib"
@@ -1324,7 +1332,7 @@ def test_pull_ftp_selects_cache_as_device(tmp_path):
     result = state.pull_ftp_saves()
 
     assert result.ok is True
-    assert state.current_mount == lib / "ftp-cache" / "checkpoint"
+    assert state.current_mount == lib / "ftp-cache" / "127.0.0.1" / "checkpoint"
     assert state.library_mode is False
     assert state.current_result is not None
     assert state.current_result.saves
@@ -1355,7 +1363,7 @@ def test_pull_ftp_failure_does_not_replace_current_device(tmp_path, psp_sfo_byte
     assert result.ok is False
     # The selected device is unchanged and the half-pull is never selected.
     assert state.current_mount == vol.mount_point
-    assert not (lib / "ftp-cache" / "checkpoint").exists()
+    assert not (lib / "ftp-cache" / "127.0.0.1" / "checkpoint").exists()
     assert any("FTP" in warning for warning in state.warnings)
 
 

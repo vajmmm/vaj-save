@@ -1,15 +1,16 @@
 # vaj-save
 
-掌机存档实验室：备份、版本槽位和导出。识别 PSP / Vita / Switch / 3DS / NDS / GB / GBC / GBA 的 USB 或 SD 导出目录。
+掌机存档备份与版本管理。插上 SD 卡或 U 盘，按机种浏览游戏、备份存档、保留多个历史版本，再导出或恢复。
 
-- 卡带柜按机种分类（PSP / Vita / Switch / 3DS / NDS / GB / GBC / GBA）
-- 备份到 `~/Documents/vaj-save/`（可在「设置」里改），相同内容去重，变化则新开 SAVE SLOT
-- 备注、搜索、收藏；单个版本可删除；版本可恢复到文件夹，或导出 / 导入 ZIP
-- 「备份有更新」只拷有变化的存档，过程可取消；插入后自动备份默认关闭
-- FTP 只读增量拉取，可选记住密码
-- 可将本地备份库单向增量同步到百度网盘应用目录
+- 卡带柜按机种分类：PSP / Vita / Switch / 3DS / NDS / GB / GBC / GBA
+- 备份到 `~/Documents/vaj-save/`（可在「设置」里改），相同内容去重，有变化才开新版本
+- 一条存档保留多个历史版本，可删除单个版本、导出 / 导入 ZIP
+- 「备份有更新」只备份有变化的存档，过程可取消；插入后自动备份默认关闭
+- 支持 FTP 只读增量拉取，以及 Windows 上的 DBI MTP 直连 Switch
+- 3DS 加密 SD 卡可以直接读取存档，不必先用 Checkpoint 导出（见下文）
 - 用卡上的文件系统卷序列号记住存档根目录，下次插入只扫这些目录（刷新设备会全量扫描）
-- 扫描设备只读；恢复只拷到你选的文件夹，不会写入掌机。写回请把恢复目标选成 Checkpoint / JKSV / SAVEDATA 目录
+
+**本工具只读**：扫描和备份都不会写入掌机，恢复只把存档拷到你选的文件夹。
 
 ## 界面预览
 
@@ -17,148 +18,28 @@
 
 > 截图使用演示存档和封面，不包含用户真实数据。
 
+## 快速开始
 
-## 设备检测（Windows）
-
-用 Win32 `GetLogicalDrives` / `GetDriveTypeW` / `GetVolumeInformationW` 枚举盘符，不再硬编码 D..Z 或依赖目录是否存在：
-
-- 列出可移动盘与固定盘，跳过光驱、网络映射盘、无根目录的盘
-- 显示卷标，例如 `F: KINGSTON`；空卷标显示为 `E: 可移动磁盘`
-- 可移动盘排在固定盘前面；同组按盘符字母序
-- 对每个盘做**浅层**指纹识别（只看根目录和少数固定子目录，不做全盘递归），能认出来就在卷信息里标注机种
-
-**默认选中**：启动和点「刷新」时，优先选**可移动盘**，同组里选**盘符靠后**的那个。所以 C/D/E 内置盘 + U 盘 F: 的场景会默认选中 F:；没有可移动盘时回退到字母最大的盘（不会选 C:）。你自己点选的设备不会被自动选中逻辑替换。
-
-U 盘，以及以 USB 大容量存储（UMS）方式直连的掌机（Hekate UMS 挂整张 SD、读卡器、PSP/Vita 的 USB 连接模式）都会得到一个盘符，因此都能被检测到。
-
-
-## 备份路径设置
-
-工具栏「设置」里可以改本地备份库路径，选择后会立即生效并记住（下次启动沿用）：
-
-| 平台 | 配置文件位置 |
-|------|--------------|
-| Windows | `%APPDATA%\vaj-save\config.json` |
-| macOS | `~/Library/Application Support/vaj-save/config.json` |
-| Linux | `$XDG_CONFIG_HOME/vaj-save/config.json`（或 `~/.config/vaj-save/config.json`） |
-
-配置读写失败会安全回退到默认路径（`~/Documents/vaj-save/`），不影响启动。
-
-
-## 百度网盘同步
-
-从左上角菜单选择「配置百度网盘」，填写自己在百度网盘开放平台创建的应用 App Key、Secret Key 和应用名称，再按提示完成设备码授权。应用需要启用百度网盘文件访问权限。应用密钥和授权令牌只保存在操作系统凭据库中；如果系统没有可用的安全凭据库，程序会拒绝保存。
-
-选择「同步到百度网盘」会把本地备份库中的版本 ZIP、游戏目录、备注、收藏状态和版本信息上传到 `/apps/<应用名称>/`。上传的目录清单会移除本机原始存档路径。同步是单向追加：相同版本会跳过，网盘中已有文件不会覆盖或删除；本功能不从网盘下载或恢复。取消时已上传的文件会保留，下一次同步会继续检查并补齐。
-
-
-## 封面
-
-中间「游戏」列的每一行存档会优先显示真实封面缩略图，按下面的优先级取图：
-
-1. **用户投放的封面**：放到本地备份库的
-   `<备份库>/covers/<机种>/<名称>.<扩展名>`
-   - `<机种>` 取 `psp` / `vita` / `switch` / `3ds` / `nds` / `gba`
-   - `<名称>` 取该存档的 `title_id`（没有时用游戏名），文件名中的 Windows 非法字符（`:` `*` `?` 等）会被替换成 `_`，所以**不会**用含 `:` 的 game key 当文件名
-   - 支持的扩展名：`png` `jpg` `jpeg` `webp` `bmp` `gif`，同名时任选一种即可
-   - 画廊只接受竖版或近方形图像；横向文件不会被删除，但不会作为封面显示。
-2. **下载的封面**：GBA/NDS 在 ROM 摘要（SHA1/CRC32）命中**内置离线 libretro 元数据索引**（见下文）时，PSP/Vita/3DS 使用存档标题或 Title ID，均按官方 thumbnail 规则从
-   `https://thumbnails.libretro.com/<System>/Named_Boxarts/<名称>.png` 下载，并缓存到
-   `<备份库>/covers/<机种>/<identity-hash>.png`（`<备份库>/covers/manifest.json` 记录
-   `identity_key` / `provider` / `canonical_title` / `remote_url` / `local_path` / `updated_at`）。
-   缓存有效命中时**完全不走网络**；下载失败（404 / 超时 / 离线 / 内容不完整 / 非图片）会静默跳过，
-   **不会**污染缓存，也不会顶替已有的本地封面。横向下载素材同样不会写入缓存。
-   PSP 存档会优先用内置的 Title ID 别名表把 PARAM.SFO / 存档目录编号映射到官方零售标题，
-   兼容汉化标题、DATA / PROFILE 等后缀；未收录的编号仍按存档标题和目录索引回退。
-   同一游戏在官方目录中同时存在多个地区、语言或修订版时，会优先美国正式版，再以稳定规则选择
-   无修订、非演示版的文件；不同游戏不会被强行猜测。一次运行中的目录索引会复用，避免批量扫描重复下载同一页面。
-3. **存档目录内的内嵌图标**（扫描设备时自动发现，只读，不做整盘递归）：
-   - 先按固定名单匹配（大小写不敏感，优先级从高到低）：`icon0.*` → `icon.*` → `pic1.*` → `thumb.*` → `preview.*` → `folder.*` → `cover.*` → `banner.*` → `boxart.*`，扩展名支持 `png` `jpg` `jpeg` `webp` `bmp` `gif`
-   - 例：PSP `SAVEDATA/<游戏>/ICON0.PNG`、Vita `.../savedata/<游戏>/sce_sys/icon0.png`
-   - 查找顺序：存档目录的固定名单 → 一级子目录的固定名单（`sce_sys/` → `media/` → `icon/` 优先，其余按名排序）→ 存档目录的**通用扫描** → 一级子目录的通用扫描
-   - 通用扫描只取图片扩展名，按「文件名含 `cover`/`icon`/`box` 优先，其次按小写升序」的确定顺序，跳过 symlink
-   - 固定名单**始终优先于**通用扫描（任意深度），所以存档目录里多出来的截图不会顶掉官方图标（Vita 的 `sce_sys/icon0.png` 一定胜出）
-   - 裸存档文件（GBA/NDS 的 `.sav`）会找同名的 `<游戏名>.png` / `.jpg`
-   - **超过 8 MiB 的候选文件一律跳过**（避免极小体积却声明超大画布的 PNG 拖垮界面）
-   - PSP 常见的 `144×80` 横向 `ICON0.PNG` 会保留在存档中，但不会作为画廊或详情封面；找不到竖版封面时显示中性占位
-4. 都没有时，该行显示一个浅灰色方块占位（不会出现留白或字母水印）。
-
-示例（备份库为默认的 `~/Documents/vaj-save/`）：
-
-```
-# PSP 存档 ULJM05800 的封面
-~/Documents/vaj-save/covers/psp/ULJM05800.png
-
-# Vita 游戏 Persona 4 Golden（无 title_id 时用游戏名）
-~/Documents/vaj-save/covers/vita/Persona 4 Golden.jpg
-```
-
-画廊封面先通过方向和解码校验，再按各平台的竖版卡片比例平滑缩放；PSP 盒装图会按比例完整居中显示，两侧以中性底色承接，不再裁掉封面边缘；其他竖版图像继续居中裁切以填满卡片，横向素材不会进入画廊。旧版缩略图辅助函数仍采用 **「cover」填充**语义：极端宽高比会被**裁掉上下或左右边缘**（不会被拉伸变形，也不会留黑边）。超过 8 MiB 的文件、以及超出上限的目标尺寸会被跳过；文件缺失或损坏时静默回退到浅灰色方块，UI 不会报错。
-
-
-## 游戏信息（GB/GBC/GBA/NDS libretro 索引）
-
-GB/GBC/GBA/NDS 的存档通过 ROM 摘要（SHA1/CRC32）匹配身份。内置的离线索引把摘要解析成规范游戏名（`canonical_title`）、地区（`region`）与外部 id（`external_ids`，如 No-Intro id 与卡带 serial），详情栏会优先显示规范名，并按规范名去下载官方封面。GB/GBC 未随包附带空索引；身份仍可用 ROM 头与文件名，封面按标题走 libretro Named_Boxarts。
-
-当 GBA ROM 是汉化版、改版等摘要不在 No-Intro 中时，程序会退回到用 ROM 头部的 **game code**（4 位卡带编号，如 `BPEE`）在内置索引中做一次**保守**匹配：仅当该编号在同一游戏家族内部存在多个地区/修订版本时才确定性地选取一个（优先非 beta/proto/demo 的正式版），若该编号对应多个不同游戏（真实编号冲突）或索引中没有记录，则仍返回“无元数据”，不会根据文件名/标题猜测。命中后的元数据同样以 ROM 的真实身份键缓存，因此批量封面下载可以继续按规范名进行；该回退仅对 GBA 启用。
-
-### 内置完整索引（默认，离线可用）
-
-程序随包内置由**真实 No-Intro DAT** 生成的紧凑索引：
-
-- `vajsave/data/libretro/gba.json`（Nintendo - Game Boy Advance）
-- `vajsave/data/libretro/nds.json`（Nintendo - Nintendo DS，Encrypted + Decrypted）
-- `vajsave/data/libretro/provenance.json`、`TERMS-No-Intro.txt`（数据来源/许可）
-
-索引由 `tools/build_metadata_index.py` 离线生成（解析 Logiqx XML / ClrMamePro 两种 DAT），
-记录按 `(sha1, crc32, title)` 排序，可复现。重新生成：
-
-```bash
-python tools/build_metadata_index.py --platform gba --dat "Nintendo - Game Boy Advance (<version>).dat" --out src/vajsave/data/libretro/gba.json
-python tools/build_metadata_index.py --platform nds --dat "Nintendo - Nintendo DS (<version>).dat" --out src/vajsave/data/libretro/nds.json
-python tools/build_metadata_index.py --platform gb --dat "Nintendo - Game Boy (<version>).dat" --out src/vajsave/data/libretro/gb.json
-python tools/build_metadata_index.py --platform gbc --dat "Nintendo - Game Boy Color (<version>).dat" --out src/vajsave/data/libretro/gbc.json
-```
-
-### 用户自定义索引
-
-也可以额外提供本地 libretro / No-Intro 索引（`.dat` / `.xml` / 紧凑 `.json`），按下述顺序查找（同一摘要以先找到的为准）：
-
-1. 应用配置里的 `libretro_dir`（字符串路径）
-2. `<备份库>/metadata/libretro/`
-3. 程序内置目录 `vajsave/data/libretro/`
-
-索引只在需要时解析一次并常驻内存；列表刷新等 UI 热路径只读已解析的内存表，不会重复解析 DAT、也不会全盘扫描。查不到、索引损坏、平台不支持（非 GB/GBC/GBA/NDS）时统一返回“无元数据”，不影响扫描/备份/封面回退。
-
-解析结果会缓存到 `<备份库>/game_metadata.json`（按 `GameIdentity.identity_key` 为键，原子写入、线程安全）；缓存命中时**完全不加载索引**。
-
-
-## macOS App（双击打开）
-
-打包成窗口程序，不需要自己跑 Python 命令：
+**macOS**（构建出可双击的 `.app`，开发机需要 Python 3.11+）：
 
 ```bash
 PYTHON=python3 ./scripts/build-macos-app.sh
 open dist/vaj-save.app
 ```
 
-产物是 `dist/vaj-save.app`，可拖到「应用程序」里，以后双击启动。
+产物是 `dist/vaj-save.app`，可拖进「应用程序」以后双击启动。给别人用时对方不必装 Python。
 
-开发机需要 Python 3.11+ 才能**构建**；打好的 `.app` 给别人用时不要求对方先装 Python。
-
-## Windows 应用（双击 .exe）
-
-必须在 **Windows** 上构建（PyInstaller 不能从 macOS 交叉编译出可用的 Windows 包）：
+**Windows**（必须在 Windows 上构建）：
 
 ```powershell
-# PowerShell，Python 3.11+ 已安装
+# PowerShell，已装 Python 3.11+
 $env:PYTHON = "python"
 .\scripts\build-windows-app.ps1
 ```
 
-或 `scripts\build-windows-app.bat`。产物是 `dist\vaj-save\vaj-save.exe`，请把整个 `dist\vaj-save\` 文件夹拷走（不要只拷 exe）。对方不需要先装 Python。
+或用 `scripts\build-windows-app.bat`，产物是 `dist\vaj-save\vaj-save.exe`，请整个文件夹拷走，不要只拷 exe。
 
-## 开发安装 / 命令行
+**命令行**：
 
 ```bash
 pip install -e ".[dev]"
@@ -176,53 +57,115 @@ vajsave watch
 | PSP USB | `PSP/SAVEDATA/` | 机上打开「USB 连接」后插线，或 Memory Stick 读卡器 |
 | Vita USB | `user/00/savedata/` 或 `ux0/user/00/savedata/` | VitaShell USB 模式 |
 | Vita 导出 | `data/savegames/` | Vita Save Manager 解密导出 |
-| Vita + Adrenaline | 同时有 Vita 目录和 `pspemu/PSP/SAVEDATA/` | 一条卷上会列出两个 source |
+| Vita + Adrenaline | 同时有 Vita 目录和 `pspemu/PSP/SAVEDATA/` | 一条卷上会列出两个来源 |
 | Switch Checkpoint | `switch/Checkpoint/saves/` | Hekate UMS 或拔卡读卡器 |
 | Switch JKSV | `JKSV/<Game>/...` | 按游戏 / 用户 / 槽位宽松列举；跳过 Saves/ExtData 等保留名 |
 | Switch SD | 仅有 `atmosphere/` 或 `switch/` | 识别为 Switch 卡，存档列表可为空 |
+| Switch DBI MTP | 设备上有 `Saves` 存储 | 见「DBI MTP 直连」 |
 | 3DS Checkpoint | `3ds/Checkpoint/saves/` | 拔卡读卡器 |
 | 3DS JKSM | `JKSV/Saves/`（或 ExtData/SysSave） | 与 Switch JKSV 同根目录名，按子目录区分 |
-| 3DS 加密 SD | 仅有 `Nintendo 3DS/` | 只标记为加密卡，**不当作可管理存档** |
+| 3DS 加密 SD | 卡上有 `Nintendo 3DS/` | 配置密钥后可直接读取，否则只标记为加密卡 |
 | GBA EZ-Flash | `SAVER/*.sav` | 只认固定目录，不全盘搜 `.sav` |
 | GBA EverDrive | `GBASYS/SAVE/*.{sav,srm,fla,eep}` | Mini / X5 |
-| GBA EverDrive Pro | `EDGBA/gamedata/<rom>/bram.*` | display_name 为游戏文件夹名 |
-| GBA SuperChis / SuperFW | `SAVEGAME/*.sav`；有 `.superfw/` 时也认 `SAVES/*.sav` | SuperCard/SuperChis 默认目录；`SAVES/` 太泛，无指纹不收 |
+| GBA EverDrive Pro | `EDGBA/gamedata/<rom>/bram.*` | 显示名为游戏文件夹名 |
+| GBA SuperChis / SuperFW | `SAVEGAME/*.sav`；有 `.superfw/` 时也认 `SAVES/*.sav` | `SAVES/` 太泛，无指纹不收 |
 | NDS TWiLight | 目录内有 `.nds` 且 `saves/*.sav` | 常见于 `roms/nds/` |
-| NDS R4/Wood | 同目录 `.nds` + 同名 `.sav` | 需卡根指纹（`_nds/` / `R4.dat` / `TTMenu/` / `_system_/`）或 `roms/nds`；孤立 `.sav` 不收 |
-| GB | `roms/gb/`、EverDrive `EDGB/` / `GBOS/`、同名 `.gb` + `.sav`/`.srm` | 独立 Dock 项 |
-| GBC | `roms/gbc/`、同名 `.gbc` + `.sav`/`.srm` | 独立 Dock 项 |
+| NDS R4/Wood | 同目录 `.nds` + 同名 `.sav` | 需卡根指纹（`_nds/` / `R4.dat` / `TTMenu/` / `_system_/`）或 `roms/nds` |
+| GB | `roms/gb/`、EverDrive `EDGB/` / `GBOS/`、同名 `.gb` + `.sav`/`.srm` | Dock 独立机种 |
+| GBC | `roms/gbc/`、同名 `.gbc` + `.sav`/`.srm` | Dock 独立机种 |
 | EZ-Flash SAVER 分流 | `SAVER/foo.sav` 旁有 `foo.gb` / `foo.gbc` / `foo.gba` | 按 ROM 后缀记为 GB / GBC / GBA；没有 ROM 仍为 GBA |
 
-无上述指纹的普通 U 盘会标为 `unknown`，不会误报成某台掌机。
+没有上述指纹的普通 U 盘会标为 `unknown`，不会误报成某台掌机。
 
-## Windows DBI MTP（只读）
+## Windows 设备检测
 
-Windows 上可以直接用 DBI 的 MTP responder（`Run MTP responder`）连接破解 Switch，无需盘符或读卡器：
+用 Win32 `GetLogicalDrives` / `GetDriveTypeW` / `GetVolumeInformationW` 枚举盘符，列出可移动盘与固定盘，跳过光驱、网络映射盘和无根目录的盘。卷标会显示出来，例如 `F: KINGSTON`；空卷标显示为 `E: 可移动磁盘`。可移动盘排在固定盘前面。
 
-- 应用自动发现名称匹配 Switch / Nintendo / DBI / Checkpoint 或带 `Saves` 存储的便携设备，普通手机、相机不会出现；设备像盘符一样进入设备列表并支持热插拔。
-- 选中后先把 **`Saves`**（`Installed games` / `Uninstalled games` 下每个 `游戏/用户` 目录）以及 SD 上的 `switch/Checkpoint/saves`、`JKSV/`、`switch/DBI/saves/` 子树**原子增量**拉取到本地缓存（`<库>/mtp-cache/<设备>/`），再走现有扫描/备份。
-- 不会拉取 `Installed games` NSP 安装盘、Album 或整张 SD；恢复仍然只写你选的本地文件夹，**绝不写回掌机**。
-- macOS / Linux 不提供 MTP 协议栈，发现列表为空；请改用 Hekate UMS 挂整张 SD，或拔卡。
+U 盘，以及以 USB 大容量存储方式直连的掌机（Hekate UMS、读卡器、PSP/Vita 的 USB 连接模式）都会得到盘符，因此都能被检测到。
 
-## 本轮不做
+**默认选中**：启动和点「刷新」时优先选可移动盘，同组里选盘符靠后的那个。所以内置盘 C/D/E 加 U 盘 F: 的场景会默认选中 F:；没有可移动盘时回退到字母最大的盘（不会选 C:）。你自己点选的设备不会被自动替换。
 
-- 存档解密、重签、写回、编辑器。只读管理。
+## Windows DBI MTP 直连 Switch
 
-## JKSV / JKSM 布局假设
+Switch 的存档在主机内部，不在 SD 卡上。用 DBI 的 `Run MTP responder` 可以免读卡器直连，也免去 Checkpoint 导出：
 
-真实 JKSV 目录因版本而异。**Switch JKSV** 与 **3DS JKSM** 都可能使用根目录名 `JKSV/`，靠子目录区分：
+- 应用自动发现带 `Saves` 存储的设备（DBI、Haze 等 MTP responder 都行），普通手机、相机不会出现；设备像盘符一样进入列表并支持热插拔。
+- 选中后先把 `Saves`（`Installed games` / `Uninstalled games` 下每个 `游戏/用户` 目录）以及 SD 上的 `switch/Checkpoint/saves`、`JKSV/`、`switch/DBI/saves/` 子树增量拉到本地缓存，再走正常扫描与备份。
+- 不会拉取 NSP 安装盘、相册或整张 SD。恢复仍然只写你选的本地文件夹，绝不写回掌机。
+- macOS / Linux 不提供 MTP 协议栈，发现列表为空；请改用 Hekate UMS，或拔卡。
 
-Switch（跳过保留名 `Saves` / `ExtData` / `SysSave` / `Boss` / `Shared` / `_TRASH_`）：
+## 3DS 加密 SD 直读
 
-- `JKSV/<Game>/`（无子目录）
-- `JKSV/<Game>/<slot>/`
-- `JKSV/<Game>/<user>/<slot>/`
+3DS 把存档以主机唯一的密钥加密后放在 SD 卡的 `Nintendo 3DS/` 里，所以直接插卡时正常情况下看不到任何存档——这也是为什么大家习惯先用 Checkpoint 导出。
 
-3DS JKSM：
+填入本机的两个密钥文件后，本工具可以直接读取这张卡上的存档，不需要 Checkpoint：
 
-- `JKSV/Saves/<Game>/<slot>/`
-- 同理 `ExtData` / `SysSave`
+1. 「设置」里选择主机导出的 `movable.sed`（GodMode9：`SysNAND Virtual/movable.sed`，或解密后的 `essential.exefs`）
+2. 同一处选择 `boot9_prot.bin`（GodMode9：`SysNAND Virtual/boot9_prot.bin`）
+3. 重新扫描设备，卡上的存档会以正常条目出现在画廊里，可备份、可保留多个版本
 
-## 3DS 加密 SD
+说明：
 
-`Nintendo 3DS/` 里是系统加密容器，本工具不会把其中文件列成存档。请先在机上用 Checkpoint 或 JKSM 导出，再扫描。
+- 两个文件都只用于在本机派生出解密密钥，**只保存路径**，不复制进备份库、不写入日志。
+- 备份下来的是**解密后的存档**（`00000001.sav` 容器本身，或 extdata 里的文件），可直接交给存档编辑器之类的工具使用；卡上的原文件永远不动。
+- 如果密钥文件不属于这张卡，扫描会给出「卡上没有与 movable.sed 匹配的 ID0 目录」的提示，此时该卡仍按加密容器处理，不会出错。
+- 卡上读不到游戏名（游戏名在主机内部，封面在需要额外密钥的加密内容里），所以条目先显示 8 位 Title ID；投放对应封面 `covers/3ds/<Title ID>.png` 或录入备注即可。
+- 自检：`python tools/check-threeds-sd.py /Volumes/YOUR_SD --movable-sed ~/keys/movable.sed --boot9 ~/keys/boot9_prot.bin`，只读检查密钥是否匹配这张卡、存档是否为有效的 3DS 存档容器。
+- 卡带游戏的存档在卡带内部，不在 SD 上，任何工具都扫不到。
+
+## 备份路径设置
+
+工具栏「设置」里可以改本地备份库路径，选择后立即生效并记住：
+
+| 平台 | 配置文件位置 |
+|------|--------------|
+| Windows | `%APPDATA%\vaj-save\config.json` |
+| macOS | `~/Library/Application Support/vaj-save/config.json` |
+| Linux | `$XDG_CONFIG_HOME/vaj-save/config.json`（或 `~/.config/vaj-save/config.json`） |
+
+配置读写失败会安全回退到默认路径（`~/Documents/vaj-save/`），不影响启动。
+
+## 百度网盘同步
+
+从左上角菜单选择「配置百度网盘」，填写自己在百度网盘开放平台创建的应用 App Key、Secret Key 和应用名称，再按提示完成设备码授权。应用需要启用百度网盘文件访问权限。应用密钥和授权令牌只保存在操作系统凭据库中；如果系统没有可用的安全凭据库，程序会拒绝保存。
+
+选择「同步到百度网盘」会把本地备份库中的版本 ZIP、游戏目录、备注、收藏状态和版本信息上传到 `/apps/<应用名称>/`。上传的目录清单会移除本机原始存档路径。同步是单向追加：相同版本会跳过，网盘中已有文件不会覆盖或删除；本功能不从网盘下载或恢复。取消时已上传的文件会保留，下一次同步会继续检查并补齐。
+
+## 封面
+
+中间「游戏」列的每一行会优先显示真实封面缩略图，按以下优先级取图：
+
+1. **你自己放的封面**：放到本地备份库的 `<备份库>/covers/<机种>/<名称>.<扩展名>`
+   - `<机种>` 取 `psp` / `vita` / `switch` / `3ds` / `nds` / `gba`
+   - `<名称>` 取该存档的 Title ID（没有时用游戏名）
+   - 支持的扩展名：`png` `jpg` `jpeg` `webp` `bmp` `gif`
+   - 画廊只接受竖版或近方形图像；横向文件不会被删除，但不会作为封面显示
+2. **自动下载**：GBA/NDS 通过 ROM 摘要匹配内置离线元数据索引，PSP/Vita/3DS 按存档标题或 Title ID，从 libretro 官方封面库下载并缓存到 `<备份库>/covers/<机种>/`。缓存有效时完全不走网络；下载失败会静默跳过，不会顶替已有封面。
+3. **存档内的图标**：扫描设备时会只读查找存档目录里的图标（如 PSP 的 `ICON0.PNG`、Vita 的 `sce_sys/icon0.png`），以及裸存档文件同名的 `<游戏名>.png` / `.jpg`
+4. 都没有时显示浅灰色方块占位
+
+示例（备份库为默认的 `~/Documents/vaj-save/`）：
+
+```
+# PSP 存档 ULJM05800 的封面
+~/Documents/vaj-save/covers/psp/ULJM05800.png
+
+# Vita 游戏 Persona 4 Golden（无 Title ID 时用游戏名）
+~/Documents/vaj-save/covers/vita/Persona 4 Golden.jpg
+```
+
+## 游戏信息（GB / GBC / GBA / NDS）
+
+这些机种的存档通过 ROM 摘要（SHA1/CRC32）匹配身份，详情栏会优先显示规范游戏名与地区，封面按规范名下载。程序随包内置由 No-Intro DAT 生成的离线索引，装完即可用，不需要联网。
+
+如果你的 ROM 是汉化版、改版，摘要不在官方索引里：GBA 会用 ROM 头部的卡带编号在内置索引里做一次保守匹配，只在编号唯一对应某个正式版时才采用；否则显示为无元数据，绝不会按文件名猜。
+
+也可以自己提供索引：把 libretro / No-Intro 的 `.dat` / `.xml` / 紧凑 `.json` 放到「设置」里的 `Libretro 元数据目录`，或 `<备份库>/metadata/libretro/`。索引只在需要时解析一次，查不到不会影响扫描、备份和封面回退。
+
+## 只读边界
+
+本工具定位为**只读管理**，不做以下事情：
+
+- 不写入掌机，恢复只拷贝到你选择的文件夹（要写回掌机，请把恢复目标选成 Checkpoint / JKSV / SAVEDATA 目录，由掌机上的工具完成导入）
+- 不改存档内容，不做存档编辑器
+- 3DS 直读也只读：密钥只用于解密，卡上的加密原文件永远不会被修改

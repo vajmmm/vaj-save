@@ -94,6 +94,35 @@ def _dir_row(parent: QWidget, initial: str, object_name: str = "") -> tuple[QWid
     return row, field
 
 
+def _file_row(
+    parent: QWidget,
+    initial: str,
+    object_name: str,
+    caption: str,
+    name_filter: str,
+) -> tuple[QWidget, QLineEdit]:
+    row = QWidget(parent)
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(8)
+    field = QLineEdit(initial)
+    if object_name:
+        field.setObjectName(object_name)
+    browse = QPushButton("浏览…")
+    browse.setObjectName(f"{object_name}Browse" if object_name else "browseButton")
+    browse.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def pick() -> None:
+        chosen, _selected = QFileDialog.getOpenFileName(parent, caption, field.text(), name_filter)
+        if chosen:
+            field.setText(chosen)
+
+    browse.clicked.connect(pick)
+    layout.addWidget(field, 1)
+    layout.addWidget(browse)
+    return row, field
+
+
 HELP_TEXT = (
     "vaj-save 将掌机存档只读备份到电脑，不会写入掌机。\n\n"
     "选择游戏后可备份、恢复到指定文件夹、导出 ZIP、绑定 ROM 或记录备注。\n"
@@ -102,6 +131,8 @@ HELP_TEXT = (
     "「备份有更新」只备份新的或有变化的存档，过程中可取消。\n"
     "插入后自动备份默认关闭，可在设置中打开。\n"
     "FTP 拉取只读且增量跳过未改文件；可选记住密码。\n"
+    "ftpd 预设只拉取勾选机种的存档目录，不会下载整张卡。Checkpoint 预设仍拉取其根目录。\n"
+    "3DS 加密 SD 卡在设置里填入 movable.sed 与 boot9_prot.bin 后可直接读取存档，不必先用 Checkpoint 导出。\n"
     "同一张卡用文件系统卷序列号记住存档根目录，换转接头仍能认出；刷新设备会全量扫描。\n"
     "Dock 含 GB / GBC 独立机种。恢复只拷到你选的文件夹，不会写入掌机。"
 )
@@ -244,6 +275,27 @@ class SettingsDialog(QDialog):
         self.auto_backup = QCheckBox("插入后自动备份有更新的存档")
         self.auto_backup.setObjectName("autoBackupOnInsert")
         self.auto_backup.setChecked(state.auto_backup_on_insert)
+        movable_initial, boot9_initial = state.threeds_key_files
+        movable_row, self.movable_sed = _file_row(
+            self,
+            str(movable_initial or ""),
+            "threedsMovableSed",
+            "选择 movable.sed",
+            "movable.sed (movable*.sed);;所有文件 (*)",
+        )
+        boot9_row, self.boot9 = _file_row(
+            self,
+            str(boot9_initial or ""),
+            "threedsBoot9",
+            "选择 boot9_prot.bin",
+            "boot9 (boot9*.bin);;所有文件 (*)",
+        )
+        self.threeds_hint = QLabel(
+            "3DS 加密 SD 直读（可选）：填入主机导出的 movable.sed 与 boot9_prot.bin，"
+            "即可直接读取卡上的存档；留空则维持原样（只把卡标记为加密容器）。密钥只用于解密，不会复制进备份库。"
+        )
+        self.threeds_hint.setObjectName("threedsKeyHint")
+        self.threeds_hint.setWordWrap(True)
         form.addRow("本地备份库", library_row)
         form.addRow("掌机/外部设备", device_row)
         form.addRow("GBA ROM 目录", gba_row)
@@ -253,6 +305,9 @@ class SettingsDialog(QDialog):
         form.addRow("Libretro 元数据目录", libretro_row)
         form.addRow("保留版本数（0 为不限）", self.keep)
         form.addRow("", self.auto_backup)
+        form.addRow("3DS movable.sed", movable_row)
+        form.addRow("3DS boot9_prot.bin", boot9_row)
+        form.addRow("", self.threeds_hint)
         self.llm_entry = _button(
             "配置…（已启用）" if state.llm_cover_enabled else "配置…（未启用）",
             "fa6s.wand-magic-sparkles",
@@ -282,6 +337,7 @@ class SettingsDialog(QDialog):
         )
         state.set_libretro_dir(self.libretro.text())
         state.set_auto_backup_on_insert(self.auto_backup.isChecked())
+        state.set_threeds_key_files(self.movable_sed.text(), self.boot9.text())
         return state.set_keep_last(self.keep.text()) is not None
 
 

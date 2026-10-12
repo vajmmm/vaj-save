@@ -966,6 +966,11 @@ def test_guess_platform_3ds_nintendo_dir(tmp_path: Path):
     assert guess_platform(tmp_path) == "3ds"
 
 
+def test_guess_platform_gba_savegame(tmp_path: Path):
+    (tmp_path / "SAVEGAME").mkdir()
+    assert guess_platform(tmp_path) == "gba"
+
+
 def test_guess_platform_gba_saver(tmp_path: Path):
     (tmp_path / "SAVER").mkdir()
     assert guess_platform(tmp_path) == "gba"

@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 
 from .models import ScanResult
 from .persistence import atomic_write_json
+from .remote_ftp import cache_host_component
 from .settings_store import SettingsStore
 from .volume_id import volume_id_for
 
@@ -46,7 +47,10 @@ def relative_source_root(mount: Path, source_root: str) -> str | None:
 
 
 def device_key_for(mount: Path, extra: dict | None = None) -> str | None:
-    """Registry key for a mount: volume serial, ``path:{resolved}``, ``ftp:{preset}`` or ``mtp:{id}``."""
+    """Registry key for a mount: volume serial, ``path:{resolved}``, ``ftp:{host}:{preset}`` or ``mtp:{id}``.
+
+    An FTP volume without a host keeps the legacy ``ftp:{preset}`` key.
+    """
     payload = extra or {}
     if payload.get("mtp"):
         mtp_id = payload.get("mtp_id")
@@ -56,6 +60,9 @@ def device_key_for(mount: Path, extra: dict | None = None) -> str | None:
     if payload.get("ftp"):
         preset = payload.get("ftp_preset")
         if isinstance(preset, str) and preset.strip():
+            host = payload.get("ftp_host")
+            if isinstance(host, str) and host.strip():
+                return f"ftp:{cache_host_component(host)}:{preset.strip()}"
             return f"ftp:{preset.strip()}"
         return None
     if payload.get("custom"):

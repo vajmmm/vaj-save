@@ -362,15 +362,25 @@ def backup_save(
     when: Optional[datetime] = None,
     *,
     identity_key: Optional[str] = None,
+    source_override: Optional[Path] = None,
 ) -> BackupResult:
     """Create a new version, or reuse an existing one if content is identical.
 
     ``identity_key`` is the ROM identity resolved by the caller. It is stored on
     the :class:`GameRecord` so browsing the local library can hit covers cached
-    under ``covers/<platform>/<sha1(identity_key)>.png``.
+    under ``covers/<platform>/<sha1(identity_key)>.png``. A missing key backfills
+    an existing record; an unresolved key (``None``) never erases a stored one,
+    and the catalog id itself (:func:`game_key`) is never derived from it.
+
+    ``source_override`` decouples what gets hashed and copied from what the entry
+    points at. It exists for saves that are stored encrypted on the device (the
+    3DS ``Nintendo 3DS/`` card): the payload is decrypted to a local path first
+    and copied from there, while ``snapshot.source_path`` still records the real
+    device path.
     """
     root = Path(library_root)
-    digest = hash_tree(Path(entry.path))
+    source = Path(source_override) if source_override is not None else Path(entry.path)
+    digest = hash_tree(source)
     catalog = load_catalog(root)
     key = game_key(entry)
     resolved_key = str(identity_key).strip() if identity_key else None
@@ -398,7 +408,7 @@ def backup_save(
     now = when or datetime.now()
     stamp = now.strftime("%Y-%m-%d_%H-%M-%S")
     dest_dir = destination_for(entry, root, now)
-    copy_save_tree(Path(entry.path), dest_dir)
+    copy_save_tree(source, dest_dir)
     snapshot = Snapshot(
         id=stamp,
         created_at=now.isoformat(timespec="seconds"),

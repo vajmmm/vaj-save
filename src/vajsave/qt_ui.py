@@ -2341,6 +2341,10 @@ class VajSaveWindow(QMainWindow):
             return
         if not dialog.apply():
             QMessageBox.warning(self, "设置", "保留版本数必须是非负整数。")
+        if self.state.threeds_keys_error:
+            QMessageBox.warning(
+                self, "设置", f"3DS 直读密钥不可用：{self.state.threeds_keys_error}"
+            )
         self._enrichment_attempted.clear()
         self.refresh_all()
 

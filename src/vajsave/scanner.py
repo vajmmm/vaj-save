@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence, Set, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Union
 
 logger = logging.getLogger("vajsave.scanner")
 
@@ -103,7 +103,13 @@ def _detected_platforms(base: Path) -> Set[str]:
 
     if any(
         has_dir(rel)
-        for rel in ("SAVER", "GBASYS/SAVE", "EDGBA/gamedata", ".superfw")
+        for rel in (
+            "SAVER",
+            "GBASYS/SAVE",
+            "EDGBA/gamedata",
+            "SAVEGAME",
+            ".superfw",
+        )
     ):
         detected.add("gba")
 
@@ -226,6 +232,7 @@ def guess_platform(root: Union[Path, str]) -> Optional[str]:
         has_dir("SAVER")
         or has_dir("GBASYS/SAVE")
         or has_dir("EDGBA/gamedata")
+        or has_dir("SAVEGAME")
         or has_dir(".superfw")
     ):
         return "gba"
@@ -330,8 +337,11 @@ def _run_bound_scanner(
     seen_source_roots: Set[Path],
     seen_save_paths: Set[Path],
     bound_items: Sequence[BoundSource],
+    *,
+    extra_kwargs: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Run one platform scanner only against the bound relative directories."""
+    kwargs = extra_kwargs or {}
     for item in bound_items:
         bound_dir = _bound_dir(root, item.relative_root)
         if bound_dir is None or not _path_is_dir(bound_dir):
@@ -345,6 +355,7 @@ def _run_bound_scanner(
             seen_source_roots,
             seen_save_paths,
             standard_root=True,
+            **kwargs,
         )
 
 
@@ -353,20 +364,26 @@ def scan(
     progress: Optional[Callable[[ScanProgress], None]] = None,
     *,
     bound_sources: Sequence[BoundSource] | None = None,
+    threeds_keys: Any = None,
 ) -> ScanResult:
     """Scan a root directory (e.g. mounted USB volume or SD card) and list saves.
 
     ``bound_sources=None`` preserves the full-scan behaviour. A non-empty list
     runs only the matching platform scanners against those relative directories
     so the rest of the volume is not walked.
+
+    ``threeds_keys`` is optional 3DS key material (``ThreedsKeys``). When given,
+    the 3DS scanner also lists the saves inside an encrypted ``Nintendo 3DS/``
+    directory; without it that card keeps being reported as an opaque container.
     """
     with scan_progress_callback(progress):
-        return _scan_root(root_path, bound_sources=bound_sources)
+        return _scan_root(root_path, bound_sources=bound_sources, threeds_keys=threeds_keys)
 
 
 def _scan_root(
     root_path: Union[Path, str],
     bound_sources: Sequence[BoundSource] | None = None,
+    threeds_keys: Any = None,
 ) -> ScanResult:
     root = Path(root_path)
     warnings: List[str] = []
@@ -445,6 +462,9 @@ def _scan_root(
                 index - 1,
                 total,
             )
+            extra: Dict[str, Any] = {}
+            if platform_id == "3ds" and threeds_keys is not None:
+                extra["keys"] = threeds_keys
             if bound_list:
                 _run_bound_scanner(
                     scan_fn,
@@ -456,6 +476,7 @@ def _scan_root(
                     seen_source_roots,
                     seen_save_paths,
                     [item for item in bound_list if item.platform == platform_id],
+                    extra_kwargs=extra,
                 )
             else:
                 scan_fn(
@@ -467,6 +488,7 @@ def _scan_root(
                     seen_source_roots,
                     seen_save_paths,
                     standard_root=standard_root,
+                    **extra,
                 )
             logger.info("平台扫描器 [%s] 扫描完成，累计发现 %d 个存档", label, len(saves))
             emit_scan_progress(

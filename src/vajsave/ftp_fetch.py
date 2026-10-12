@@ -7,8 +7,8 @@ populated. Unchanged files are copied from the previous cache using the
 a half-populated "device", and a previously complete cache is left untouched.
 
 The local layout mirrors the remote one, so the existing platform scanners
-recognise ``<cache>/<preset>/3ds/Checkpoint/saves/...`` as a normal 3DS/Switch
-Checkpoint card.
+recognise ``<cache>/<host>/<preset>/3ds/Checkpoint/saves/...`` as a normal card.
+A preset with ``target_paths`` pulls only those directories.
 """
 
 from __future__ import annotations
@@ -26,8 +26,10 @@ from .remote_ftp import (
     FtpProfile,
     RemoteFtpClient,
     RemoteFtpError,
+    cache_host_component,
     redact,
     sanitize_component,
+    skip_dir_names_for,
 )
 
 FTP_CACHE_DIRNAME = "ftp-cache"
@@ -87,10 +89,22 @@ def ftp_cache_root(library_root) -> Path:
     return Path(library_root) / FTP_CACHE_DIRNAME
 
 
-def cache_dir_for(library_root, preset_key: str) -> Path:
-    """The cache directory for one preset (hostile keys cannot escape)."""
+def cache_dir_in(cache_root, preset_key: str, host: object = None) -> Path:
+    """Cache directory under an already-resolved ``ftp-cache`` root.
+
+    ``host`` splits two consoles that share a preset. Omit it only for callers
+    that still address the legacy flat layout.
+    """
     key = sanitize_component(preset_key) or "default"
-    return ftp_cache_root(library_root) / key
+    base = Path(cache_root)
+    if host is None:
+        return base / key
+    return base / cache_host_component(host) / key
+
+
+def cache_dir_for(library_root, preset_key: str, host: object = None) -> Path:
+    """The cache directory for one preset (hostile keys cannot escape)."""
+    return cache_dir_in(ftp_cache_root(library_root), preset_key, host)
 
 
 def _safe_local_join(base: Path, name: str) -> Path:
@@ -127,6 +141,37 @@ def _throw_if_cancelled(token: object) -> None:
 
 def _relative_posix(*parts: str) -> str:
     return "/".join(part for part in parts if part)
+
+
+def _is_missing_path(exc: BaseException) -> bool:
+    """True when a listing failed because that directory is not on the server."""
+    if isinstance(exc, (KeyError, FileNotFoundError)):
+        return True
+    text = str(exc).lower()
+    return "550" in text or "no such" in text or "not found" in text or "不存在" in text
+
+
+def _remote_under(base: str, rel: str) -> str:
+    """Join a card-relative ``rel`` onto the preset root."""
+    parts = [part for part in str(rel or "").replace("\\", "/").split("/") if part]
+    for part in parts:
+        if sanitize_component(part) is None:
+            raise RemoteFtpError(f"不安全的存档目录: {rel!r}")
+    root = str(base or "/").replace("\\", "/").rstrip("/")
+    suffix = "/".join(parts)
+    if not root:
+        return "/" + suffix
+    return f"{root}/{suffix}"
+
+
+def _local_rel(staging: Path, rel: str) -> Path:
+    """The cache directory that preserves ``rel`` under ``staging``."""
+    current = staging
+    for part in str(rel or "").replace("\\", "/").split("/"):
+        if not part:
+            continue
+        current = _safe_local_join(current, part)
+    return current
 
 
 def _cached_file(old_root: Path, rel: str) -> Optional[Path]:
@@ -175,26 +220,42 @@ def _mirror(
     files_out: Optional[dict] = None,
     token: object = None,
     rel: str = "",
+    skip_dir_names: frozenset = frozenset(),
+    optional: bool = False,
 ) -> Tuple[int, int]:
     """Recursively download ``remote_dir`` into ``local_dir``.
 
     Unchanged files (size + modified match the previous manifest) are copied
     from ``old_root`` instead of downloaded. Unsafe entry names are skipped,
     and every local target is re-validated to stay inside the staging tree.
+    ``optional`` is only for the top call of an allowlisted root: a missing
+    directory is skipped, any other listing error still fails the pull.
     """
     _throw_if_cancelled(token)
     if depth > _MAX_DEPTH:
         return (0, 0)
+    try:
+        entries = list(client.list_dir(remote_dir))
+    except (RemoteFtpError, KeyError, FileNotFoundError) as exc:
+        if optional and depth == 0 and _is_missing_path(exc):
+            return (0, 0)
+        raise
     files = 0
     total = 0
     recorded_files = manifest if manifest is not None else {}
     collected = files_out if files_out is not None else {}
-    for entry in client.list_dir(remote_dir):
+    if entries:
+        local_dir.mkdir(parents=True, exist_ok=True)
+    for entry in entries:
         _throw_if_cancelled(token)
         clean = sanitize_component(entry.name)
         if clean is None:
             continue
-        if entry.is_dir and (clean.lower() in SKIP_DIR_NAMES or entry.name.lower() in SKIP_DIR_NAMES):
+        if entry.is_dir and (
+            clean.casefold() in SKIP_DIR_NAMES
+            or entry.name.casefold() in SKIP_DIR_NAMES
+            or clean.casefold() in skip_dir_names
+        ):
             continue
         target = _safe_local_join(local_dir, clean)
         remote_child = remote_dir.rstrip("/") + "/" + (entry.name if entry.name.endswith(":") else clean)
@@ -210,6 +271,7 @@ def _mirror(
                 files_out=collected,
                 token=token,
                 rel=child_rel,
+                skip_dir_names=skip_dir_names,
             )
             files += child_files
             total += child_bytes
@@ -254,17 +316,20 @@ def pull_preset(
     *,
     token: object = None,
 ) -> FtpPullResult:
-    """Download one preset's remote tree into ``cache_root/<preset-key>``.
+    """Download one preset into ``cache_root/<host>/<preset-key>``.
 
-    Unchanged files are copied from the previous cache when the skip-list
-    matches. Returns a result whose ``ok`` is ``False`` on any connection,
-    listing, download or cancel failure. A failed or cancelled pull removes
-    its staging directory and leaves the previous cache (and manifest) in place.
+    A preset with ``target_paths`` pulls only those directories when its root
+    is ``/``. Otherwise the whole remote path is mirrored. The local layout
+    keeps the remote relative paths so the existing scanners still recognise
+    the cache as a card. Unchanged files are copied from the previous cache
+    when the skip-list matches. A failed or cancelled pull removes its staging
+    directory and leaves the previous cache in place.
     """
     cache_root = Path(cache_root)
     key = sanitize_component(profile.key) or "default"
-    final = cache_root / key
-    staging = cache_root / f".{key}.staging-{os.getpid()}-{uuid4().hex[:8]}"
+    host_part = cache_host_component(profile.host)
+    final = cache_dir_in(cache_root, key, profile.host)
+    staging = cache_root / f".{host_part}.{key}.staging-{os.getpid()}-{uuid4().hex[:8]}"
     factory = client_factory or (lambda preset: RemoteFtpClient(preset, timeout=timeout))
 
     client = None
@@ -311,6 +376,7 @@ def pull_preset(
                     files_out=files_out,
                     token=token,
                     rel="/".join(clean_parts),
+                    skip_dir_names=skip_dir_names_for(target),
                 )
                 files += sub_files
                 total += sub_bytes
@@ -352,8 +418,9 @@ def pull_preset(
     old: Optional[Path] = None
     try:
         cache_root.mkdir(parents=True, exist_ok=True)
+        final.parent.mkdir(parents=True, exist_ok=True)
         if final.exists():
-            old = cache_root / f".{key}.old-{uuid4().hex[:8]}"
+            old = cache_root / f".{host_part}.{key}.old-{uuid4().hex[:8]}"
             os.replace(final, old)
         os.replace(staging, final)
     except OSError as exc:

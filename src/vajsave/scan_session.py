@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Un
 logger = logging.getLogger("vajsave.scan_session")
 
 from .device_registry import bound_sources_from_result, device_key_for
+from . import threeds_sd
 from .library import (
     SaveBackupStatus,
     classify_save_status,
@@ -138,6 +139,9 @@ class ScanSession:
         kwargs: Dict[str, Any] = {"progress": on_progress}
         if bound_sources:
             kwargs["bound_sources"] = bound_sources
+        threeds_keys = self.app.threeds_keys
+        if threeds_keys is not None:
+            kwargs["threeds_keys"] = threeds_keys
         return self._call_scan_fn(path, kwargs)
 
     def _call_scan_fn(self, path: Path, kwargs: Dict[str, Any]) -> ScanResult:
@@ -303,10 +307,14 @@ class ScanSession:
                 pending.append(entry)
         if pending:
             logger.info("开始深度核对 %d 个已建库存档的完整性哈希与版本变更...", len(pending))
+            # Resolve the key material once on this thread: encrypted 3DS SD
+            # saves hash their decrypted payload, not the raw card file.
+            keys = self.app.threeds_keys
+
             def _hash_one(item: SaveEntry) -> Tuple[str, Optional[str], Optional[BaseException]]:
                 try:
-                    return item.path, _hash_tree(Path(item.path)), None
-                except (OSError, ValueError, FileNotFoundError) as exc:
+                    return item.path, _hash_tree(threeds_sd.hash_source(item, keys)), None
+                except (OSError, ValueError, FileNotFoundError, threeds_sd.ThreedsSdError) as exc:
                     return item.path, None, exc
 
             workers = min(2, len(pending))
