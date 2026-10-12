@@ -8,6 +8,7 @@ from typing import List, Optional, Set
 
 from ..models import SaveEntry, SaveSource
 from ..sfo import parse_sfo
+from .console_ids import normalize_ps4_title_id
 from .common import (
     collect_unique_dirs,
     emit_scan_progress,
@@ -45,6 +46,50 @@ def _find_ps4_sfo(path: Path, root_resolved: Path, warnings: List[str]) -> Optio
     return None
 
 
+def _is_ps4_save_dir(path: Path, root_resolved: Path, warnings: List[str]) -> bool:
+    """A game save, not the account folder that merely contains saves."""
+    if _looks_like_ps4_save(path, root_resolved, warnings):
+        return True
+    if _find_ps4_sfo(path, root_resolved, warnings) is not None:
+        return True
+    has_file = False
+    for child in safe_iterdir(path, warnings):
+        if not is_safe_path(child, root_resolved):
+            continue
+        try:
+            if child.is_file():
+                has_file = True
+            elif child.is_dir() and (
+                _CUSA_REGEX.match(child.name)
+                or _find_ps4_sfo(child, root_resolved, warnings) is not None
+            ):
+                return False
+        except OSError:
+            continue
+    return has_file
+
+
+def _iter_ps4_saves(
+    savedata_dir: Path, root_resolved: Path, warnings: List[str]
+) -> List[Path]:
+    """Game folders directly under ``savedata``, or one account level down."""
+    found: List[Path] = []
+    for item in safe_iterdir(savedata_dir, warnings):
+        if not item.is_dir() or not is_safe_path(item, root_resolved):
+            continue
+        if _is_ps4_save_dir(item, root_resolved, warnings):
+            found.append(item)
+            continue
+        for child in safe_iterdir(item, warnings):
+            if (
+                child.is_dir()
+                and is_safe_path(child, root_resolved)
+                and _is_ps4_save_dir(child, root_resolved, warnings)
+            ):
+                found.append(child)
+    return found
+
+
 def _scan_ps4_games_dir(
     savedata_dir: Path,
     root_resolved: Path,
@@ -68,11 +113,7 @@ def _scan_ps4_games_dir(
             root_path=str(savedata_dir),
         )
     )
-    candidates = [
-        item
-        for item in safe_iterdir(savedata_dir, warnings)
-        if item.is_dir() and is_safe_path(item, root_resolved)
-    ]
+    candidates = _iter_ps4_saves(savedata_dir, root_resolved, warnings)
     total = len(candidates)
     for index, item in enumerate(candidates, start=1):
         item_key = resolved_key(item)
@@ -82,7 +123,11 @@ def _scan_ps4_games_dir(
         sfo_path = _find_ps4_sfo(item, root_resolved, warnings)
         sfo_data = parse_sfo(sfo_path) if sfo_path else {}
         title = sfo_data.get("TITLE") or item.name
-        title_id = sfo_data.get("TITLE_ID") or (item.name if _CUSA_REGEX.match(item.name) else item.name)
+        title_id = (
+            normalize_ps4_title_id(sfo_data.get("TITLE_ID"))
+            or normalize_ps4_title_id(item.name)
+            or item.name
+        )
         seen_save_paths.add(item_key)
         saves.append(
             SaveEntry(
@@ -113,7 +158,11 @@ def _scan_single_ps4_save(
     sfo_path = _find_ps4_sfo(save_dir, root_resolved, warnings)
     sfo_data = parse_sfo(sfo_path) if sfo_path else {}
     title = sfo_data.get("TITLE") or save_dir.name
-    title_id = sfo_data.get("TITLE_ID") or (save_dir.name if _CUSA_REGEX.match(save_dir.name) else save_dir.name)
+    title_id = (
+        normalize_ps4_title_id(sfo_data.get("TITLE_ID"))
+        or normalize_ps4_title_id(save_dir.name)
+        or save_dir.name
+    )
 
     if item_key not in seen_source_roots:
         seen_source_roots.add(item_key)
@@ -162,18 +211,15 @@ def scan_ps4(
             if sd.is_dir() and is_safe_path(sd, root_resolved):
                 candidates.append(sd)
 
-    # USB: PS4/SAVEDATA/<account_id>
-    for usb_sd in find_pattern_dirs(root, ("PS4", "SAVEDATA"), root_resolved, warnings, wrapper_depth):
-        for account_dir in safe_iterdir(usb_sd, warnings):
-            if account_dir.is_dir() and is_safe_path(account_dir, root_resolved):
-                candidates.append(account_dir)
-        candidates.append(usb_sd)
+    # USB: PS4/SAVEDATA/<account_id>/<CUSA>. The account folder is not a game.
+    candidates.extend(
+        find_pattern_dirs(root, ("PS4", "SAVEDATA"), root_resolved, warnings, wrapper_depth)
+    )
 
-    # Apollo save tool: data/apollo
-    for apollo in find_pattern_dirs(root, ("data", "apollo"), root_resolved, warnings, wrapper_depth):
-        for sub in safe_iterdir(apollo, warnings):
-            if sub.is_dir() and is_safe_path(sub, root_resolved):
-                candidates.append(sub)
+    # Apollo save tool: data/apollo. One extra level is handled while emitting.
+    candidates.extend(
+        find_pattern_dirs(root, ("data", "apollo"), root_resolved, warnings, wrapper_depth)
+    )
 
     ps4_dirs = collect_unique_dirs(candidates)
     for ps4_dir in ps4_dirs:

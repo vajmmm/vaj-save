@@ -2,7 +2,7 @@
 
 掌机存档备份与版本管理。插上 SD 卡或 U 盘，按机种浏览游戏、备份存档、保留多个历史版本，再导出或恢复。
 
-- 卡带柜按机种分类：PSP / Vita / Switch / 3DS / NDS / GB / GBC / GBA
+- 卡带柜按机种分类：掌机 PSP / Vita / Switch / 3DS / NDS / GB / GBC / GBA，主机 PS3 / PS4 / Wii U / Wii / Xbox 360
 - 备份到 `~/Documents/vaj-save/`（可在「设置」里改），相同内容去重，有变化才开新版本
 - 一条存档保留多个历史版本，可删除单个版本、导出 / 导入 ZIP
 - 「备份有更新」只备份有变化的存档，过程可取消；插入后自动备份默认关闭
@@ -74,8 +74,13 @@ vajsave watch
 | GB | `roms/gb/`、EverDrive `EDGB/` / `GBOS/`、同名 `.gb` + `.sav`/`.srm` | Dock 独立机种 |
 | GBC | `roms/gbc/`、同名 `.gbc` + `.sav`/`.srm` | Dock 独立机种 |
 | EZ-Flash SAVER 分流 | `SAVER/foo.sav` 旁有 `foo.gb` / `foo.gbc` / `foo.gba` | 按 ROM 后缀记为 GB / GBC / GBA；没有 ROM 仍为 GBA |
+| PS3 | `PS3/SAVEDATA/`，或 webMAN 的 `dev_hdd0/home/<用户>/savedata/` | FTP 预设「PS3 实机」，只拉 `savedata` |
+| PS4 | GoldHEN `user/home/<账号>/savedata/CUSA…`，或 `PS4/SAVEDATA/` | FTP 预设「PS4 实机」（端口 2121），只拉 `savedata`。系统设置导出的 USB 存档是加密包，能备份，但没有明文标题 |
+| Wii U | `storage_mlc/usr/save/00050000/<Title>`，或 `wiiu/backups/` | FTPiiU 只拉存档，另拉 `usr/title/.../meta` 用来读游戏名，不拉 `code` |
+| Wii | `savegames/<游戏ID>/`，或 NAND `title/00010000/<ID>/data` | ftpii 只拉 `data`，不拉 `content`（游戏本体）。WiiWare 在 `title/00010001` |
+| Xbox 360 | `Content/<档案>/<TitleID>/00000001/`，Aurora 上多为 `Hdd1/Content` | 只拉 `00000001`（存档）。`00000002` 是安装内容，不下载 |
 
-没有上述指纹的普通 U 盘会标为 `unknown`，不会误报成某台掌机。
+没有上述指纹的普通 U 盘会标为 `unknown`，不会误报成某台掌机。主机和掌机一样只读：扫描和 FTP 都不会写回机器。恢复仍只拷到你选的文件夹。
 
 ## Windows 设备检测
 
@@ -140,7 +145,7 @@ Switch 的存档在主机内部，不在 SD 卡上。用 DBI 的 `Run MTP respon
    - `<名称>` 取该存档的 Title ID（没有时用游戏名）
    - 支持的扩展名：`png` `jpg` `jpeg` `webp` `bmp` `gif`
    - 画廊只接受竖版或近方形图像；横向文件不会被删除，但不会作为封面显示
-2. **自动下载**：GBA/NDS 通过 ROM 摘要匹配内置离线元数据索引，PSP/Vita/3DS 按存档标题或 Title ID，从 libretro 官方封面库下载并缓存到 `<备份库>/covers/<机种>/`。缓存有效时完全不走网络；下载失败会静默跳过，不会顶替已有封面。
+2. **自动下载**：GBA/NDS 通过 ROM 摘要匹配内置离线元数据索引，PSP/Vita/3DS/PS4/Xbox 360 按存档标题或 Title ID，从 libretro 官方封面库下载。PS3、Wii、Wii U 优先用产品编号向 GameTDB 要竖版盒装图（例如 `BLUS30443`、`RMCE01`、`ALZE01`），对不上再按游戏名走 libretro。缓存到 `<备份库>/covers/<机种>/`。缓存有效时完全不走网络；下载失败会静默跳过，不会顶替已有封面。
 3. **存档内的图标**：扫描设备时会只读查找存档目录里的图标（如 PSP 的 `ICON0.PNG`、Vita 的 `sce_sys/icon0.png`），以及裸存档文件同名的 `<游戏名>.png` / `.jpg`
 4. 都没有时显示浅灰色方块占位
 

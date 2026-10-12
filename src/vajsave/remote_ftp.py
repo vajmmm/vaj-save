@@ -174,6 +174,37 @@ def sd_root_paths(platforms: object = None) -> Tuple[str, ...]:
     return tuple(seen)
 
 
+def allow_dir_names_for(root: str) -> dict:
+    """Directory names kept at one depth under a console FTP target.
+
+    The key is the depth of the directory being listed (0 = the target
+    itself). A missing depth allows every child. This is what stops a Wii
+    NAND pull from downloading ``content`` (the game) and an Xbox 360 pull
+    from downloading ``00000002`` (installed title data). Handheld targets
+    are not listed and stay unrestricted.
+    """
+    name = str(root or "").replace("\\", "/").replace(":", "").strip("/").lower()
+    rules = {
+        "dev_hdd0/home": {1: ("savedata",)},
+        "user/home": {1: ("savedata",)},
+        "title/00010000": {1: ("data",)},
+        "title/00010001": {1: ("data",)},
+        "hdd1/content": {2: ("00000001",)},
+        "usb0/content": {2: ("00000001",)},
+        "content": {2: ("00000001",)},
+        "storage_mlc/usr/title/00050000": {1: ("meta",)},
+        "storage_usb/usr/title/00050000": {1: ("meta",)},
+        "usr/title/00050000": {1: ("meta",)},
+    }
+    found = rules.get(name)
+    if not found:
+        return {}
+    return {
+        depth: frozenset(item.casefold() for item in names)
+        for depth, names in found.items()
+    }
+
+
 def skip_dir_names_for(root: str) -> frozenset:
     """Directory names to leave untouched while mirroring ``root``.
 
@@ -370,6 +401,10 @@ WIIU_PRESET = FtpProfile(
         "usr/save/00050000",
         "wiiu/backups",
         "/wiiu/backups",
+        "storage_mlc/usr/title/00050000",
+        "/storage_mlc/usr/title/00050000",
+        "storage_usb/usr/title/00050000",
+        "/storage_usb/usr/title/00050000",
     ),
 )
 
@@ -385,6 +420,8 @@ WII_PRESET = FtpProfile(
         "wiisaves",
         "title/00010000",
         "/title/00010000",
+        "title/00010001",
+        "/title/00010001",
     ),
 )
 

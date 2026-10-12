@@ -64,11 +64,11 @@ def game_identity_key_for_entry(entry: SaveEntry, app: Optional[AppState] = None
         if display:
             return f"psp:name:{normalize_title(display)}"
 
-    elif platform in ("3ds", "vita"):
+    elif platform in ("3ds", "vita", "ps3", "ps4", "wii", "wiiu", "x360"):
         if raw_tid:
             return f"{platform}:{raw_tid.upper()}"
         if display:
-            return f"{platform:name}:{normalize_title(display)}"
+            return f"{platform}:name:{normalize_title(display)}"
 
     # Universal name-based grouping fallback
     name = display or Path(entry.path).stem

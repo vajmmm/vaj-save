@@ -153,6 +153,7 @@ def _detected_platforms(base: Path) -> Set[str]:
         has_dir("savegames")
         or has_dir("wiisaves")
         or has_dir("title/00010000")
+        or has_dir("title/00010001")
     ):
         detected.add("wii")
 
@@ -286,6 +287,7 @@ def guess_platform(root: Union[Path, str]) -> Optional[str]:
         has_dir("savegames")
         or has_dir("wiisaves")
         or has_dir("title/00010000")
+        or has_dir("title/00010001")
     ):
         return "wii"
 

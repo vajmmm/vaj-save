@@ -17,7 +17,7 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional, Tuple
+from typing import Callable, Mapping, Optional, Tuple
 from uuid import uuid4
 
 from .ftp_manifest import load_manifest, save_manifest, should_reuse
@@ -26,6 +26,7 @@ from .remote_ftp import (
     FtpProfile,
     RemoteFtpClient,
     RemoteFtpError,
+    allow_dir_names_for,
     cache_host_component,
     redact,
     sanitize_component,
@@ -221,6 +222,7 @@ def _mirror(
     token: object = None,
     rel: str = "",
     skip_dir_names: frozenset = frozenset(),
+    allow_at_depth: Optional[Mapping[int, frozenset]] = None,
     optional: bool = False,
 ) -> Tuple[int, int]:
     """Recursively download ``remote_dir`` into ``local_dir``.
@@ -257,6 +259,10 @@ def _mirror(
             or clean.casefold() in skip_dir_names
         ):
             continue
+        if entry.is_dir and allow_at_depth:
+            allowed = allow_at_depth.get(depth)
+            if allowed is not None and clean.casefold() not in allowed:
+                continue
         target = _safe_local_join(local_dir, clean)
         remote_child = remote_dir.rstrip("/") + "/" + (entry.name if entry.name.endswith(":") else clean)
         child_rel = _relative_posix(rel, clean)
@@ -272,6 +278,7 @@ def _mirror(
                 token=token,
                 rel=child_rel,
                 skip_dir_names=skip_dir_names,
+                allow_at_depth=allow_at_depth,
             )
             files += child_files
             total += child_bytes
@@ -377,6 +384,7 @@ def pull_preset(
                     token=token,
                     rel="/".join(clean_parts),
                     skip_dir_names=skip_dir_names_for(target),
+                    allow_at_depth=allow_dir_names_for(target),
                 )
                 files += sub_files
                 total += sub_bytes

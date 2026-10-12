@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List, Optional, Set
 
 from ..models import SaveEntry, SaveSource
+from .console_ids import normalize_wii_title_id
 from .common import (
     collect_unique_dirs,
     emit_scan_progress,
@@ -34,11 +35,42 @@ def _read_title_txt(game_dir: Path, root_resolved: Path, warnings: List[str]) ->
     return None
 
 
+_WII_SAVE_FILES = ("banner.bin", "title.txt", "data.bin")
+
+
 def _looks_like_wii_save(path: Path, root_resolved: Path, warnings: List[str]) -> bool:
+    del root_resolved
     for child in safe_iterdir(path, warnings):
-        if child.name.lower() in ("banner.bin", "title.txt"):
+        if child.name.lower() in _WII_SAVE_FILES:
             return True
     return False
+
+
+def _wii_save_target(
+    item: Path, root_resolved: Path, warnings: List[str]
+) -> Optional[tuple]:
+    """Return ``(save_dir, title_id, title)`` or ``None``.
+
+    A NAND title folder holds ``data`` (the save) and ``content`` (the game).
+    Only ``data`` is a save. An SD export keeps ``data.bin`` in the game folder.
+    """
+    data_dir = item / "data"
+    if data_dir.is_dir() and is_safe_path(data_dir, root_resolved):
+        title_id = normalize_wii_title_id(item.name) or item.name
+        title = (
+            _read_title_txt(data_dir, root_resolved, warnings)
+            or _read_title_txt(item, root_resolved, warnings)
+            or title_id
+        )
+        return data_dir, title_id, title
+    if _looks_like_wii_save(item, root_resolved, warnings) or _WII_ID_REGEX.match(item.name):
+        names = {child.name.lower() for child in safe_iterdir(item, warnings)}
+        if "content" in names and not names.intersection(_WII_SAVE_FILES):
+            return None
+        title_id = normalize_wii_title_id(item.name) or item.name
+        title = _read_title_txt(item, root_resolved, warnings) or title_id
+        return item, title_id, title
+    return None
 
 
 def _scan_wii_container_dir(
@@ -69,15 +101,17 @@ def _scan_wii_container_dir(
         for item in safe_iterdir(container_dir, warnings)
         if item.is_dir() and is_safe_path(item, root_resolved)
     ]
-    total = len(candidates)
-    for index, item in enumerate(candidates, start=1):
-        item_key = resolved_key(item)
+    resolved_saves = []
+    for item in candidates:
+        target = _wii_save_target(item, root_resolved, warnings)
+        if target is not None:
+            resolved_saves.append(target)
+    total = len(resolved_saves)
+    for index, (save_dir, title_id, title) in enumerate(resolved_saves, start=1):
+        item_key = resolved_key(save_dir)
         if item_key is None or item_key in seen_save_paths:
             emit_scan_progress(f"正在扫描 Wii… {index}/{total}", index, total)
             continue
-        title_txt = _read_title_txt(item, root_resolved, warnings)
-        title = title_txt or item.name
-        title_id = item.name
         seen_save_paths.add(item_key)
         saves.append(
             SaveEntry(
@@ -85,7 +119,7 @@ def _scan_wii_container_dir(
                 source_id="wii",
                 title_id=title_id,
                 display_name=title,
-                path=str(item),
+                path=str(save_dir),
             )
         )
         emit_scan_progress(f"正在扫描 Wii… {index}/{total}", index, total)
@@ -105,9 +139,12 @@ def _scan_single_wii_save(
         return
     if not save_dir.is_dir() or not is_safe_path(save_dir, root_resolved):
         return
-    title_txt = _read_title_txt(save_dir, root_resolved, warnings)
-    title = title_txt or save_dir.name
-    title_id = save_dir.name
+    if save_dir.name.lower() == "data":
+        title_id = normalize_wii_title_id(save_dir.parent.name) or save_dir.parent.name
+        title = _read_title_txt(save_dir, root_resolved, warnings) or title_id
+    else:
+        title_id = normalize_wii_title_id(save_dir.name) or save_dir.name
+        title = _read_title_txt(save_dir, root_resolved, warnings) or title_id
 
     if item_key not in seen_source_roots:
         seen_source_roots.add(item_key)
@@ -147,6 +184,7 @@ def scan_wii(
         *find_pattern_dirs(root, ("savegames",), root_resolved, warnings, wrapper_depth),
         *find_pattern_dirs(root, ("wiisaves",), root_resolved, warnings, wrapper_depth),
         *find_pattern_dirs(root, ("title", "00010000"), root_resolved, warnings, wrapper_depth),
+        *find_pattern_dirs(root, ("title", "00010001"), root_resolved, warnings, wrapper_depth),
     ]
 
     wii_dirs = collect_unique_dirs(candidates)

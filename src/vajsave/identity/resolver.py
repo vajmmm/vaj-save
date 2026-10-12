@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Mapping, Optional, Union
 
-from . import gb, gba, gbc, nds, psp, switch, threeds, vita
+from . import consoles, gb, gba, gbc, nds, psp, switch, threeds, vita
 from .bindings import BindingStore
 from .cache import RomIdentityCache
 from .models import GameIdentity, GameIdentityResult, unresolved
@@ -33,6 +33,11 @@ _PLATFORM_MODULES = {
     "vita": vita,
     "3ds": threeds,
     "switch": switch,
+    "ps3": consoles,
+    "ps4": consoles,
+    "wii": consoles,
+    "wiiu": consoles,
+    "x360": consoles,
 }
 
 

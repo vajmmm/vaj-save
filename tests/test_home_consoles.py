@@ -44,7 +44,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from conftest import FakeRemoteFtpClient, build_sfo, fake_client_factory
+from vajsave.artwork.console_covers import GameTDBConsoleProvider
+from vajsave.ftp_fetch import cache_dir_for, ftp_cache_root
+from vajsave.identity import GameIdentityResolver
+from vajsave.remote_ftp import allow_dir_names_for
+
+from conftest import build_sfo, fake_client_factory
 
 
 @pytest.fixture(scope="module")
@@ -303,3 +308,305 @@ def test_dock_category_switcher_ui(qt_app, qt_state):
         assert dock.buttons["vita"].isHidden()
     finally:
         window.close()
+
+
+def test_console_identity_uses_product_code(tmp_path: Path):
+    save_dir = tmp_path / "BLUS30123-AUTO"
+    save_dir.mkdir()
+    (save_dir / "PARAM.SFO").write_bytes(
+        build_sfo({"TITLE": "Demon's Souls", "TITLE_ID": "BLUS30123"})
+    )
+    resolver = GameIdentityResolver()
+    result = resolver.resolve(
+        SaveEntry(
+            platform="ps3",
+            source_id="ps3",
+            display_name="BLUS30123-AUTO",
+            path=str(save_dir),
+            title_id="BLUS30123-AUTO",
+        )
+    )
+    assert result.is_resolved
+    assert result.identity_key == "ps3:BLUS30123"
+    assert result.identity.title == "Demon's Souls"
+
+    ps4 = tmp_path / "CUSA00900"
+    (ps4 / "sce_sys").mkdir(parents=True)
+    (ps4 / "sce_sys" / "param.sfo").write_bytes(
+        build_sfo({"TITLE": "Bloodborne", "TITLE_ID": "CUSA00900"})
+    )
+    ps4_result = resolver.resolve(
+        SaveEntry(
+            platform="ps4",
+            source_id="ps4",
+            display_name="CUSA00900",
+            path=str(ps4),
+            title_id="CUSA00900",
+        )
+    )
+    assert ps4_result.identity_key == "ps4:CUSA00900"
+    assert ps4_result.identity.title == "Bloodborne"
+
+    wii = resolver.resolve(
+        SaveEntry(
+            platform="wii",
+            source_id="wii",
+            display_name="Mario Kart Wii",
+            path=str(tmp_path / "wii"),
+            title_id="524D4345",
+        )
+    )
+    assert wii.identity_key == "wii:RMCE"
+    assert wii.identity.title == "Mario Kart Wii"
+
+    wiiu = resolver.resolve(
+        SaveEntry(
+            platform="wiiu",
+            source_id="wiiu",
+            display_name="塞尔达传说 旷野之息",
+            path=str(tmp_path / "wiiu"),
+            title_id="WUP-P-ALZE",
+        )
+    )
+    assert wiiu.identity_key == "wiiu:WUP-P-ALZE"
+
+    xbox = resolver.resolve(
+        SaveEntry(
+            platform="x360",
+            source_id="x360",
+            display_name="Halo 3",
+            path=str(tmp_path / "x360"),
+            title_id="4d5307e6",
+        )
+    )
+    assert xbox.identity_key == "x360:4D5307E6"
+    assert xbox.identity.title == "Halo 3"
+
+
+def test_gametdb_console_cover_urls():
+    provider = GameTDBConsoleProvider()
+    ps3 = provider.cover_candidates("ps3", "BLUS30123", "Demon's Souls")
+    assert ps3[0].url == "https://art.gametdb.com/ps3/cover/US/BLUS30123.jpg"
+    wii = provider.cover_candidates("wii", "RMCE01", "Mario Kart Wii")
+    assert wii[0].url == "https://art.gametdb.com/wii/cover3D/US/RMCE01.png"
+    wii_nand = provider.cover_candidates("wii", "524D4345", "Mario Kart Wii")
+    assert wii_nand[0].url == "https://art.gametdb.com/wii/cover3D/US/RMCE01.png"
+    wiiu = provider.cover_candidates("wiiu", "WUP-P-ALZE", "Breath of the Wild")
+    assert wiiu[0].url == "https://art.gametdb.com/wiiu/coverM/US/ALZE01.jpg"
+    assert provider.cover_candidates("ps4", "CUSA00123", "Bloodborne") == []
+    assert len(ps3) <= 8
+
+
+def test_allow_rules_leave_handheld_targets_alone():
+    assert allow_dir_names_for("PSP/SAVEDATA") == {}
+    assert allow_dir_names_for("dev_hdd0/home")[1] == frozenset({"savedata"})
+    assert allow_dir_names_for("/title/00010000")[1] == frozenset({"data"})
+    assert allow_dir_names_for("Hdd1:/Content")[2] == frozenset({"00000001"})
+    assert allow_dir_names_for("storage_mlc/usr/title/00050000")[1] == frozenset({"meta"})
+
+
+def test_ps4_account_folder_is_not_a_game(tmp_path: Path):
+    root = tmp_path / "usb"
+    save_dir = root / "PS4" / "SAVEDATA" / "aaaaaaaaaaaaaaaa" / "CUSA00123"
+    (save_dir / "sce_sys").mkdir(parents=True)
+    (save_dir / "sce_sys" / "param.sfo").write_bytes(
+        build_sfo({"TITLE": "Bloodborne", "TITLE_ID": "CUSA00123"})
+    )
+    (save_dir / "savedata00.bin").write_bytes(b"SAVE")
+    result = scan(root)
+    assert [save.display_name for save in result.saves] == ["Bloodborne"]
+    assert result.saves[0].title_id == "CUSA00123"
+
+
+def test_wii_nand_save_excludes_content(tmp_path: Path):
+    root = tmp_path / "wii"
+    data = root / "title" / "00010000" / "524D4345" / "data"
+    data.mkdir(parents=True)
+    (data / "title.txt").write_text("Mario Kart Wii\n", encoding="utf-8")
+    (data / "save.bin").write_bytes(b"SAVE")
+    content = root / "title" / "00010000" / "524D4345" / "content"
+    content.mkdir()
+    (content / "game.dol").write_bytes(b"GAME" * 100)
+    result = scan(root)
+    assert len(result.saves) == 1
+    save = result.saves[0]
+    assert save.title_id == "RMCE"
+    assert save.display_name == "Mario Kart Wii"
+    assert Path(save.path).name == "data"
+    assert "content" not in Path(save.path).parts
+
+
+def test_wiiu_hex_save_reads_sibling_title_meta(tmp_path: Path):
+    root = tmp_path / "wiiu"
+    game = root / "storage_mlc" / "usr" / "save" / "00050000" / "1010EC00"
+    (game / "user" / "80000001").mkdir(parents=True)
+    (game / "user" / "80000001" / "game.sav").write_bytes(b"SAVE")
+    meta = root / "storage_mlc" / "usr" / "title" / "00050000" / "1010EC00" / "meta"
+    meta.mkdir(parents=True)
+    (meta / "meta.xml").write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+        <meta>
+            <longname_en>Mario Kart 8</longname_en>
+            <product_code>WUP-P-AMKE</product_code>
+            <title_id>000500001010EC00</title_id>
+        </meta>
+        """,
+        encoding="utf-8",
+    )
+    (root / "storage_mlc" / "usr" / "title" / "00050000" / "1010EC00" / "code").mkdir()
+    result = scan(root)
+    assert len(result.saves) == 1
+    save = result.saves[0]
+    assert save.display_name == "Mario Kart 8"
+    assert save.title_id == "WUP-P-AMKE"
+    assert Path(save.path) == game
+
+
+def test_wiiu_hex_only_title_id(tmp_path: Path):
+    root = tmp_path / "mlc"
+    game = root / "storage_mlc" / "usr" / "save" / "00050000" / "1010ec00"
+    (game / "user").mkdir(parents=True)
+    result = scan(root)
+    assert len(result.saves) == 1
+    assert result.saves[0].title_id == "000500001010EC00"
+
+
+def test_remote_home_console_pulls_skip_games(tmp_path: Path):
+    """FTP presets download saves and leave installed games on the console."""
+    remote_tree: Dict[str, Any] = {
+        "dev_hdd0": {
+            "home": {
+                "00000001": {
+                    "savedata": {
+                        "BLUS30123-AUTO": {
+                            "PARAM.SFO": build_sfo(
+                                {"TITLE": "Demon's Souls", "TITLE_ID": "BLUS30123"}
+                            ),
+                            "PARAM.PFD": b"\x00" * 16,
+                            "DATA.BIN": b"PS3-SAVE",
+                        }
+                    },
+                    "trophy": {"huge.bin": b"TROPHY" * 50},
+                }
+            },
+            "game": {"BLUS30123": {"EBOOT.BIN": b"GAME" * 100}},
+        },
+        "user": {
+            "home": {
+                "account": {
+                    "savedata": {
+                        "CUSA00123": {
+                            "sce_sys": {
+                                "param.sfo": build_sfo(
+                                    {"TITLE": "Bloodborne", "TITLE_ID": "CUSA00123"}
+                                )
+                            },
+                            "savedata00.bin": b"PS4-SAVE",
+                        }
+                    },
+                    "trophy": {"data.bin": b"TROPHY"},
+                }
+            }
+        },
+        "title": {
+            "00010000": {
+                "524D4345": {
+                    "data": {
+                        "title.txt": b"Mario Kart Wii\n",
+                        "save.bin": b"WII-SAVE",
+                    },
+                    "content": {"game.dol": b"WII-GAME" * 100},
+                }
+            }
+        },
+        "storage_mlc": {
+            "usr": {
+                "save": {
+                    "00050000": {
+                        "1010EC00": {"user": {"80000001": {"game.sav": b"U-SAVE"}}}
+                    }
+                },
+                "title": {
+                    "00050000": {
+                        "1010EC00": {
+                            "meta": {
+                                "meta.xml": (
+                                    "<?xml version='1.0' encoding='utf-8'?>"
+                                    "<meta><longname_en>Mario Kart 8</longname_en>"
+                                    "<product_code>WUP-P-AMKE</product_code></meta>"
+                                ).encode()
+                            },
+                            "code": {"game.rpx": b"WIIU-GAME" * 100},
+                        }
+                    }
+                },
+            }
+        },
+        "Hdd1": {
+            "Content": {
+                "E000000000000001": {
+                    "4D5307E6": {
+                        "00000001": {"halo.sav": _build_fake_stfs("Halo 3", "Auto")},
+                        "00000002": {"game": b"XBOX-GAME" * 100},
+                    }
+                }
+            }
+        },
+    }
+    library = tmp_path / "library"
+    cache_root = ftp_cache_root(library)
+
+    def pulled(key: str):
+        profile = get_preset(key)
+        result = pull_preset(
+            profile, cache_root, client_factory=fake_client_factory(remote_tree)
+        )
+        assert result.ok, result.error
+        return result.path
+
+    ps3_root = pulled(PS3_PRESET_KEY)
+    assert (ps3_root / "dev_hdd0" / "home" / "00000001" / "savedata").is_dir()
+    assert not (ps3_root / "dev_hdd0" / "home" / "00000001" / "trophy").exists()
+    assert not (ps3_root / "dev_hdd0" / "game").exists()
+    ps3 = scan(ps3_root)
+    assert {(save.title_id, save.display_name) for save in ps3.saves} >= {
+        ("BLUS30123", "Demon's Souls")
+    }
+
+    ps4_root = pulled(PS4_PRESET_KEY)
+    assert not (ps4_root / "user" / "home" / "account" / "trophy").exists()
+    ps4 = scan(ps4_root)
+    assert any(save.display_name == "Bloodborne" for save in ps4.saves)
+
+    wii_root = pulled(WII_PRESET_KEY)
+    assert not (
+        wii_root / "title" / "00010000" / "524D4345" / "content"
+    ).exists()
+    wii = scan(wii_root)
+    assert len(wii.saves) == 1
+    assert wii.saves[0].title_id == "RMCE"
+    assert wii.saves[0].display_name == "Mario Kart Wii"
+
+    wiiu_root = pulled(WIIU_PRESET_KEY)
+    assert not (
+        wiiu_root / "storage_mlc" / "usr" / "title" / "00050000" / "1010EC00" / "code"
+    ).exists()
+    wiiu = scan(wiiu_root)
+    assert any(save.display_name == "Mario Kart 8" for save in wiiu.saves)
+    assert any(save.title_id == "WUP-P-AMKE" for save in wiiu.saves)
+
+    xbox_root = pulled(X360_PRESET_KEY)
+    assert not (
+        xbox_root
+        / "Hdd1"
+        / "Content"
+        / "E000000000000001"
+        / "4D5307E6"
+        / "00000002"
+    ).exists()
+    xbox = scan(xbox_root)
+    assert any(save.display_name == "Halo 3" for save in xbox.saves)
+    assert any(save.title_id == "4D5307E6" for save in xbox.saves)
+
+    # The cache directory helper stays under the library, one host per preset.
+    assert cache_dir_for(library, PS3_PRESET_KEY, "127.0.0.1") == ps3_root

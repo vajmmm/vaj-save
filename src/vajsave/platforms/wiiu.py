@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, List, Optional, Set
-import xml.etree.ElementTree as ET
 
 from ..models import SaveEntry, SaveSource
+from .console_ids import normalize_wiiu_title_id
 from .common import (
     collect_unique_dirs,
     emit_scan_progress,
@@ -43,15 +45,94 @@ def _parse_wiiu_meta_xml(xml_path: Path) -> Dict[str, str]:
     return result
 
 
+_WIIU_HEX8 = re.compile(r"^[0-9A-Fa-f]{8}$")
+_WIIU_HEX16 = re.compile(r"^[0-9A-Fa-f]{16}$")
+
+
+def _sibling_title_meta(game_dir: Path, root_resolved: Path) -> Optional[Path]:
+    """``usr/save/00050000/<id>`` → ``usr/title/00050000/<id>/meta/meta.xml``.
+
+    FTPiiU keeps the game name beside the title, not inside the save.
+    """
+    try:
+        parent = game_dir.parent
+        if parent.name.lower() != "00050000":
+            return None
+        save_root = parent.parent
+        if save_root.name.lower() != "save":
+            return None
+        meta = save_root.parent / "title" / "00050000" / game_dir.name / "meta" / "meta.xml"
+    except (OSError, ValueError):
+        return None
+    if meta.is_file() and is_safe_path(meta, root_resolved):
+        return meta
+    return None
+
+
 def _find_wiiu_meta(game_dir: Path, root_resolved: Path, warnings: List[str]) -> Optional[Path]:
-    """Look for meta/meta.xml or meta.xml in game directory."""
+    """Look for meta/meta.xml, meta.xml, or the sibling title meta."""
+    del warnings
     meta_sub = game_dir / "meta" / "meta.xml"
     if meta_sub.is_file() and is_safe_path(meta_sub, root_resolved):
         return meta_sub
     direct = game_dir / "meta.xml"
     if direct.is_file() and is_safe_path(direct, root_resolved):
         return direct
-    return None
+    return _sibling_title_meta(game_dir, root_resolved)
+
+
+def _is_wiiu_game_dir(path: Path, root_resolved: Path, warnings: List[str]) -> bool:
+    name = path.name
+    if _WIIU_HEX8.fullmatch(name) or _WIIU_HEX16.fullmatch(name):
+        return True
+    if _find_wiiu_meta(path, root_resolved, warnings) is not None:
+        return True
+    for folder in ("user", "common"):
+        child = path / folder
+        if child.is_dir() and is_safe_path(child, root_resolved):
+            return True
+    return False
+
+
+def _wiiu_label(item: Path, meta: Dict[str, str]) -> tuple:
+    title = (
+        meta.get("longname_zh")
+        or meta.get("longname_en")
+        or meta.get("longname_ja")
+        or meta.get("shortname_zh")
+        or meta.get("shortname_en")
+        or ""
+    )
+    if meta.get("product_code"):
+        title_id = meta["product_code"]
+    elif meta.get("title_id"):
+        title_id = normalize_wiiu_title_id(meta["title_id"]) or meta["title_id"]
+    else:
+        title_id = normalize_wiiu_title_id(item.name) or item.name
+    if not title:
+        title = title_id or item.name
+    return title, title_id
+
+
+def _iter_wiiu_games(
+    container_dir: Path, root_resolved: Path, warnings: List[str]
+) -> List[Path]:
+    """Game folders, plus one batch level (SaveMii date folders)."""
+    found: List[Path] = []
+    for item in safe_iterdir(container_dir, warnings):
+        if not item.is_dir() or not is_safe_path(item, root_resolved):
+            continue
+        if _is_wiiu_game_dir(item, root_resolved, warnings):
+            found.append(item)
+            continue
+        for child in safe_iterdir(item, warnings):
+            if (
+                child.is_dir()
+                and is_safe_path(child, root_resolved)
+                and _is_wiiu_game_dir(child, root_resolved, warnings)
+            ):
+                found.append(child)
+    return found
 
 
 def _looks_like_wiiu_save(path: Path, root_resolved: Path, warnings: List[str]) -> bool:
@@ -87,11 +168,7 @@ def _scan_wiiu_container_dir(
             root_path=str(container_dir),
         )
     )
-    candidates = [
-        item
-        for item in safe_iterdir(container_dir, warnings)
-        if item.is_dir() and is_safe_path(item, root_resolved)
-    ]
+    candidates = _iter_wiiu_games(container_dir, root_resolved, warnings)
     total = len(candidates)
     for index, item in enumerate(candidates, start=1):
         item_key = resolved_key(item)
@@ -100,15 +177,7 @@ def _scan_wiiu_container_dir(
             continue
         meta_path = _find_wiiu_meta(item, root_resolved, warnings)
         meta = _parse_wiiu_meta_xml(meta_path) if meta_path else {}
-        title = (
-            meta.get("longname_zh")
-            or meta.get("longname_en")
-            or meta.get("longname_ja")
-            or meta.get("shortname_zh")
-            or meta.get("shortname_en")
-            or item.name
-        )
-        title_id = meta.get("product_code") or meta.get("title_id") or item.name
+        title, title_id = _wiiu_label(item, meta)
         seen_save_paths.add(item_key)
         saves.append(
             SaveEntry(
@@ -138,13 +207,7 @@ def _scan_single_wiiu_save(
         return
     meta_path = _find_wiiu_meta(save_dir, root_resolved, warnings)
     meta = _parse_wiiu_meta_xml(meta_path) if meta_path else {}
-    title = (
-        meta.get("longname_zh")
-        or meta.get("longname_en")
-        or meta.get("longname_ja")
-        or save_dir.name
-    )
-    title_id = meta.get("product_code") or meta.get("title_id") or save_dir.name
+    title, title_id = _wiiu_label(save_dir, meta)
 
     if item_key not in seen_source_roots:
         seen_source_roots.add(item_key)

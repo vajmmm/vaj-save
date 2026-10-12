@@ -57,6 +57,7 @@ from .providers import (
     libretro_title_candidates,
     psp_title_candidates,
 )
+from .console_covers import GameTDBConsoleProvider
 from .retroflow_covers import RetroFlowCoverProvider, clean_playstation_title_id
 from .switch_covers import (
     GameTDBSwitchProvider,
@@ -240,6 +241,7 @@ class ArtworkService:
                 RetroFlowCoverProvider(),
                 GameTDBSwitchProvider(),
                 NlibSwitchProvider(),
+                GameTDBConsoleProvider(),
             ]
         else:
             self.providers = list(providers)
@@ -586,6 +588,14 @@ class ArtworkService:
             if downloaded is not None:
                 return downloaded
         else:
+            box = self._download_console_boxart(
+                plat,
+                title=title,
+                title_id=title_id or getattr(entry, "title_id", None),
+                identity_key=identity_key,
+            )
+            if box is not None:
+                return box
             names = []
             if plat == "3ds" and title_id:
                 names.extend(self._3ds_names_for_title_id(title_id))
@@ -615,6 +625,33 @@ class ArtworkService:
             return ArtworkResolution(str(embedded), SOURCE_EMBEDDED)
         logger.info("[%s] 未获取到可用封面，使用默认占位图: %s", plat, title)
         return PLACEHOLDER
+
+    def _download_console_boxart(
+        self,
+        platform: str,
+        *,
+        title: str,
+        title_id: Optional[str],
+        identity_key: Optional[str],
+    ) -> Optional[ArtworkResolution]:
+        """GameTDB retail box for a PS3, Wii or Wii U product code.
+
+        Returns ``None`` when the platform has no product-code covers or every
+        candidate misses, so the caller can still try a title-name lookup.
+        """
+        plat = (platform or "").strip().lower()
+        if plat not in ("ps3", "wii", "wiiu"):
+            return None
+        for provider in self.providers:
+            if not isinstance(provider, GameTDBConsoleProvider):
+                continue
+            for art in provider.cover_candidates(plat, title_id, title):
+                stored = self._store_artwork(
+                    art, identity_key=identity_key, platform=plat
+                )
+                if stored is not None:
+                    return ArtworkResolution(str(stored), SOURCE_DOWNLOADED)
+        return None
 
     def _download_from_listing(
         self,

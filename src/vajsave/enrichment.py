@@ -43,8 +43,19 @@ if TYPE_CHECKING:
     from .app_state import AppState
 
 # Platforms whose artwork provider name is the save's own SFO / display title
-# rather than a ROM-digest index canonical title.
-_TITLE_PROVIDER_PLATFORMS = ("psp", "vita", "3ds", "switch")
+# rather than a ROM-digest index canonical title. Home consoles join the
+# handhelds: PS3/Wii/Wii U also try a product-code box before the title.
+_TITLE_PROVIDER_PLATFORMS = (
+    "psp",
+    "vita",
+    "3ds",
+    "switch",
+    "ps3",
+    "ps4",
+    "wii",
+    "wiiu",
+    "x360",
+)
 
 # Sentinel distinguishing "leave this setting untouched" from an explicit None
 # (which clears a persisted ROM directory) in ``set_rom_dirs``.
@@ -422,11 +433,11 @@ class Enrichment:
 
         The official libretro filename rule needs the index's canonical title, so
         without metadata this stays a local-only resolution: the app never guesses
-        a name (and never touches the network) for an unknown ROM.  PSP/Vita/3DS
-        are the exception: they have no ROM index, so their PARAM.SFO / Checkpoint
-        display title is used directly. PSP and Vita never use the embedded icon
-        as a gallery cover (banner / LiveArea icon); a failed download falls
-        through to the placeholder.
+        a name (and never touches the network) for an unknown ROM.  PSP/Vita/3DS/
+        Switch and the home consoles are the exception: they have no ROM index, so
+        the save title or product code is used directly. PSP and Vita never use
+        the embedded icon as a gallery cover; a failed download falls through to
+        the placeholder.
         """
         app = self.app
         try:

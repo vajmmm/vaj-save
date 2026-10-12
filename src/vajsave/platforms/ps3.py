@@ -7,6 +7,7 @@ from typing import List, Set
 
 from ..models import SaveEntry, SaveSource
 from ..sfo import parse_sfo
+from .console_ids import normalize_ps3_title_id
 from .common import (
     collect_unique_dirs,
     emit_scan_progress,
@@ -71,7 +72,9 @@ def _scan_ps3_savedata_dir(
     candidates = [
         item
         for item in safe_iterdir(savedata_dir, warnings)
-        if item.is_dir() and is_safe_path(item, root_resolved)
+        if item.is_dir()
+        and is_safe_path(item, root_resolved)
+        and _looks_like_ps3_save(item, root_resolved, warnings)
     ]
     total = len(candidates)
     for index, item in enumerate(candidates, start=1):
@@ -82,7 +85,12 @@ def _scan_ps3_savedata_dir(
         sfo_path = find_param_sfo(item, root_resolved, warnings)
         sfo_data = parse_sfo(sfo_path) if sfo_path else {}
         title = sfo_data.get("TITLE") or sfo_data.get("SUB_TITLE") or item.name
-        title_id = sfo_data.get("TITLE_ID") or sfo_data.get("SAVEDATA_DIRECTORY") or item.name
+        title_id = (
+            normalize_ps3_title_id(sfo_data.get("TITLE_ID"))
+            or normalize_ps3_title_id(sfo_data.get("SAVEDATA_DIRECTORY"))
+            or normalize_ps3_title_id(item.name)
+            or item.name
+        )
         seen_save_paths.add(item_key)
         saves.append(
             SaveEntry(
@@ -113,7 +121,12 @@ def _scan_single_ps3_save(
     sfo_path = find_param_sfo(save_dir, root_resolved, warnings)
     sfo_data = parse_sfo(sfo_path) if sfo_path else {}
     title = sfo_data.get("TITLE") or sfo_data.get("SUB_TITLE") or save_dir.name
-    title_id = sfo_data.get("TITLE_ID") or sfo_data.get("SAVEDATA_DIRECTORY") or save_dir.name
+    title_id = (
+        normalize_ps3_title_id(sfo_data.get("TITLE_ID"))
+        or normalize_ps3_title_id(sfo_data.get("SAVEDATA_DIRECTORY"))
+        or normalize_ps3_title_id(save_dir.name)
+        or save_dir.name
+    )
 
     if item_key not in seen_source_roots:
         seen_source_roots.add(item_key)
