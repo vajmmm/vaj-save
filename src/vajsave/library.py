@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import shutil
 import stat
 import sys
 import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -71,16 +73,61 @@ _catalog_cache: Dict[Tuple[str, int, int], Catalog] = {}
 _catalog_cache_lock = threading.Lock()
 
 
+def destination_slot_dir(entry: SaveEntry, library_root: Path) -> Path:
+    platform = sanitize_name(entry.platform or "unknown", "unknown")
+    title = sanitize_name(entry.title_id or entry.display_name or "untitled")
+    slot = sanitize_name(entry.slot or entry.user or "default", "default")
+    return Path(library_root) / platform / title / slot
+
+
 def destination_for(
     entry: SaveEntry,
     library_root: Path,
     when: Optional[datetime] = None,
+    *,
+    stamp: Optional[str] = None,
 ) -> Path:
-    stamp = (when or datetime.now()).strftime("%Y-%m-%d_%H-%M-%S")
-    platform = sanitize_name(entry.platform or "unknown", "unknown")
-    title = sanitize_name(entry.title_id or entry.display_name or "untitled")
-    slot = sanitize_name(entry.slot or entry.user or "default", "default")
-    return Path(library_root) / platform / title / slot / stamp
+    if stamp is None:
+        stamp = (when or datetime.now()).strftime("%Y-%m-%d_%H-%M-%S")
+    return destination_slot_dir(entry, library_root) / stamp
+
+
+def generate_unique_snapshot_id(
+    game: GameRecord,
+    entry: SaveEntry,
+    library_root: Path,
+    when: Optional[datetime] = None,
+) -> Tuple[str, Path]:
+    now = when or datetime.now()
+    base_stamp = now.strftime("%Y-%m-%d_%H-%M-%S")
+    existing_ids = {v.id for v in game.versions}
+    slot_dir = destination_slot_dir(entry, library_root)
+    stamp = base_stamp
+    counter = 1
+    while stamp in existing_ids or (slot_dir / stamp).exists():
+        stamp = f"{base_stamp}_{counter}"
+        counter += 1
+    dest_dir = slot_dir / stamp
+    return stamp, dest_dir
+
+
+def cleanup_staging(library_root: Path, max_age_seconds: int = 3600) -> None:
+    """Clean up stale staging folders in .staging."""
+    staging_dir = Path(library_root) / ".staging"
+    if not staging_dir.is_dir():
+        return
+    now_ts = datetime.now().timestamp()
+    try:
+        for item in staging_dir.iterdir():
+            try:
+                if item.is_dir():
+                    mtime = item.stat().st_mtime
+                    if now_ts - mtime > max_age_seconds:
+                        shutil.rmtree(item, ignore_errors=True)
+            except OSError:
+                pass
+    except OSError:
+        pass
 
 
 def catalog_path(library_root: Path) -> Path:
@@ -242,7 +289,7 @@ def is_inside_library(path: Union[Path, str], library_root: Union[Path, str]) ->
         if not _is_safe_library_path(target, root):
             return False
         rel = target.relative_to(root)
-        if rel.parts and rel.parts[0] in ("mtp-cache", "ftp-cache"):
+        if rel.parts and rel.parts[0] in ("mtp-cache", "ftp-cache", ".staging"):
             return False
         return True
     except (TypeError, ValueError, OSError):
@@ -284,28 +331,29 @@ def prune_game_versions(
     game: GameRecord,
     library_root: Path,
     keep_last: Optional[int] = None,
-) -> None:
-    """Drop oldest in-library versions beyond keep_last. keep_last<=0 means no prune.
+) -> int:
+    """Drop oldest un-locked in-library versions beyond keep_last. keep_last<=0 means no prune.
 
-    Deletes disk first; catalog entry is removed only after successful delete or
-    when the payload path is already missing. Unsafe/escaped paths and failed
-    deletes retain their catalog entries. Newest keep_last entries are never
-    candidates for removal.
+    Locked versions (snapshot.locked is True) are protected and are NEVER auto-pruned.
+    Returns the number of pruned versions.
     """
     if keep_last is None:
         keep_last = load_keep_last(library_root)
     if keep_last <= 0:
-        return
-    # Only the oldest prefix beyond keep_last is eligible; skip (retain) entries
-    # that cannot be safely removed without touching the newest keep_last.
-    candidates_end = len(game.versions) - keep_last
-    i = 0
-    while i < candidates_end:
-        if _delete_snapshot_payload(game.versions[i], library_root):
-            game.versions.pop(i)
-            candidates_end -= 1
-        else:
-            i += 1
+        return 0
+
+    unlocked = [v for v in game.versions if not getattr(v, "locked", False)]
+    if len(unlocked) <= keep_last:
+        return 0
+
+    to_prune = unlocked[:-keep_last]
+    pruned_count = 0
+    for snapshot in to_prune:
+        if _delete_snapshot_payload(snapshot, library_root):
+            if snapshot in game.versions:
+                game.versions.remove(snapshot)
+                pruned_count += 1
+    return pruned_count
 
 
 # Internal cover helpers re-exported/aliased for compatibility
@@ -380,6 +428,8 @@ def backup_save(
     """
     root = Path(library_root)
     source = Path(source_override) if source_override is not None else Path(entry.path)
+    if not source.exists():
+        raise FileNotFoundError(f"存档路径不存在: {source}")
     digest = hash_tree(source)
     catalog = load_catalog(root)
     key = game_key(entry)
@@ -399,31 +449,74 @@ def backup_save(
     elif resolved_key and not game.identity_key:
         game.identity_key = resolved_key
         catalog_dirty = True
-    existing = game.find_hash(digest)
-    if existing is not None:
+
+    # P0: A -> B -> A history fix: deduplicate ONLY against the latest snapshot!
+    latest = latest_snapshot(game)
+    if latest is not None and latest.sha256 == digest:
         if catalog_dirty:
             save_catalog(root, catalog)
-        return BackupResult(game=game, snapshot=existing, is_new=False, path=existing.absolute_path(root))
+        return BackupResult(game=game, snapshot=latest, is_new=False, path=latest.absolute_path(root))
+
+    cleanup_staging(root)
 
     now = when or datetime.now()
-    stamp = now.strftime("%Y-%m-%d_%H-%M-%S")
-    dest_dir = destination_for(entry, root, now)
-    copy_save_tree(source, dest_dir)
+    stamp, dest_dir = generate_unique_snapshot_id(game, entry, root, now)
+
+    # Atomic Staging: copy to .staging first and verify copy integrity
+    staging_base = root / ".staging"
+    staging_base.mkdir(parents=True, exist_ok=True)
+    stage_dir = staging_base / f"{stamp}_{uuid.uuid4().hex[:8]}"
+    stage_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        copy_save_tree(source, stage_dir)
+        staged_target = stage_dir / source.name
+
+        staged_digest = hash_tree(staged_target)
+        source_check = hash_tree(source)
+        if staged_digest != digest or staged_digest != source_check:
+            raise ValueError("备份源在复制过程中被修改或数据校验失败，已取消备份")
+
+        dest_dir.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(str(stage_dir), str(dest_dir))
+    except Exception as exc:
+        shutil.rmtree(stage_dir, ignore_errors=True)
+        raise exc
+
     snapshot = Snapshot(
         id=stamp,
         created_at=now.isoformat(timespec="seconds"),
-        sha256=digest,
+        sha256=staged_digest,
         source_path=entry.path,
         path=dest_dir.relative_to(root).as_posix(),
         slot=entry.slot,
         user=entry.user,
+        locked=False,
+        note="",
     )
     game.versions.append(snapshot)
     if entry.display_name:
         game.display_name = entry.display_name
+
+    # Atomic catalog commit: if save_catalog fails, remove dest_dir to prevent orphan
+    try:
+        save_catalog(root, catalog)
+    except Exception as exc:
+        if dest_dir.exists():
+            shutil.rmtree(dest_dir, ignore_errors=True)
+        if snapshot in game.versions:
+            game.versions.remove(snapshot)
+        raise exc
+
+    # Only prune old versions AFTER the new version is safely committed to catalog
     keep_last = load_keep_last(root)
-    prune_game_versions(game, root, keep_last)
-    save_catalog(root, catalog)
+    pruned = prune_game_versions(game, root, keep_last)
+    if pruned > 0:
+        try:
+            save_catalog(root, catalog)
+        except OSError:
+            pass
+
     return BackupResult(game=game, snapshot=snapshot, is_new=True, path=dest_dir)
 
 
@@ -436,16 +529,78 @@ def import_save(
 
 
 def restore_snapshot(snapshot: Snapshot, library_root: Path, destination: Path) -> Path:
-    """Copy a snapshot to destination. Does not modify the library copy."""
+    """Copy a snapshot to destination safely with rollback on failure.
+
+    Guarantees:
+    1. If target directory already exists, it is backed up to enable rollback.
+    2. Overwriting non-empty target leaves NO orphaned leftover files.
+    3. Failure during restore rolls back target safely.
+    4. Does not modify the library copy.
+    """
     source = snapshot.absolute_path(library_root)
     if not source.exists():
         raise FileNotFoundError(f"版本目录不存在: {source}")
     dest = Path(destination)
-    dest.mkdir(parents=True, exist_ok=True)
-    if source.is_dir():
-        _copy_dir(source, dest / source.name)
-        return dest / source.name
-    return copy_save_tree(source, dest)
+    if dest.name == source.name:
+        target = dest
+        parent = dest.parent
+    else:
+        dest.mkdir(parents=True, exist_ok=True)
+        target = dest / source.name
+        parent = dest
+
+    parent.mkdir(parents=True, exist_ok=True)
+    stage_dir = parent / f".tmp_restore_{uuid.uuid4().hex[:8]}"
+
+    try:
+        if source.is_dir():
+            _copy_dir(source, stage_dir)
+        else:
+            stage_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, stage_dir / source.name, follow_symlinks=False)
+            stage_dir = stage_dir / source.name
+    except Exception as exc:
+        if stage_dir.is_dir():
+            shutil.rmtree(stage_dir, ignore_errors=True)
+        elif stage_dir.exists():
+            stage_dir.unlink(missing_ok=True)
+        raise exc
+
+    has_existing = target.exists() and (not target.is_dir() or any(target.iterdir()))
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = parent / f"{target.name}.backup_before_restore_{stamp}"
+
+    if has_existing:
+        try:
+            os.replace(str(target), str(backup_path))
+        except Exception as exc:
+            if stage_dir.is_dir():
+                shutil.rmtree(stage_dir, ignore_errors=True)
+            elif stage_dir.exists():
+                stage_dir.unlink(missing_ok=True)
+            raise exc
+
+    try:
+        os.replace(str(stage_dir), str(target))
+    except Exception as exc:
+        if has_existing and backup_path.exists() and not target.exists():
+            try:
+                os.replace(str(backup_path), str(target))
+            except Exception:
+                pass
+        if stage_dir.is_dir():
+            shutil.rmtree(stage_dir, ignore_errors=True)
+        elif stage_dir.exists():
+            stage_dir.unlink(missing_ok=True)
+        raise exc
+
+    if has_existing and backup_path.exists():
+        try:
+            setattr(target, "backup_path", backup_path)
+        except Exception:
+            pass
+
+    return target
 
 
 def versions_for(catalog: Catalog, entry: SaveEntry) -> List[Snapshot]:
@@ -577,17 +732,20 @@ __all__ = [
     "catalog_entries",
     "catalog_path",
     "classify_save_status",
+    "cleanup_staging",
     "collection_stats",
     "config_path",
     "copy_save_tree",
     "default_library_root",
     "delete_game",
     "destination_for",
+    "destination_slot_dir",
     "ensure_game",
     "export_snapshot_zip",
     "game_entry",
     "game_key",
     "game_recency",
+    "generate_unique_snapshot_id",
     "hash_tree",
     "import_save",
     "is_inside_library",

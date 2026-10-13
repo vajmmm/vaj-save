@@ -33,6 +33,8 @@ class Snapshot:
     path: str
     slot: Optional[str] = None
     user: Optional[str] = None
+    locked: bool = False
+    note: str = ""
 
     def absolute_path(self, library_root: Path) -> Path:
         return Path(library_root) / self.path
@@ -119,7 +121,12 @@ class Catalog:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Catalog":
         games: Dict[str, GameRecord] = {}
-        for raw in data.get("games") or []:
+        raw_games = data.get("games") or []
+        if isinstance(raw_games, dict):
+            raw_games = list(raw_games.values())
+        for raw in raw_games:
+            if not isinstance(raw, dict):
+                continue
             versions = []
             for item in raw.get("versions") or []:
                 versions.append(
@@ -131,6 +138,8 @@ class Catalog:
                         path=item.get("path") or "",
                         slot=item.get("slot"),
                         user=item.get("user"),
+                        locked=bool(item.get("locked", False)),
+                        note=str(item.get("note") or ""),
                     )
                 )
             raw_key = raw.get("identity_key")

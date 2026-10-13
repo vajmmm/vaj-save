@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -74,6 +75,7 @@ from .qt_dialogs import (
     FtpDialog,
     LLMSettingsDialog,
     SettingsDialog,
+    VersionDiffDialog,
     ZipImportDialog,
     show_help,
     zip_has_manifest,
@@ -825,6 +827,9 @@ class DetailDrawer(QFrame):
     bind_requested = Signal()
     bind_candidate_requested = Signal()
     delete_version_requested = Signal()
+    toggle_lock_requested = Signal()
+    diff_requested = Signal()
+    note_version_requested = Signal()
     star_toggled = Signal()
     version_changed = Signal(int)
     note_committed = Signal(str)
@@ -981,6 +986,14 @@ class DetailDrawer(QFrame):
         self.version_title.setObjectName("sectionTitle")
         self.version_count = QLabel("0 个版本")
         self.version_count.setObjectName("sectionMuted")
+        self.diff_version = _button("对比")
+        self.diff_version.setObjectName("diffVersion")
+        self.diff_version.setFixedHeight(28)
+        self.diff_version.clicked.connect(self.diff_requested)
+        self.lock_version = _button("锁定")
+        self.lock_version.setObjectName("lockVersion")
+        self.lock_version.setFixedHeight(28)
+        self.lock_version.clicked.connect(self.toggle_lock_requested)
         self.delete_version = _button("删除此版本")
         self.delete_version.setObjectName("deleteVersion")
         self.delete_version.setFixedHeight(28)
@@ -988,6 +1001,8 @@ class DetailDrawer(QFrame):
         versions_head.addWidget(self.version_title)
         versions_head.addWidget(self.version_count)
         versions_head.addStretch(1)
+        versions_head.addWidget(self.diff_version)
+        versions_head.addWidget(self.lock_version)
         versions_head.addWidget(self.delete_version)
         root.addLayout(versions_head)
         self.versions = QTableWidget(0, 3)
@@ -997,10 +1012,12 @@ class DetailDrawer(QFrame):
         self.versions.setShowGrid(False)
         self.versions.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.versions.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.versions.setColumnWidth(0, 62)
-        self.versions.setColumnWidth(1, 210)
+        self.versions.setColumnWidth(0, 84)
+        self.versions.setColumnWidth(1, 204)
         self.versions.horizontalHeader().setStretchLastSection(True)
         self.versions.itemSelectionChanged.connect(self._emit_version)
+        self.versions.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.versions.customContextMenuRequested.connect(self._show_versions_context_menu)
         root.addWidget(self.versions, 1)
         note_head = QHBoxLayout()
         note_title = QLabel("备注")
@@ -1021,9 +1038,38 @@ class DetailDrawer(QFrame):
         """Attach the background worker used to size folders off the UI thread."""
         self._size_loader = loader
 
+    def _show_versions_context_menu(self, pos: QPoint) -> None:
+        row = self.versions.rowAt(pos.y())
+        if row < 0 or row >= len(getattr(self, "_versions", [])):
+            return
+        self.versions.selectRow(row)
+        snap = self._versions[row]
+        menu = QMenu(self)
+        is_locked = getattr(snap, "locked", False)
+        lock_action = menu.addAction("取消锁定" if is_locked else "锁定此版本 (防止自动清理)")
+        lock_action.triggered.connect(self.toggle_lock_requested.emit)
+        note_action = menu.addAction("编辑版本备注…")
+        note_action.triggered.connect(self.note_version_requested.emit)
+        if len(self._versions) >= 2:
+            diff_action = menu.addAction("与相邻版本对比…")
+            diff_action.triggered.connect(self.diff_requested.emit)
+        menu.addSeparator()
+        del_action = menu.addAction("删除此版本")
+        del_action.triggered.connect(self.delete_version_requested.emit)
+        menu.exec(self.versions.viewport().mapToGlobal(pos))
+
     def _emit_version(self) -> None:
         rows = self.versions.selectionModel().selectedRows()
-        self.version_changed.emit(rows[0].row() if rows else -1)
+        row_idx = rows[0].row() if rows else -1
+        if 0 <= row_idx < len(getattr(self, "_versions", [])):
+            snap = self._versions[row_idx]
+            self.lock_version.setText("解锁" if getattr(snap, "locked", False) else "锁定")
+            self.lock_version.setEnabled(True)
+            self.diff_version.setEnabled(len(self._versions) >= 2)
+        else:
+            self.lock_version.setEnabled(False)
+            self.diff_version.setEnabled(False)
+        self.version_changed.emit(row_idx)
 
     def set_cover_path(self, cover_path: Optional[str], platform: Optional[str] = None) -> None:
         if platform is not None:
@@ -1079,19 +1125,34 @@ class DetailDrawer(QFrame):
         self.versions.setRowCount(len(ordered_versions))
         for row, snapshot in enumerate(ordered_versions):
             number = len(ordered_versions) - row
-            first = QTableWidgetItem(f"●   v{number}")
+            locked_mark = "🔒 " if getattr(snapshot, "locked", False) else ""
+            first = QTableWidgetItem(f"{locked_mark}●  v{number}")
             first.setForeground(QColor(SWITCH["accent"] if row == 0 else SWITCH["muted_strong"]))
             self.versions.setItem(row, 0, first)
-            self.versions.setItem(row, 1, QTableWidgetItem(_fmt_time(snapshot.created_at)))
+
+            note_str = f" · {snapshot.note}" if getattr(snapshot, "note", "") else ""
+            time_item = QTableWidgetItem(f"{_fmt_time(snapshot.created_at)}{note_str}")
+            if getattr(snapshot, "note", ""):
+                time_item.setToolTip(f"备注: {snapshot.note}\n时间: {_fmt_time(snapshot.created_at)}\n哈希: {snapshot.sha256[:12]}...")
+            else:
+                time_item.setToolTip(f"时间: {_fmt_time(snapshot.created_at)}\n哈希: {snapshot.sha256[:12]}...")
+            self.versions.setItem(row, 1, time_item)
             self.versions.setItem(row, 2, QTableWidgetItem("…"))
         self.version_count.setText(f"{len(ordered_versions)} 个版本")
+        self._versions = ordered_versions
         if ordered_versions:
             self.versions.selectRow(0)
+            self.lock_version.setText("解锁" if getattr(ordered_versions[0], "locked", False) else "锁定")
+            self.lock_version.setEnabled(True)
+            self.diff_version.setEnabled(len(ordered_versions) >= 2)
+        else:
+            self.lock_version.setEnabled(False)
+            self.diff_version.setEnabled(False)
         self.delete_version.setEnabled(bool(ordered_versions))
         self._schedule_size_update(state, entry, ordered_versions)
-        self._versions = ordered_versions
         self.version_changed.emit(0 if ordered_versions else -1)
         return ordered_versions
+
 
     def set_entry(self, state: AppState, entry: SaveEntry) -> list[Snapshot]:
         self._state = state
@@ -1534,6 +1595,9 @@ class VajSaveWindow(QMainWindow):
         self.drawer.bind_requested.connect(self._bind_rom)
         self.drawer.bind_candidate_requested.connect(self._bind_candidate)
         self.drawer.delete_version_requested.connect(self._delete_snapshot)
+        self.drawer.toggle_lock_requested.connect(self._toggle_lock_snapshot)
+        self.drawer.diff_requested.connect(self._diff_snapshot)
+        self.drawer.note_version_requested.connect(self._edit_version_note)
         self.drawer.star_toggled.connect(self._toggle_star)
         self.drawer.version_changed.connect(self._version_changed)
         self.drawer.note_committed.connect(self._save_note)
@@ -2057,12 +2121,62 @@ class VajSaveWindow(QMainWindow):
         destination = QFileDialog.getExistingDirectory(self, "选择恢复位置", start)
         if not destination:
             return
-        if QMessageBox.question(self, "确认恢复", "将所选版本复制到指定文件夹？不会写入掌机。") != QMessageBox.StandardButton.Yes:
-            return
+
+        dest_path = Path(destination)
+        matching_vol = None
+        for vol in getattr(self.state, "volumes", []):
+            try:
+                vol_path = Path(vol.mount_point)
+                if vol_path == dest_path or vol_path in dest_path.parents or dest_path in vol_path.parents:
+                    matching_vol = vol
+                    break
+            except Exception:
+                pass
+
+        write_to_device = False
+        if matching_vol and matching_vol.extra.get("ftp"):
+            reply = QMessageBox.question(
+                self,
+                "恢复到 FTP 设备",
+                f"目标位置属于掌机 FTP 缓存目录（{matching_vol.label}）。\n\n"
+                "是否在恢复本地缓存的同时，无线同步写回掌机？\n\n"
+                "• 点击【是】：恢复本地缓存并无线同步至掌机设备。\n"
+                "• 点击【否】：仅恢复到本地缓存，不写入掌机。\n"
+                "• 点击【取消】：中止恢复操作。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Cancel:
+                return
+            write_to_device = (reply == QMessageBox.StandardButton.Yes)
+        elif matching_vol:
+            reply = QMessageBox.warning(
+                self,
+                "写回掌机外部设备确认",
+                f"警告：目标位置位于外部掌机存储（{matching_vol.label}）。\n\n"
+                f"恢复将覆盖设备中的现有存档。\n"
+                f"（覆盖前系统会自动保留备份以防误改）\n\n"
+                f"确定要写回外部设备吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        else:
+            reply = QMessageBox.question(
+                self,
+                "确认恢复",
+                f"将所选版本恢复到以下本地文件夹：\n{dest_path}\n\n（恢复前将自动备份已有存档，不会写入掌机设备）",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
         snapshot = self._selected_snapshot
 
         def task(_token):
-            return self.state.restore_version(snapshot, destination)
+            return self.state.restore_version(snapshot, destination, write_to_device=write_to_device)
 
         def completed(result) -> None:
             if result is None:
@@ -2150,15 +2264,34 @@ class VajSaveWindow(QMainWindow):
         if self._selected is None or self._selected_snapshot is None:
             QMessageBox.information(self, "删除此版本", "请先选择一个备份版本。")
             return
+        is_locked = getattr(self._selected_snapshot, "locked", False)
         last = len(self._versions) == 1
-        message = (
-            "这是该游戏的最后一个版本，删除后整条游戏（封面、备注、收藏）也会一并删除。此操作不可撤销。"
-            if last
-            else "确定删除此版本？此操作不可撤销。"
+        if is_locked:
+            message = (
+                "【重要版本保护】\n此版本已被锁定！删除锁定版本可能会丢失重要历史记录。\n\n"
+                + ("这是该游戏的最后一个版本，删除后整条游戏也会一并删除。\n" if last else "")
+                + "确定要强制删除此锁定版本吗？此操作不可撤销。"
+            )
+            reply = QMessageBox.warning(
+                self,
+                "强制删除锁定版本",
+                message,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        else:
+            message = (
+                "这是该游戏的最后一个版本，删除后整条游戏（封面、备注、收藏）也会一并删除。此操作不可撤销。"
+                if last
+                else "确定删除此版本？此操作不可撤销。"
+            )
+            if QMessageBox.question(self, "删除此版本", message) != QMessageBox.StandardButton.Yes:
+                return
+        result = self.state.delete_library_snapshot(
+            self._selected, self._selected_snapshot, force=is_locked
         )
-        if QMessageBox.question(self, "删除此版本", message) != QMessageBox.StandardButton.Yes:
-            return
-        result = self.state.delete_library_snapshot(self._selected, self._selected_snapshot)
         if not result.ok:
             QMessageBox.warning(self, "删除此版本", "\n".join(result.errors) or "删除失败")
             return
@@ -2171,6 +2304,68 @@ class VajSaveWindow(QMainWindow):
         if self._selected is not None:
             self._versions = self.drawer.set_entry(self.state, self._selected)
             self._selected_snapshot = self._versions[0] if self._versions else None
+
+    def _toggle_lock_snapshot(self) -> None:
+        if self._selected is None or self._selected_snapshot is None:
+            return
+        new_state = self.state.toggle_snapshot_lock(self._selected, self._selected_snapshot)
+        selected_id = self._selected_snapshot.id
+        self._versions = self.drawer.set_entry(self.state, self._selected)
+        for i, snap in enumerate(self._versions):
+            if snap.id == selected_id:
+                self.drawer.versions.selectRow(i)
+                self._selected_snapshot = snap
+                break
+        self.status_text.setText("已锁定该版本（不受自动清理限制）" if new_state else "已解除锁定")
+
+    def _edit_version_note(self) -> None:
+        if self._selected is None or self._selected_snapshot is None:
+            return
+        current_note = getattr(self._selected_snapshot, "note", "")
+        note, ok = QInputDialog.getText(
+            self,
+            "编辑版本备注",
+            f"为版本 {self._selected_snapshot.id} 设置备注：",
+            text=current_note,
+        )
+        if ok:
+            cleaned = note.strip()
+            self.state.set_snapshot_note(self._selected, self._selected_snapshot, cleaned)
+            selected_id = self._selected_snapshot.id
+            self._versions = self.drawer.set_entry(self.state, self._selected)
+            for i, snap in enumerate(self._versions):
+                if snap.id == selected_id:
+                    self.drawer.versions.selectRow(i)
+                    self._selected_snapshot = snap
+                    break
+            self.status_text.setText(f"已更新版本备注: {cleaned}" if cleaned else "已清除版本备注")
+
+    def _diff_snapshot(self) -> None:
+        if self._selected is None or len(self._versions) < 2:
+            QMessageBox.information(self, "版本对比", "至少需要两个版本才能进行对比。")
+            return
+        selected_idx = 0
+        if self._selected_snapshot is not None:
+            for i, snap in enumerate(self._versions):
+                if snap.id == self._selected_snapshot.id:
+                    selected_idx = i
+                    break
+        # self._versions is newest first.
+        if selected_idx < len(self._versions) - 1:
+            older_snap = self._versions[selected_idx + 1]
+            newer_snap = self._versions[selected_idx]
+        else:
+            older_snap = self._versions[selected_idx]
+            newer_snap = self._versions[selected_idx - 1]
+
+        diff = self.state.diff_snapshots(older_snap, newer_snap)
+        dialog = VersionDiffDialog(
+            diff,
+            parent=self,
+            state=self.state,
+            versions=self._versions,
+        )
+        dialog.exec()
 
     def _save_note(self, note: str) -> None:
         if self._selected:

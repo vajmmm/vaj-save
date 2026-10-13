@@ -529,7 +529,11 @@ class LibraryActions:
         return versions_for(catalog, entry)
 
     def restore_version(
-        self, snapshot: Snapshot, destination: Union[Path, str]
+        self,
+        snapshot: Snapshot,
+        destination: Union[Path, str],
+        *,
+        write_to_device: bool = False,
     ) -> Optional[Path]:
         app = self.app
         dest_path = Path(destination)
@@ -540,7 +544,7 @@ class LibraryActions:
             app.status_text = f"恢复失败: {e}"
             return None
 
-        # Check if the destination belongs to an active FTP volume
+        # Check if destination belongs to an active FTP volume
         ftp_extra = None
         for vol in getattr(app, "volumes", []):
             try:
@@ -552,7 +556,7 @@ class LibraryActions:
             except Exception:
                 pass
 
-        if ftp_extra:
+        if ftp_extra and write_to_device:
             try:
                 preset_key = ftp_extra.get("ftp_preset", getattr(app, "ftp_preset_key", "default"))
                 profile = app.ftp._ftp_profile(get_preset(preset_key))
@@ -582,5 +586,9 @@ class LibraryActions:
                 app.status_text = f"本地已恢复，无线同步失败 · {exc}"
                 return restored
 
-        app.status_text = f"已恢复版本 {snapshot.id} 到 {restored}"
+        backup_note = ""
+        if hasattr(restored, "backup_path") and getattr(restored, "backup_path").exists():
+            backup_note = f"（覆盖前已备份至 {getattr(restored, 'backup_path').name}）"
+        app.status_text = f"已恢复版本 {snapshot.id} 到 {restored} {backup_note}".strip()
         return restored
+

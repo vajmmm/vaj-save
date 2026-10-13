@@ -8,14 +8,18 @@ from typing import Optional
 
 import qtawesome as qta
 from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -23,6 +27,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QRadioButton,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -580,3 +586,165 @@ class ZipImportDialog(QDialog):
             "new_display_name": name or None,
             "new_title_id": self.title_id.text().strip() or None,
         }
+
+
+class VersionDiffDialog(QDialog):
+    """展示两个存档快照之间的文件差异（新增/修改/删除/大小变化）。"""
+
+    def __init__(
+        self,
+        diff,
+        parent: Optional[QWidget] = None,
+        title_prefix: str = "",
+        state: Optional[AppState] = None,
+        versions: Optional[list] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.state = state
+        self.versions = list(versions or [])
+        self.setWindowTitle(f"版本差异对比 · {diff.snapshot_a_id} ↔ {diff.snapshot_b_id}")
+        self.resize(680, 520)
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(18, 16, 18, 16)
+        self.main_layout.setSpacing(12)
+
+        # Optional version selection header if multiple versions are available
+        if self.state is not None and len(self.versions) >= 2:
+            sel_row = QHBoxLayout()
+            sel_row.setSpacing(10)
+            sel_row.addWidget(QLabel("基准版本 (A):"))
+            self.combo_a = QComboBox()
+            self.combo_b = QComboBox()
+            # Sort chronological for dropdown (older first)
+            chronological = sorted(self.versions, key=lambda v: v.created_at)
+            for v in chronological:
+                label = f"{v.id}"
+                if getattr(v, "note", ""):
+                    label += f" ({v.note})"
+                self.combo_a.addItem(label, v)
+                self.combo_b.addItem(label, v)
+
+            idx_a = next((i for i, v in enumerate(chronological) if v.id == diff.snapshot_a_id), 0)
+            idx_b = next((i for i, v in enumerate(chronological) if v.id == diff.snapshot_b_id), len(chronological) - 1)
+            self.combo_a.setCurrentIndex(idx_a)
+            self.combo_b.setCurrentIndex(idx_b)
+
+            sel_row.addWidget(self.combo_a, 1)
+            sel_row.addWidget(QLabel("→ 对比版本 (B):"))
+            sel_row.addWidget(self.combo_b, 1)
+            self.main_layout.addLayout(sel_row)
+
+            self.combo_a.currentIndexChanged.connect(self._on_version_selected)
+            self.combo_b.currentIndexChanged.connect(self._on_version_selected)
+
+        # Summary card
+        self.summary_card = QFrame(self)
+        self.summary_card.setObjectName("diffSummaryCard")
+        self.summary_card.setStyleSheet(
+            f"#diffSummaryCard {{ background: {SWITCH['card']}; border: 1px solid {SWITCH['border_soft']}; border-radius: 8px; }}"
+        )
+        self.summary_layout = QVBoxLayout(self.summary_card)
+        self.summary_layout.setContentsMargins(14, 12, 14, 12)
+        self.summary_layout.setSpacing(6)
+
+        self.title_lbl = QLabel(f"<b>{title_prefix}版本差异摘要</b>")
+        self.title_lbl.setStyleSheet(f"font-size: 14px; color: {SWITCH['ink']};")
+        self.summary_layout.addWidget(self.title_lbl)
+
+        self.stats_line = QLabel()
+        self.stats_line.setStyleSheet(f"color: {SWITCH['muted_strong']}; font-size: 12px;")
+        self.summary_layout.addWidget(self.stats_line)
+
+        self.breakdown_lbl = QLabel()
+        self.summary_layout.addWidget(self.breakdown_lbl)
+        self.main_layout.addWidget(self.summary_card)
+
+        # Table & Empty label container
+        self.table_container = QVBoxLayout()
+        self.table_container.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.addLayout(self.table_container, 1)
+
+        self.file_table = QTableWidget(self)
+        self.file_table.setColumnCount(3)
+        self.file_table.setHorizontalHeaderLabels(["状态", "文件路径", "大小变化"])
+        self.file_table.horizontalHeader().setStretchLastSection(False)
+        self.file_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.file_table.setColumnWidth(0, 70)
+        self.file_table.setColumnWidth(2, 130)
+        self.file_table.verticalHeader().hide()
+        self.file_table.setShowGrid(False)
+        self.file_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+
+        self.empty_lbl = QLabel("两个版本文件与内容完全一致", self)
+        self.empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_lbl.setStyleSheet(f"color: {SWITCH['muted_strong']}; font-size: 13px; padding: 40px;")
+
+        self.table_container.addWidget(self.file_table)
+        self.table_container.addWidget(self.empty_lbl)
+
+        self._render_diff(diff)
+
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
+        btn_box.rejected.connect(self.accept)
+        self.main_layout.addWidget(btn_box)
+
+    def _on_version_selected(self) -> None:
+        if self.state is None:
+            return
+        snap_a = self.combo_a.currentData()
+        snap_b = self.combo_b.currentData()
+        if snap_a is None or snap_b is None:
+            return
+        self.setWindowTitle(f"版本差异对比 · {snap_a.id} ↔ {snap_b.id}")
+        diff = self.state.diff_snapshots(snap_a, snap_b)
+        self._render_diff(diff)
+
+    def _render_diff(self, diff) -> None:
+        count_str = f"{diff.file_count_delta:+d} 个文件" if diff.file_count_delta != 0 else "无文件数增减"
+        size_delta_kb = diff.size_delta / 1024
+        size_str = f"{size_delta_kb:+.1f} KB" if abs(diff.size_delta) >= 1024 else f"{diff.size_delta:+d} B"
+
+        self.stats_line.setText(
+            f"文件数：{diff.total_files_a} → {diff.total_files_b} ({count_str})  ·  "
+            f"总大小：{diff.total_size_a / 1024:.1f} KB → {diff.total_size_b / 1024:.1f} KB ({size_str})"
+        )
+
+        self.breakdown_lbl.setText(
+            f"<span style='color: {SWITCH['success']}; font-weight: bold;'>新增 {len(diff.added_files)}</span> · "
+            f"<span style='color: {SWITCH['warning']}; font-weight: bold;'>修改 {len(diff.modified_files)}</span> · "
+            f"<span style='color: {SWITCH['danger']}; font-weight: bold;'>删除 {len(diff.removed_files)}</span>"
+        )
+
+        all_items: list[tuple[str, str, str, str]] = []
+        for f in diff.added_files:
+            size_b_str = f"{f.size_b} B" if f.size_b is not None else ""
+            all_items.append(("新增", f.path, f"+{size_b_str}", SWITCH["success"]))
+        for f in diff.modified_files:
+            delta = f.size_delta
+            d_str = f"{delta:+d} B" if delta != 0 else "大小未变 (内容已修改)"
+            all_items.append(("修改", f.path, d_str, SWITCH["warning"]))
+        for f in diff.removed_files:
+            size_a_str = f"{f.size_a} B" if f.size_a is not None else ""
+            all_items.append(("删除", f.path, f"-{size_a_str}", SWITCH["danger"]))
+
+        if not all_items:
+            self.file_table.hide()
+            self.empty_lbl.show()
+        else:
+            self.empty_lbl.hide()
+            self.file_table.show()
+            self.file_table.setRowCount(len(all_items))
+            for row, (status, path, delta, color) in enumerate(all_items):
+                status_item = QTableWidgetItem(status)
+                status_item.setForeground(QColor(color))
+                status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.file_table.setItem(row, 0, status_item)
+
+                path_item = QTableWidgetItem(path)
+                path_item.setToolTip(path)
+                self.file_table.setItem(row, 1, path_item)
+
+                delta_item = QTableWidgetItem(delta)
+                self.file_table.setItem(row, 2, delta_item)
+
+

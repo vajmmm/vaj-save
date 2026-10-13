@@ -233,3 +233,37 @@ def test_appstate_delete_library_snapshot(tmp_path: Path):
     assert result.game_removed is False
     remaining = state.versions_for_entry(entry)
     assert [snap.id for snap in remaining] == [versions[1].id]
+
+
+def test_appstate_lock_and_note_operations(tmp_path: Path):
+    lib = tmp_path / "lib"
+    _backup(tmp_path, lib, "psp", "ULJM05800", "PSP Game", datetime(2024, 1, 1), payload=b"v1")
+    _backup(tmp_path, lib, "psp", "ULJM05800", "PSP Game", datetime(2024, 2, 1), payload=b"v2_modified")
+
+    state = AppState(provider=FakeVolumeProvider([]), library_root=lib)
+    state.set_library_mode(True)
+    entry = state.visible_saves()[0]
+    versions = state.versions_for_entry(entry)
+    v1, v2 = versions[0], versions[1]
+
+    # Test lock toggle via AppState
+    assert state.toggle_snapshot_lock(entry, v1) is True
+    reloaded_v1 = state.versions_for_entry(entry)[0]
+    assert reloaded_v1.locked is True
+
+    # Attempt delete locked snapshot without force -> must fail
+    del_res = state.delete_library_snapshot(entry, reloaded_v1, force=False)
+    assert del_res.ok is False
+    assert "已被锁定保护" in del_res.errors[0]
+
+    # Note operations via AppState
+    assert state.set_snapshot_note(entry, v1, "测试备注123") is True
+    reloaded_v1 = state.versions_for_entry(entry)[0]
+    assert reloaded_v1.note == "测试备注123"
+
+    # Test diff via AppState
+    diff = state.diff_snapshots(v1, v2)
+    assert diff.snapshot_a_id == v1.id
+    assert diff.snapshot_b_id == v2.id
+    assert len(diff.modified_files) >= 1
+

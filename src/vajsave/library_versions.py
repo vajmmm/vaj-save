@@ -29,7 +29,13 @@ class SnapshotDeletion:
         return self.found and self.removed and not self.errors
 
 
-def delete_snapshot(library_root: Path, game_id: str, snapshot_id: str) -> SnapshotDeletion:
+def delete_snapshot(
+    library_root: Path,
+    game_id: str,
+    snapshot_id: str,
+    *,
+    force: bool = False,
+) -> SnapshotDeletion:
     """Delete one in-library snapshot. Last remaining version removes the game.
 
     Only payloads that resolve inside ``library_root`` are removed. An unsafe
@@ -48,6 +54,10 @@ def delete_snapshot(library_root: Path, game_id: str, snapshot_id: str) -> Snaps
     if snapshot is None:
         return result
     result.found = True
+
+    if getattr(snapshot, "locked", False) and not force:
+        result.errors.append(f"版本已被锁定保护: {snapshot.id}，删除需强制确认")
+        return result
 
     if len(game.versions) == 1:
         game_result = delete_game(root, game_id)
@@ -68,3 +78,55 @@ def delete_snapshot(library_root: Path, game_id: str, snapshot_id: str) -> Snaps
         return result
     result.removed = True
     return result
+
+
+def toggle_snapshot_lock(
+    library_root: Path, game_id: str, snapshot_id: str
+) -> bool | None:
+    """Toggle the locked status of a snapshot; returns the new locked state or None if not found."""
+    root = Path(library_root)
+    catalog = load_catalog(root)
+    game = catalog.games.get(str(game_id or ""))
+    if game is None:
+        return None
+    snapshot = next((s for s in game.versions if s.id == str(snapshot_id or "")), None)
+    if snapshot is None:
+        return None
+    snapshot.locked = not getattr(snapshot, "locked", False)
+    save_catalog(root, catalog)
+    return snapshot.locked
+
+
+def set_snapshot_lock(
+    library_root: Path, game_id: str, snapshot_id: str, locked: bool
+) -> bool:
+    """Set locked status of a snapshot explicitly."""
+    root = Path(library_root)
+    catalog = load_catalog(root)
+    game = catalog.games.get(str(game_id or ""))
+    if game is None:
+        return False
+    snapshot = next((s for s in game.versions if s.id == str(snapshot_id or "")), None)
+    if snapshot is None:
+        return False
+    snapshot.locked = bool(locked)
+    save_catalog(root, catalog)
+    return True
+
+
+def set_snapshot_note(
+    library_root: Path, game_id: str, snapshot_id: str, note: str
+) -> bool:
+    """Set custom note on a specific historical snapshot."""
+    root = Path(library_root)
+    catalog = load_catalog(root)
+    game = catalog.games.get(str(game_id or ""))
+    if game is None:
+        return False
+    snapshot = next((s for s in game.versions if s.id == str(snapshot_id or "")), None)
+    if snapshot is None:
+        return False
+    snapshot.note = str(note or "")
+    save_catalog(root, catalog)
+    return True
+

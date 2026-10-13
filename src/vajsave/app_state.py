@@ -35,7 +35,13 @@ from .library import (
 )
 from .library_actions import LibraryActions
 from .library_import import import_snapshot_zip as _import_snapshot_zip
-from .library_versions import SnapshotDeletion, delete_snapshot
+from .library_versions import (
+    SnapshotDeletion,
+    delete_snapshot,
+    set_snapshot_lock,
+    set_snapshot_note,
+    toggle_snapshot_lock,
+)
 from .metadata import GameMetadata, GameMetadataResolver
 from .models import SaveEntry, ScanResult, VolumeInfo
 from .mtp_fetch import MtpPullResult
@@ -510,8 +516,40 @@ class AppState:
     def delete_library_game(self, entry: SaveEntry) -> GameDeletion:
         return self.library_actions.delete_library_game(entry)
 
-    def delete_library_snapshot(self, entry: SaveEntry, snapshot: Snapshot) -> SnapshotDeletion:
-        return delete_snapshot(self.library_root, self._game_id(entry), snapshot.id)
+    def delete_library_snapshot(
+        self, entry: SaveEntry, snapshot: Snapshot, *, force: bool = False
+    ) -> SnapshotDeletion:
+        return delete_snapshot(
+            self.library_root, self._game_id(entry), snapshot.id, force=force
+        )
+
+    def toggle_snapshot_lock(
+        self, entry: SaveEntry, snapshot: Snapshot
+    ) -> Optional[bool]:
+        return toggle_snapshot_lock(
+            self.library_root, self._game_id(entry), snapshot.id
+        )
+
+    def set_snapshot_lock(
+        self, entry: SaveEntry, snapshot: Snapshot, locked: bool
+    ) -> bool:
+        return set_snapshot_lock(
+            self.library_root, self._game_id(entry), snapshot.id, locked
+        )
+
+    def set_snapshot_note(
+        self, entry: SaveEntry, snapshot: Snapshot, note: str
+    ) -> bool:
+        return set_snapshot_note(
+            self.library_root, self._game_id(entry), snapshot.id, note
+        )
+
+    def diff_snapshots(
+        self, snapshot_a: Snapshot, snapshot_b: Snapshot
+    ):
+        from .library_diff import diff_snapshots
+
+        return diff_snapshots(snapshot_a, snapshot_b, self.library_root)
 
     def collection_stats(self) -> Dict[str, int]:
         return self.library_actions.collection_stats()
@@ -585,8 +623,16 @@ class AppState:
     def versions_for_entry(self, entry: SaveEntry) -> List[Snapshot]:
         return self.library_actions.versions_for_entry(entry)
 
-    def restore_version(self, snapshot: Snapshot, destination: Union[Path, str]) -> Optional[Path]:
-        restored = self.library_actions.restore_version(snapshot, destination)
+    def restore_version(
+        self,
+        snapshot: Snapshot,
+        destination: Union[Path, str],
+        *,
+        write_to_device: bool = False,
+    ) -> Optional[Path]:
+        restored = self.library_actions.restore_version(
+            snapshot, destination, write_to_device=write_to_device
+        )
         if restored is not None:
             remember_restore_dir(self, Path(destination))
         return restored

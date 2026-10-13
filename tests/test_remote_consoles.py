@@ -113,7 +113,7 @@ def test_vita_targeted_pull_downloads_saves_and_skips_huge_app_dir(tmp_path: Pat
 
     result = pull_preset(vita_profile, cache_root, client_factory=factory)
     assert result.ok is True
-    assert result.path == cache_dir_for(tmp_path / "lib", VITA_PRESET_KEY)
+    assert result.path == cache_dir_for(tmp_path / "lib", VITA_PRESET_KEY, vita_profile.host)
 
     # Saves exist and are located in clean non-colon folders
     vita_save_dir = result.path / "ux0" / "user" / "00" / "savedata" / "PCSE00001"
@@ -258,8 +258,8 @@ def test_restore_version_wirelessly_pushes_to_ftp_volume(tmp_path: Path):
     (local_save_dir / "data.bin").write_bytes(b"UPDATED-LOCALLY")
 
     # Restore the backup snapshot back into local_save_dir
-    # Because local_save_dir is inside the active FTP volume, it should wirelessly push to remote
-    restored = app.restore_version(snap, local_save_dir)
+    # Because local_save_dir is inside the active FTP volume, when write_to_device=True it pushes to remote
+    restored = app.restore_version(snap, local_save_dir, write_to_device=True)
     assert restored is not None
 
     # Verify FakeRemoteFtpClient received STOR commands and remote_tree was updated
