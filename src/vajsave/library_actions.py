@@ -1,4 +1,4 @@
-"""Backup, restore, export, delete, notes, stars, and visible-list helpers."""
+"""Backup, restore, export, delete, notes, stars, clear marks, and visible-list helpers."""
 
 from __future__ import annotations
 
@@ -213,14 +213,18 @@ class LibraryActions:
                 return False
 
             saves = [save for save in saves if _matches_query(save)]
-        if app.starred_only:
+        if app.starred_only or app.cleared_only:
             catalog = load_catalog(app.library_root)
-            saves = [
-                save
-                for save in saves
-                if catalog.games.get(self.game_id(save))
-                and catalog.games[self.game_id(save)].starred
-            ]
+
+            def _matches_marks(save: SaveEntry) -> bool:
+                game = catalog.games.get(self.game_id(save))
+                if app.starred_only and not (game and game.starred):
+                    return False
+                if app.cleared_only and not (game and game.cleared):
+                    return False
+                return True
+
+            saves = [save for save in saves if _matches_marks(save)]
         # Filter combination is unchanged: new + changed stay visible, only
         # unchanged rows are dropped when "仅显示有更新" is active. Every library
         # row is already backed up, so the filter is not applied in library mode
@@ -229,11 +233,18 @@ class LibraryActions:
             saves = [save for save in saves if self.save_status(save).status != "unchanged"]
         return saves
 
-    def save_status(self, entry: SaveEntry) -> SaveBackupStatus:
+    def save_status(self, entry: SaveEntry, *, allow_hash: bool = True) -> SaveBackupStatus:
+        """Cached backup status.
+
+        ``allow_hash=False`` is the UI-thread contract: a cache miss returns a
+        provisional ``checking`` / ``new`` and does not hash or stat the save.
+        Hashing a save on a removable card can block for the whole in-flight
+        USB read; that call belongs to ``prepare_backup_statuses``.
+        """
         app = self.app
         subs = (entry.extra or {}).get("sub_entries")
         if subs and len(subs) > 1:
-            sub_statuses = [self.save_status(sub) for sub in subs]
+            sub_statuses = [self.save_status(sub, allow_hash=allow_hash) for sub in subs]
             changed = next((s for s in sub_statuses if s.status == "changed"), None)
             if changed:
                 return changed
@@ -248,6 +259,11 @@ class LibraryActions:
         cached = app._backup_statuses.get(entry.path)
         if cached is not None:
             return cached
+        if not allow_hash:
+            # Do not store the provisional result. The background hash still
+            # writes the real status, and a later hashing call must not see a
+            # fake cache hit.
+            return self._provisional_status(entry)
         if self.library_game_id(entry) is not None:
             game = load_catalog(app.library_root).games.get(self.library_game_id(entry))
             status = self._library_status(game)
@@ -257,6 +273,21 @@ class LibraryActions:
             status = classify_save_status(entry, load_catalog(app.library_root))
         app._backup_statuses[entry.path] = status
         return status
+
+    def _provisional_status(self, entry: SaveEntry) -> SaveBackupStatus:
+        """Status from the catalog only. Never touches ``entry.path``."""
+        app = self.app
+        if self.library_game_id(entry) is not None:
+            game = load_catalog(app.library_root).games.get(self.library_game_id(entry))
+            return self._library_status(game)
+        game = load_catalog(app.library_root).games.get(game_key(entry))
+        latest = game.versions[-1] if game and game.versions else None
+        if latest is None:
+            return SaveBackupStatus(status="new")
+        return SaveBackupStatus(
+            status="checking",
+            last_backup_at=latest.created_at,
+        )
 
     def backup_status_counts(self) -> Dict[str, int]:
         counts = {"new": 0, "changed": 0, "unchanged": 0}
@@ -309,6 +340,10 @@ class LibraryActions:
         self.app.starred_only = not self.app.starred_only
         return self.app.starred_only
 
+    def toggle_cleared_only(self) -> bool:
+        self.app.cleared_only = not self.app.cleared_only
+        return self.app.cleared_only
+
     def toggle_star(self, entry: SaveEntry) -> bool:
         app = self.app
         catalog = load_catalog(app.library_root)
@@ -321,6 +356,19 @@ class LibraryActions:
     def is_starred(self, entry: SaveEntry) -> bool:
         game = load_catalog(self.app.library_root).games.get(self.game_id(entry))
         return bool(game and game.starred)
+
+    def toggle_cleared(self, entry: SaveEntry) -> bool:
+        app = self.app
+        catalog = load_catalog(app.library_root)
+        current = catalog.games.get(self.game_id(entry))
+        cleared = not bool(current and current.cleared)
+        game = set_game_meta(app.library_root, entry, cleared=cleared)
+        app.status_text = "已标记通关" if game.cleared else "已取消通关"
+        return game.cleared
+
+    def is_cleared(self, entry: SaveEntry) -> bool:
+        game = load_catalog(self.app.library_root).games.get(self.game_id(entry))
+        return bool(game and game.cleared)
 
     def game_note(self, entry: SaveEntry) -> str:
         game = load_catalog(self.app.library_root).games.get(self.game_id(entry))

@@ -1003,6 +1003,199 @@ def test_allowlisted_root_error_fails_the_pull(tmp_path: Path):
     assert not _pulled(cache_root, profile).exists()
 
 
+def _encrypted_card_tree() -> dict:
+    return {
+        "3ds": {
+            "Checkpoint": {
+                "saves": {
+                    "0x008B4 MARIO KART 7": {},
+                    "0x00F4E NEWラブプラス＋": {},
+                }
+            }
+        },
+        "SAVER": {"demo.sav": b"GBA-SAVE"},
+        "Nintendo 3DS": {
+            "big.bin": b"NOT-A-SAVE",
+            "id0": {
+                "id1": {
+                    "dbs": {"ticket.db": b"DB"},
+                    "backup": {"sys.dat": b"BK"},
+                    "title": {
+                        "00040000": {
+                            "000f7000": {
+                                "content": {"game.app": b"NOT-A-SAVE"},
+                                "data": {
+                                    "00000001.sav": b"ENC-SAVE",
+                                    "cache.bin": b"CACHE",
+                                },
+                            }
+                        }
+                    },
+                    "extdata": {
+                        "00000000": {
+                            "00000082": {"00000001": {"file.bin": b"EXT"}},
+                        }
+                    },
+                }
+            }
+        },
+    }
+
+
+def test_plaintext_roots_publish_before_encrypted_sd(tmp_path: Path):
+    cache_root = ftp_cache_root(tmp_path / "lib")
+    profile = _targeted_profile(
+        target_paths=("SAVER", "PSP/SAVEDATA", "Nintendo 3DS")
+    )
+    tree = _card_tree()
+    factory = fake_client_factory(tree)
+    seen = {}
+    messages = []
+
+    def on_ready(path: Path) -> None:
+        seen["path"] = path
+        assert (path / "SAVER" / "demo.sav").read_bytes() == b"GBA-SAVE"
+        assert (path / "PSP" / "SAVEDATA" / "ULUS12345" / "DATA.BIN").read_bytes() == b"PSP-SAVE"
+        assert not (
+            path
+            / "Nintendo 3DS"
+            / "id0"
+            / "id1"
+            / "title"
+            / "00040000"
+            / "000f7000"
+            / "data"
+            / "00000001.sav"
+        ).exists()
+        assert not any(
+            isinstance(cmd, tuple) and cmd[0] == "RETR" and cmd[1].endswith("00000001.sav")
+            for cmd in factory.clients[0].commands
+        )
+
+    result = pull_preset(
+        profile,
+        cache_root,
+        client_factory=factory,
+        progress=lambda message, _current, _total: messages.append(message),
+        on_ready=on_ready,
+    )
+
+    assert result.ok is True
+    assert seen["path"] == result.path
+    assert (
+        result.path
+        / "Nintendo 3DS"
+        / "id0"
+        / "id1"
+        / "title"
+        / "00040000"
+        / "000f7000"
+        / "data"
+        / "00000001.sav"
+    ).read_bytes() == b"ENC-SAVE"
+    assert any("正在读取" in message or "正在拉取" in message for message in messages)
+
+
+def test_encrypted_sd_keeps_saves_and_skips_databases(tmp_path: Path):
+    cache_root = ftp_cache_root(tmp_path / "lib")
+    profile = _targeted_profile(target_paths=("Nintendo 3DS",))
+    result = pull_preset(
+        profile, cache_root, client_factory=fake_client_factory(_encrypted_card_tree())
+    )
+
+    assert result.ok is True
+    root = result.path / "Nintendo 3DS" / "id0" / "id1"
+    assert (root / "title" / "00040000" / "000f7000" / "data" / "00000001.sav").read_bytes() == b"ENC-SAVE"
+    assert (
+        root / "extdata" / "00000000" / "00000082" / "00000001" / "file.bin"
+    ).read_bytes() == b"EXT"
+    assert not (result.path / "Nintendo 3DS" / "big.bin").exists()
+    assert not (root / "dbs" / "ticket.db").exists()
+    assert not (root / "backup" / "sys.dat").exists()
+    assert not (root / "title" / "00040000" / "000f7000" / "content").exists()
+    assert not (root / "title" / "00040000" / "000f7000" / "data" / "cache.bin").exists()
+
+
+def test_encrypted_sd_failure_keeps_published_exports(tmp_path: Path):
+    cache_root = ftp_cache_root(tmp_path / "lib")
+    profile = _targeted_profile(target_paths=("SAVER", "Nintendo 3DS"))
+    sav = "Nintendo 3DS/id0/id1/title/00040000/000f7000/data/00000001.sav"
+    result = pull_preset(
+        profile,
+        cache_root,
+        client_factory=fake_client_factory(
+            _encrypted_card_tree(),
+            fail_paths={sav},
+            error_message="connection reset",
+        ),
+    )
+
+    assert result.ok is True
+    assert "connection reset" in result.warning
+    assert (result.path / "SAVER" / "demo.sav").read_bytes() == b"GBA-SAVE"
+    assert result.path.is_dir()
+
+
+def test_cancel_after_publish_keeps_plaintext_cache(tmp_path: Path):
+    cache_root = ftp_cache_root(tmp_path / "lib")
+    profile = _targeted_profile(target_paths=("SAVER", "Nintendo 3DS"))
+    token = _CancelToken()
+
+    class _CancelOnEncrypted(FakeRemoteFtpClient):
+        def list_dir(self, remote_path):
+            if str(remote_path).strip("/") == "Nintendo 3DS":
+                token.cancel()
+            return super().list_dir(remote_path)
+
+    def factory(preset):
+        client = _CancelOnEncrypted(_encrypted_card_tree())
+        factory.clients.append(client)
+        return client
+
+    factory.clients = []
+    result = pull_preset(profile, cache_root, client_factory=factory, token=token)
+
+    assert result.ok is True
+    assert "取消" in result.warning
+    assert (result.path / "SAVER" / "demo.sav").read_bytes() == b"GBA-SAVE"
+    assert not (
+        result.path
+        / "Nintendo 3DS"
+        / "id0"
+        / "id1"
+        / "title"
+        / "00040000"
+        / "000f7000"
+        / "data"
+        / "00000001.sav"
+    ).exists()
+
+
+def test_empty_checkpoint_game_dir_is_a_save(tmp_path: Path):
+    cache_root = ftp_cache_root(tmp_path / "lib")
+    profile = FtpProfile(
+        key="3ds",
+        label="Nintendo 3DS",
+        host="10.0.0.9",
+        path="/",
+        target_paths=("3ds/Checkpoint/saves",),
+    )
+    result = pull_preset(
+        profile,
+        cache_root,
+        client_factory=fake_client_factory(_encrypted_card_tree()),
+    )
+
+    assert result.ok is True
+    saves_dir = result.path / "3ds" / "Checkpoint" / "saves"
+    assert (saves_dir / "0x008B4 MARIO KART 7").is_dir()
+    assert (saves_dir / "0x00F4E NEWラブプラス＋").is_dir()
+    assert not (result.path / "Nintendo 3DS").exists()
+    names = {save.display_name for save in scan(result.path).saves}
+    assert "MARIO KART 7" in names
+    assert "NEWラブプラス＋" in names
+
+
 def test_two_hosts_keep_separate_caches(tmp_path: Path):
     cache_root = ftp_cache_root(tmp_path / "lib")
     first = _checkpoint_profile("10.0.0.1")

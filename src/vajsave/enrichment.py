@@ -464,7 +464,9 @@ class Enrichment:
         except Exception:  # noqa: BLE001
             return PLACEHOLDER
 
-    def resolve_save_identity(self, entry: SaveEntry) -> GameIdentityResult:
+    def resolve_save_identity(
+        self, entry: SaveEntry, *, read_device: bool = True
+    ) -> GameIdentityResult:
         app = self.app
         game_id = app._library_game_id(entry)
         if game_id is not None:
@@ -480,7 +482,7 @@ class Enrichment:
                 title_id=entry.title_id or None,
             )
             return resolved(identity, reason="library", save_path=entry.path)
-        return self.identity_resolver.resolve(entry)
+        return self.identity_resolver.resolve(entry, read_device=read_device)
 
     def resolve_identities(
         self, entries: Optional[List[SaveEntry]] = None

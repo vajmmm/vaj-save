@@ -198,7 +198,7 @@ def _pick_primary_entry(group: List[SaveEntry], app: Optional[AppState]) -> Save
         # Prefer an entry that has updates (changed or new)
         for entry in group:
             try:
-                status = app.save_status(entry)
+                status = app.save_status(entry, allow_hash=False)
                 if status.status in ("changed", "new"):
                     return entry
             except Exception:

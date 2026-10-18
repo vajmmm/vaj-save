@@ -939,6 +939,7 @@ def test_legacy_catalog_without_identity_key_loads_as_none(tmp_path: Path):
 
     game = load_catalog(lib).games["psp:ULJM05800:default"]
     assert game.identity_key is None
+    assert game.cleared is False
     assert game.id == "psp:ULJM05800:default"
 
 

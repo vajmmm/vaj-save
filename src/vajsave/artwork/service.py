@@ -166,7 +166,9 @@ def _user_path(entry, library_root) -> Optional[Path]:
         return None
 
 
-def _portrait_path(path: Optional[Path]) -> Optional[Path]:
+def _portrait_path(
+    path: Optional[Path], platform: Optional[str] = None
+) -> Optional[Path]:
     """Return ``path`` only when it is a decodable cover, not a wide banner.
 
     Save-folder icons are useful provenance, but PSP ``ICON0.PNG`` files are
@@ -176,7 +178,7 @@ def _portrait_path(path: Optional[Path]) -> Optional[Path]:
     """
     if path is None:
         return None
-    return path if is_portrait_image_file(path) else None
+    return path if is_portrait_image_file(path, platform=platform) else None
 
 
 def _downloaded_path(
@@ -204,14 +206,14 @@ def resolve_artwork(
     if entry is None:
         return PLACEHOLDER
     plat = platform if platform is not None else getattr(entry, "platform", None)
-    user = _portrait_path(_user_path(entry, library_root))
+    user = _portrait_path(_user_path(entry, library_root), platform=plat)
     if user is not None:
         return ArtworkResolution(str(user), SOURCE_USER)
     downloaded = _downloaded_path(cache, plat, identity_key)
     if downloaded is not None:
         return ArtworkResolution(str(downloaded), SOURCE_DOWNLOADED)
     if _embedded_allowed(entry, plat):
-        embedded = _portrait_path(_embedded_path(entry))
+        embedded = _portrait_path(_embedded_path(entry), platform=plat)
         if embedded is not None:
             return ArtworkResolution(str(embedded), SOURCE_EMBEDDED)
     return PLACEHOLDER
@@ -342,7 +344,7 @@ class ArtworkService:
         if stored is not None:
             logger.info("[%s] 封面验证通过并写入缓存: %s -> %s", plat, artwork.url, stored)
         else:
-            logger.warning("[%s] 封面校验未通过 (非竖版或图像损坏): %s", plat, artwork.url)
+            logger.warning("[%s] 封面校验未通过 (非有效比例或图像损坏): %s", plat, artwork.url)
         return stored
 
     def ensure_cover_for_title(
@@ -361,7 +363,7 @@ class ArtworkService:
         plat = (platform or getattr(entry, "platform", "") or "").strip().lower()
         plat, title = resolve_boxart_system(plat, title, title_id)
         logger.info("[%s] 开始获取封面: '%s' (Title ID: %s, Key: %s)", plat, title, title_id or "无", identity_key or "无")
-        user = _portrait_path(_user_path(entry, library_root))
+        user = _portrait_path(_user_path(entry, library_root), platform=plat)
         if user is not None:
             logger.info("[%s] 命中本地自定义封面: %s", plat, user)
             return ArtworkResolution(str(user), SOURCE_USER)
@@ -421,7 +423,7 @@ class ArtworkService:
             return ArtworkResolution(str(cached), SOURCE_DOWNLOADED)
 
         embedded = (
-            _portrait_path(_embedded_path(entry)) if _embedded_allowed(entry, plat) else None
+            _portrait_path(_embedded_path(entry), platform=plat) if _embedded_allowed(entry, plat) else None
         )
         if plat == "switch":
             # 2. If Title ID is known, perform Title ID-first direct lookups!
@@ -820,7 +822,7 @@ class ArtworkService:
         if entry is None:
             return PLACEHOLDER
         plat = platform if platform is not None else getattr(entry, "platform", None)
-        user = _portrait_path(_user_path(entry, library_root))
+        user = _portrait_path(_user_path(entry, library_root), platform=plat)
         if user is not None:
             return ArtworkResolution(str(user), SOURCE_USER)
         cached = _downloaded_path(self.cache, plat, identity_key)
@@ -832,7 +834,7 @@ class ArtworkService:
         if downloaded is not None:
             return ArtworkResolution(str(downloaded), SOURCE_DOWNLOADED)
         if _embedded_allowed(entry, plat):
-            embedded = _portrait_path(_embedded_path(entry))
+            embedded = _portrait_path(_embedded_path(entry), platform=plat)
             if embedded is not None:
                 return ArtworkResolution(str(embedded), SOURCE_EMBEDDED)
         return PLACEHOLDER

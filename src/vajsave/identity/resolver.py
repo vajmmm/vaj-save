@@ -44,6 +44,10 @@ class ResolverContext:
     rom_index: RomIndex
     auto_bind: bool = True
     rom_cache: Optional[RomIdentityCache] = None
+    # The detail drawer resolves on the UI thread. That pass must not stat or
+    # read the save: a removable volume can block the caller for the whole
+    # in-flight USB transfer. Enrichment still reads with the default.
+    read_device: bool = True
 
 
 class GameIdentityResolver:
@@ -71,30 +75,31 @@ class GameIdentityResolver:
     def module_for(platform: Optional[str]):
         return _PLATFORM_MODULES.get((platform or "").strip().lower())
 
-    def _context(self) -> ResolverContext:
+    def _context(self, *, read_device: bool = True) -> ResolverContext:
         return ResolverContext(
             bindings=self.bindings,
             rom_index=self.rom_index,
             auto_bind=self.auto_bind,
             rom_cache=self.rom_cache,
+            read_device=read_device,
         )
 
-    def resolve(self, entry) -> GameIdentityResult:
+    def resolve(self, entry, *, read_device: bool = True) -> GameIdentityResult:
         try:
-            return self._resolve_entry(entry)
+            return self._resolve_entry(entry, read_device=read_device)
         finally:
             # A single resolution must persist immediately: the UI resolves the
             # selected row on its own, outside any batch.
             self.flush_cache()
 
-    def _resolve_entry(self, entry) -> GameIdentityResult:
+    def _resolve_entry(self, entry, *, read_device: bool = True) -> GameIdentityResult:
         module = self.module_for(getattr(entry, "platform", None))
         if module is None:
             return unresolved(
                 reason=f"暂不支持的身份解析: {getattr(entry, 'platform', None) or 'unknown'}",
                 save_path=getattr(entry, "path", None),
             )
-        return module.resolve(entry, self._context())
+        return module.resolve(entry, self._context(read_device=read_device))
 
     def resolve_many(self, entries: Iterable) -> List[GameIdentityResult]:
         results: List[GameIdentityResult] = []

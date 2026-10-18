@@ -59,6 +59,9 @@ SWITCH: Dict[str, str] = {
     "shelf_edge": "#b9c1cc",
     "shelf_highlight": "#f9fafc",
     "dock_selected": "#dcecff",
+    # Brass foil for the wordless cleared halo around a gallery case.
+    # It is a rim, not a page fill; the blue backup button stays the only accent fill.
+    "cleared_foil": "#c4a15a",
 }
 
 # Module-level aliases keep the token names greppable from the UI code without
@@ -145,6 +148,33 @@ GALLERY_CASE_WIDTH_INSET = 12
 DETAIL_COVER_MAX_WIDTH = 140
 DETAIL_COVER_MAX_HEIGHT = 196
 DETAIL_COVER_ASPECT_RANGE = (0.55, 1.05)
+PLATFORM_DETAIL_COVER_ASPECT_RANGE: Dict[str, tuple[float, float]] = {
+    # NDS libretro box scans are near-square and often slightly landscape.
+    # 3DS also ships 5:3 title cards (500×300); the ceiling matches
+    # artwork.cache.THREEDS_MAX_COVER_ASPECT_RATIO.
+    "nds": (0.45, 1.25),
+    "3ds": (0.45, 1.70),
+    "gba": (0.45, 1.75),
+}
+
+
+def detail_cover_aspect_range(platform: Any) -> tuple[float, float]:
+    """Return the allowed cover aspect range for a platform's detail drawer."""
+    key = str(platform or "").strip().lower()
+    return PLATFORM_DETAIL_COVER_ASPECT_RANGE.get(key, DETAIL_COVER_ASPECT_RANGE)
+
+
+PLATFORM_GALLERY_ASPECT_RANGE: Dict[str, tuple[float, float]] = {
+    "nds": (0.45, 1.25),
+    "3ds": (0.45, 1.70),
+    "gba": (0.45, 1.75),
+}
+
+
+def gallery_case_aspect_range(platform: Any) -> tuple[float, float]:
+    """Return the allowed cover aspect range for a platform's packaging on the shelf."""
+    key = str(platform or "").strip().lower()
+    return PLATFORM_GALLERY_ASPECT_RANGE.get(key, (0.45, 1.35))
 
 STATUS_LABELS: Dict[str, str] = {
     "new": "新",
@@ -238,7 +268,8 @@ def gallery_case_size(
     if cover_aspect is not None:
         try:
             ca = float(cover_aspect)
-            if 0.45 <= ca <= 1.35:
+            low, high = gallery_case_aspect_range(key)
+            if low <= ca <= high:
                 aspect = ca
         except (ValueError, TypeError):
             pass
@@ -271,7 +302,7 @@ def detail_cover_size(
             candidate = float(cover_aspect)
         except (TypeError, ValueError):
             candidate = 0.0
-        low, high = DETAIL_COVER_ASPECT_RANGE
+        low, high = detail_cover_aspect_range(key)
         if low <= candidate <= high:
             aspect = candidate
     if aspect is None:
@@ -296,7 +327,7 @@ def status_label(status: Any) -> str:
     return STATUS_LABELS.get(key, key)
 
 
-def save_row(entry: Any, status: Any, *, starred: bool = False) -> Dict[str, Any]:
+def save_row(entry: Any, status: Any, *, starred: bool = False, cleared: bool = False) -> Dict[str, Any]:
     """Describe one display item for the responsive save gallery.
 
     ``status`` may be a status string or any object exposing a ``.status``
@@ -316,4 +347,5 @@ def save_row(entry: Any, status: Any, *, starred: bool = False) -> Dict[str, Any
         "status": status_key,
         "status_label": STATUS_LABELS.get(status_key, status_key),
         "starred": bool(starred),
+        "cleared": bool(cleared),
     }

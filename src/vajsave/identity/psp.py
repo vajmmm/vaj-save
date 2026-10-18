@@ -74,6 +74,29 @@ def resolve(entry, ctx) -> GameIdentityResult:
         )
         return resolved(identity, save_path=entry.path)
 
+    if not getattr(ctx, "read_device", True):
+        # Same fields the scanner already parsed out of PARAM.SFO. Listing the
+        # save directory here runs on the UI thread and waits on the card.
+        title = display or entry_title_id
+        if entry_title_id:
+            identity = GameIdentity(
+                identity_key=f"psp:{entry_title_id}",
+                platform=PLATFORM,
+                title=title or entry_title_id,
+                title_id=entry_title_id,
+                source=SOURCE_METADATA,
+            )
+            return resolved(identity, save_path=entry.path)
+        if display:
+            identity = GameIdentity(
+                identity_key=f"psp:name:{normalize_title(display)}",
+                platform=PLATFORM,
+                title=display,
+                source=SOURCE_FILENAME,
+            )
+            return partial(identity, reason="缺少 PARAM.SFO TITLE_ID", save_path=entry.path)
+        return unresolved(reason="缺少 PARAM.SFO / TITLE_ID", save_path=entry.path)
+
     sfo_path = _find_param_sfo(entry.path)
     sfo_data = parse_sfo(sfo_path) if sfo_path is not None else {}
     title_id = (

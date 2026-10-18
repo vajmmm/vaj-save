@@ -132,7 +132,7 @@ def _file_row(
 HELP_TEXT = (
     "vaj-save 将掌机存档只读备份到电脑，不会写入掌机。\n\n"
     "选择游戏后可备份、恢复到指定文件夹、导出 ZIP、绑定 ROM 或记录备注。\n"
-    "详情抽屉可收藏游戏、删除单个版本（删掉最后一版等于删除整条游戏）。\n"
+    "详情抽屉可收藏游戏、标记通关、删除单个版本（删掉最后一版等于删除整条游戏）。\n"
     "本地库可导入带清单的 ZIP；旧 ZIP 需挂到已有游戏或填写机种与名称新建。\n"
     "「备份有更新」只备份新的或有变化的存档，过程中可取消。\n"
     "插入后自动备份默认关闭，可在设置中打开。\n"
@@ -347,10 +347,18 @@ class SettingsDialog(QDialog):
         return state.set_keep_last(self.keep.text()) is not None
 
 
+def _export_probe_path(profile) -> str:
+    """First plaintext export root, used to prove a connection can see saves."""
+    for path in getattr(profile, "target_paths", ()) or ():
+        if str(path).replace("\\", "/").strip("/").lower() != "nintendo 3ds":
+            return str(path)
+    return ""
+
+
 PRESET_HINTS = {
     "vita": "提示：在 PS Vita 的 VitaShell 中按 SELECT 键启动 FTP（默认端口 1337）",
     "switch": "提示：在 Switch 上运行 sys-ftpd-light 后台模块或 JKSV/ftpd（默认端口 5000）",
-    "3ds": "提示：在 3DS 上启动 FTPD 应用，屏幕将显示当前 IP（默认端口 5000）",
+    "3ds": "提示：FTPD 默认端口 5000。Checkpoint 自带 FTP 的端口是 50000。同步会先拉取 Checkpoint 存档；没填直读密钥时不会下载整段加密 SD。",
     "psp": "提示：在 PSP 上运行 PSP-FTPD 并连接 Wi-Fi 热点（默认端口 21）",
     "nds": "提示：在烧录卡上运行 ftpd-nds 并连接 Wi-Fi 热点（默认端口 21）",
     "checkpoint": "提示：专用于 Checkpoint 导出的存档网络服务器（默认端口 5000）",
@@ -462,8 +470,19 @@ class FtpDialog(QDialog):
         )
         try:
             with factory(profile) as client:
-                pass
-            self.test_status.setText("● 连接成功！掌机在线")
+                message = "● 连接成功！掌机在线"
+                probe = _export_probe_path(get_preset(self.preset.currentData()))
+                if probe:
+                    try:
+                        entries = client.list_dir(probe)
+                        folders = sum(1 for entry in entries if getattr(entry, "is_dir", False))
+                        if folders:
+                            message = f"● 连接成功，看到 {folders} 个存档目录"
+                        else:
+                            message = "● 连接成功，存档目录是空的"
+                    except Exception:
+                        pass
+            self.test_status.setText(message)
             self.test_status.setStyleSheet(f"color: {SWITCH['status_green']}; font-size: 11px; font-weight: bold;")
         except Exception as exc:
             self.test_status.setText(f"● 无法连接: {exc}")

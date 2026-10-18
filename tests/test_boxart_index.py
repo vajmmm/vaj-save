@@ -76,8 +76,27 @@ def test_parse_boxart_listing_decodes_filters_and_dedupes():
 
 def test_parse_boxart_listing_handles_bytes_and_junk():
     assert parse_boxart_listing(b'<a href="Game.png">Game.png</a>') == ("Game.png",)
+    assert parse_boxart_listing(b"<a href='Game.png'>Game.png</a>") == ("Game.png",)
     assert parse_boxart_listing("") == ()
     assert parse_boxart_listing("<html>no links</html>") == ()
+
+
+def test_parse_boxart_listing_keeps_apostrophes_inside_double_quotes():
+    html = (
+        '<a href="Yoshi\'s%20New%20Island%20(USA)%20(En,Fr,Es).png">'
+        "Yoshi's New Island (USA) (En,Fr,Es).png</a>"
+        '<a href="Mario%20_%20Luigi%20-%20Dream%20Team%20(USA).png">'
+        "Mario _ Luigi - Dream Team (USA).png</a>"
+    )
+    names = parse_boxart_listing(html)
+    assert names == (
+        "Yoshi's New Island (USA) (En,Fr,Es).png",
+        "Mario _ Luigi - Dream Team (USA).png",
+    )
+    assert (
+        unique_boxart_match(names, "YOSHI'S New ISLAND")
+        == "Yoshi's New Island (USA) (En,Fr,Es).png"
+    )
 
 
 # --- name normalisation + unique match --------------------------------------

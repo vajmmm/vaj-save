@@ -42,7 +42,14 @@ from .title_ids import expand_3ds_title_id
 _PAREN_RE = re.compile(r"[\(\[]([^\)\]]*)[\)\]]")
 
 # A single directory entry link, e.g. ``<a href="Kirby%20...png">``.
-_HREF_RE = re.compile(r"""href\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+# Apache wraps the href in double quotes and leaves apostrophes raw
+# (``Yoshi's New Island``). A character class that treats either quote as the
+# closer stops at that apostrophe and drops the file, so the two quote styles
+# are matched separately.
+_HREF_RE = re.compile(
+    r"""href\s*=\s*(?:"([^"]*)"|'([^']*)')""",
+    re.IGNORECASE,
+)
 # Non-alphanumerics become separators before token comparison.
 _NON_ALNUM_RE = re.compile(r"[^0-9a-z]+")
 # A DS cartridge Checkpoint folder: 4-char uppercase game code + a title.
@@ -71,7 +78,10 @@ def parse_boxart_listing(html: Any) -> Tuple[str, ...]:
         html = bytes(html).decode("utf-8", errors="replace")
     names = []
     seen = set()
-    for raw in _HREF_RE.findall(str(html)):
+    for match in _HREF_RE.finditer(str(html)):
+        raw = match.group(1) if match.group(1) is not None else match.group(2)
+        if not raw:
+            continue
         leaf = unquote(raw).rsplit("/", 1)[-1]
         if not leaf.lower().endswith(".png"):
             continue

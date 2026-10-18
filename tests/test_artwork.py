@@ -280,6 +280,56 @@ def test_cover_cache_rejects_landscape_artwork(tmp_path: Path):
     assert cache.manifest() == {}
 
 
+def test_cover_cache_accepts_near_square_nds_and_3ds_box_scans(tmp_path: Path):
+    # libretro NDS/3DS Named_Boxarts are often ~512×458 (ratio ≈ 1.12).
+    scan = png_bytes(size=(512, 458))
+    assert is_portrait_image_bytes(scan, platform="nds")
+    assert is_portrait_image_bytes(scan, platform="3ds")
+    assert not is_portrait_image_bytes(scan, platform="psp")
+    assert not is_portrait_image_bytes(scan, platform="gb")
+    assert not is_portrait_image_bytes(scan, platform="gbc")
+    assert not is_portrait_image_bytes(scan, platform="vita")
+    # 4:3 screenshots stay out of NDS. 16:9 screenshots and PSP banners stay
+    # out of 3DS. A 5:3 title card (500×300) is a real 3DS Named_Boxart.
+    assert not is_portrait_image_bytes(png_bytes(size=(800, 600)), platform="nds")
+    assert not is_portrait_image_bytes(png_bytes(size=(144, 80)), platform="3ds")
+    assert not is_portrait_image_bytes(png_bytes(size=(320, 180)), platform="3ds")
+    title_card = png_bytes(size=(500, 300))
+    assert is_portrait_image_bytes(title_card, platform="3ds")
+    assert not is_portrait_image_bytes(title_card, platform="nds")
+
+    cache = CoverCache(tmp_path / "covers")
+    stored = cache.store("nds", "nds:box", scan)
+    assert stored is not None
+    assert is_portrait_image_file(stored, platform="nds")
+    assert cache.lookup("nds", "nds:box") == stored
+    assert cache.store("3ds", "3ds:wide", png_bytes(size=(320, 180))) is None
+    stored_card = cache.store("3ds", "3ds:picross", title_card)
+    assert stored_card is not None
+    assert cache.lookup("3ds", "3ds:picross") == stored_card
+
+
+def test_cover_cache_accepts_gba_landscape_artwork(tmp_path: Path):
+    # Japanese GBA box arts are physically landscape (e.g. 500x306, ratio 1.634).
+    gba_jp = png_bytes(size=(500, 306))
+    assert is_portrait_image_bytes(gba_jp, platform="gba")
+    # But other platforms should reject landscape covers.
+    assert not is_portrait_image_bytes(gba_jp, platform="psp")
+    # Extreme banners (like PSP's 144x80 banner ratio = 1.80) are still rejected on GBA.
+    wide_banner = png_bytes(size=(144, 80))
+    assert not is_portrait_image_bytes(wide_banner, platform="gba")
+
+    cache = CoverCache(tmp_path / "covers")
+    stored = cache.store("gba", "gba:jp_boxart", gba_jp)
+    assert stored is not None
+    assert is_portrait_image_file(stored, platform="gba")
+    assert cache.lookup("gba", "gba:jp_boxart") == stored
+
+    # Still rejects wide banner
+    assert cache.store("gba", "gba:wide", wide_banner) is None
+
+
+
 def test_cover_cache_ignores_stale_landscape_hit(tmp_path: Path):
     cache = CoverCache(tmp_path / "covers")
     key = "psp:stale"
@@ -838,6 +888,35 @@ def test_ensure_cover_for_title_skips_landscape_user_and_downloads_portrait(
     assert Path(resolution.path).name.endswith(".png")
 
 
+def test_ensure_cover_for_title_downloads_gba_landscape_cover(tmp_path: Path):
+    library = tmp_path / "lib"
+    entry = make_entry(tmp_path, platform="gba", name="Gyakuten Saiban 2 (Japan)")
+    calls = []
+    # Simulates Libretro returning a Japanese horizontal GBA box art (500x306)
+    jp_boxart = png_bytes(size=(500, 306))
+    service = ArtworkService(
+        cache=CoverCache(library / COVER_CACHE_DIR),
+        downloader=ArtworkDownloader(
+            urlopen=lambda url, timeout=None: calls.append(url)
+            or FakeResponse(jp_boxart)
+        ),
+    )
+
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="gba",
+        title="Gyakuten Saiban 2 (Japan)",
+        identity_key="gba:sha1:abc123",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_DOWNLOADED
+    assert calls
+    assert Path(resolution.path).name.endswith(".png")
+    # Verify cached on disk and decodes cleanly as GBA cover
+    assert is_portrait_image_file(Path(resolution.path), platform="gba")
+
+
+
 def test_ensure_cover_for_title_ignores_landscape_embedded_when_offline(
     tmp_path: Path,
 ):
@@ -1264,6 +1343,48 @@ def test_ensure_cover_for_title_uses_named_boxarts_listing_after_404(tmp_path: P
     )
     assert "Nintendo%20-%20Nintendo%203DS" in boxart[-1]
     assert cache.lookup("3ds", "3ds:name:kirby") is not None
+
+
+def test_ensure_cover_for_title_listing_keeps_apostrophe_in_filename(tmp_path: Path):
+    """Apache leaves apostrophes raw inside double-quoted hrefs.
+
+    Yoshi's New Island is published as ``Yoshi's New Island (USA) (En,Fr,Es).png``.
+    A parser that treats ``'`` as the end of the href drops the file, every
+    generated candidate 404s, and the gallery stays on the placeholder.
+    """
+    library = tmp_path / "lib"
+    cache = CoverCache(library / COVER_CACHE_DIR)
+    entry = make_entry(tmp_path, platform="3ds", name="YOSHI'S New ISLAND")
+    listing = (
+        '<a href="Yoshi\'s%20New%20Island%20(Europe)%20(En,Fr,De,Es,It,Nl,Pt,Ru).png">'
+        "Yoshi's New Island (Europe) (En,Fr,De,Es,It,Nl,Pt,Ru).png</a>"
+        '<a href="Yoshi\'s%20New%20Island%20(USA)%20(En,Fr,Es).png">'
+        "Yoshi's New Island (USA) (En,Fr,Es).png</a>"
+    )
+    calls = []
+
+    def opener(url, timeout=None):
+        calls.append(url)
+        if url.endswith("/Named_Boxarts/"):
+            return FakeResponse(listing.encode("utf-8"))
+        if url.endswith("Yoshi's%20New%20Island%20(USA)%20(En,Fr,Es).png"):
+            return FakeResponse(png_bytes())
+        return FakeResponse(b"missing", status=404)
+
+    service = ArtworkService(cache=cache, downloader=ArtworkDownloader(urlopen=opener))
+    resolution = service.ensure_cover_for_title(
+        entry,
+        platform="3ds",
+        title="YOSHI'S New ISLAND",
+        identity_key="3ds:name:yoshi",
+        library_root=library,
+    )
+    assert resolution.source == SOURCE_DOWNLOADED
+    boxart = [url for url in calls if "Named_Boxarts" in url and url.endswith(".png")]
+    assert boxart and boxart[-1].endswith(
+        "Yoshi's%20New%20Island%20(USA)%20(En,Fr,Es).png"
+    )
+    assert cache.lookup("3ds", "3ds:name:yoshi") is not None
 
 
 def test_ensure_cover_for_title_multi_region_listing_prefers_usa(tmp_path: Path):

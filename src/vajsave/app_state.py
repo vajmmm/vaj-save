@@ -176,6 +176,7 @@ class AppState:
         self.selected_platform: str = "all"
         self.search_query: str = ""
         self.starred_only: bool = False
+        self.cleared_only: bool = False
         self.hide_unchanged: bool = False
         self._backup_statuses: Dict[str, SaveBackupStatus] = {}
 
@@ -409,8 +410,8 @@ class AppState:
             platforms=platforms,
         )
 
-    def pull_ftp_saves(self, token: object = None) -> FtpPullResult:
-        return self.ftp.pull_ftp_saves(token=token)
+    def pull_ftp_saves(self, token: object = None, on_ready=None) -> FtpPullResult:
+        return self.ftp.pull_ftp_saves(token=token, on_ready=on_ready)
 
     def pull_mtp_saves(self, mount_point: Union[Path, str], token: object = None) -> MtpPullResult:
         return self.mtp.pull_mount(mount_point, token=token)
@@ -441,8 +442,10 @@ class AppState:
     ) -> ArtworkResolution:
         return self.enrichment.ensure_save_cover(entry, result=result, metadata=metadata)
 
-    def resolve_save_identity(self, entry: SaveEntry) -> GameIdentityResult:
-        return self.enrichment.resolve_save_identity(entry)
+    def resolve_save_identity(
+        self, entry: SaveEntry, *, read_device: bool = True
+    ) -> GameIdentityResult:
+        return self.enrichment.resolve_save_identity(entry, read_device=read_device)
 
     def resolve_identities(
         self, entries: Optional[List[SaveEntry]] = None
@@ -483,8 +486,8 @@ class AppState:
     def visible_saves(self) -> List[SaveEntry]:
         return self.library_actions.visible_saves()
 
-    def save_status(self, entry: SaveEntry) -> SaveBackupStatus:
-        return self.library_actions.save_status(entry)
+    def save_status(self, entry: SaveEntry, *, allow_hash: bool = True) -> SaveBackupStatus:
+        return self.library_actions.save_status(entry, allow_hash=allow_hash)
 
     def backup_status_counts(self) -> Dict[str, int]:
         return self.library_actions.backup_status_counts()
@@ -501,11 +504,20 @@ class AppState:
     def toggle_starred_only(self) -> bool:
         return self.library_actions.toggle_starred_only()
 
+    def toggle_cleared_only(self) -> bool:
+        return self.library_actions.toggle_cleared_only()
+
     def toggle_star(self, entry: SaveEntry) -> bool:
         return self.library_actions.toggle_star(entry)
 
     def is_starred(self, entry: SaveEntry) -> bool:
         return self.library_actions.is_starred(entry)
+
+    def toggle_cleared(self, entry: SaveEntry) -> bool:
+        return self.library_actions.toggle_cleared(entry)
+
+    def is_cleared(self, entry: SaveEntry) -> bool:
+        return self.library_actions.is_cleared(entry)
 
     def game_note(self, entry: SaveEntry) -> str:
         return self.library_actions.game_note(entry)

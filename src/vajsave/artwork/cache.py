@@ -66,6 +66,37 @@ MAX_COVER_BYTES = 8 * 1024 * 1024
 # trimming transparent borders. Allow that near-square rounding while still
 # rejecting PSP's 144×80 banner icons and other clearly landscape artwork.
 MAX_COVER_ASPECT_RATIO = 1.10
+# libretro Named_Boxarts for NDS and 3DS are near-square box scans, commonly
+# a little wider than tall (measured about 1.10–1.14, for example 512×458).
+# The default 1.10 ceiling rejects those real boxes. 1.25 still refuses 4:3
+# screenshots and PSP's 144×80 banners.
+NEAR_SQUARE_MAX_COVER_ASPECT_RATIO = 1.25
+# Some 3DS Named_Boxarts are 5:3 title cards rather than near-square box scans.
+# My Nintendo Picross - The Legend of Zelda - Twilight Princess (USA) is
+# 500×300 (ratio 1.667). 1.70 keeps that card and still refuses 16:9
+# screenshots (1.78) and PSP's 144×80 banners (1.80).
+THREEDS_MAX_COVER_ASPECT_RATIO = 1.70
+GBA_MAX_COVER_ASPECT_RATIO = 1.75
+
+PLATFORM_MAX_COVER_ASPECT_RATIO: Dict[str, float] = {
+    "nds": NEAR_SQUARE_MAX_COVER_ASPECT_RATIO,
+    "3ds": THREEDS_MAX_COVER_ASPECT_RATIO,
+    "gba": GBA_MAX_COVER_ASPECT_RATIO,
+}
+
+
+def max_cover_aspect_ratio(platform: Optional[str] = None) -> float:
+    """Return the maximum allowed width-to-height ratio for a platform's covers.
+
+    Default is MAX_COVER_ASPECT_RATIO (1.10) for portrait or square platforms
+    (PSP, Vita, GB, GBC, Switch). NDS accepts near-square box scans up to
+    NEAR_SQUARE_MAX_COVER_ASPECT_RATIO (1.25). 3DS uses the same near-square
+    scans plus 5:3 title cards, up to THREEDS_MAX_COVER_ASPECT_RATIO (1.70).
+    GBA keeps its own ceiling for Japanese retail boxes (typically 500×306,
+    about 1.63) at GBA_MAX_COVER_ASPECT_RATIO (1.75).
+    """
+    key = str(platform or "").strip().lower()
+    return PLATFORM_MAX_COVER_ASPECT_RATIO.get(key, MAX_COVER_ASPECT_RATIO)
 
 
 def is_valid_image_bytes(data: Optional[bytes]) -> bool:
@@ -82,12 +113,16 @@ def is_valid_image_bytes(data: Optional[bytes]) -> bool:
         return False
 
 
-def is_portrait_image_bytes(data: Optional[bytes]) -> bool:
-    """True when ``data`` is decodable and not a wide banner.
+def is_portrait_image_bytes(
+    data: Optional[bytes], platform: Optional[str] = None
+) -> bool:
+    """True when ``data`` is decodable and not an invalid aspect ratio for ``platform``.
 
-    Downloaded artwork is shown in the gallery's portrait card geometry. Square
-    and near-square images remain valid; only clearly landscape assets are
-    rejected so they cannot be silently center-cropped into an unrelated cover.
+    Downloaded artwork is shown in the gallery's card geometry. Square, near-square
+    (including NDS/3DS box scans a little wider than tall), and valid platform
+    packaging (including Japanese horizontal GBA box art) remain valid; wide
+    banners (such as PSP's 144×80 ICON0.PNG) and extreme landscape assets are
+    rejected.
     """
     if not data:
         return False
@@ -97,12 +132,18 @@ def is_portrait_image_bytes(data: Optional[bytes]) -> bool:
         with Image.open(BytesIO(data)) as image:
             image.verify()
             width, height = image.size
-        return width <= height * MAX_COVER_ASPECT_RATIO
+        limit = max_cover_aspect_ratio(platform)
+        return width <= height * limit
     except Exception:  # noqa: BLE001 - any decode failure is not a cover
         return False
 
 
-def is_portrait_image_file(path: Path, *, max_bytes: int = MAX_COVER_BYTES) -> bool:
+is_valid_cover_image_bytes = is_portrait_image_bytes
+
+
+def is_portrait_image_file(
+    path: Path, *, max_bytes: int = MAX_COVER_BYTES, platform: Optional[str] = None
+) -> bool:
     """Validate an existing cover without loading an unbounded image."""
     try:
         size = path.stat().st_size
@@ -113,9 +154,13 @@ def is_portrait_image_file(path: Path, *, max_bytes: int = MAX_COVER_BYTES) -> b
         with Image.open(path) as image:
             image.verify()
             width, height = image.size
-        return width <= height * MAX_COVER_ASPECT_RATIO
+        limit = max_cover_aspect_ratio(platform)
+        return width <= height * limit
     except Exception:  # noqa: BLE001 - stale/corrupt cache entries are misses
         return False
+
+
+is_valid_cover_image_file = is_portrait_image_file
 
 
 class CoverCache:
@@ -181,7 +226,7 @@ class CoverCache:
             size = path.stat().st_size
             if size <= 0 or size > self.max_bytes:
                 return None
-            if not is_portrait_image_file(path, max_bytes=self.max_bytes):
+            if not is_portrait_image_file(path, max_bytes=self.max_bytes, platform=platform):
                 return None
         except OSError:
             return None
@@ -216,8 +261,8 @@ class CoverCache:
             return None
         if not data or len(data) > self.max_bytes:
             return None
-        if not is_portrait_image_bytes(data):
-            logger.debug("[%s] 封面拒绝写入缓存: 构图非竖版比例", platform)
+        if not is_portrait_image_bytes(data, platform=platform):
+            logger.debug("[%s] 封面拒绝写入缓存: 构图非有效比例", platform)
             return None
         path = self.path_for(platform, identity_key)
         if path is None:
@@ -358,7 +403,14 @@ __all__ = [
     "MANIFEST_FIELDS",
     "is_portrait_image_bytes",
     "is_portrait_image_file",
+    "is_valid_cover_image_bytes",
+    "is_valid_cover_image_file",
     "is_valid_image_bytes",
+    "max_cover_aspect_ratio",
     "MAX_COVER_ASPECT_RATIO",
+    "NEAR_SQUARE_MAX_COVER_ASPECT_RATIO",
+    "THREEDS_MAX_COVER_ASPECT_RATIO",
+    "GBA_MAX_COVER_ASPECT_RATIO",
+    "PLATFORM_MAX_COVER_ASPECT_RATIO",
     "MAX_COVER_BYTES",
 ]

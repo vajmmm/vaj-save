@@ -172,12 +172,13 @@ def sd_root_paths(platforms: object = None) -> Tuple[str, ...]:
 def skip_dir_names_for(root: str) -> frozenset:
     """Directory names to leave untouched while mirroring ``root``.
 
-    ``Nintendo 3DS/*/content`` is installed software, not a save. Skipping it
-    keeps an ftpd pull of the encrypted SD from downloading the game itself.
+    Under ``Nintendo 3DS``, ``content`` is installed software, and ``dbs`` /
+    ``backup`` are console databases. Saves live in ``title/*/data`` and
+    ``extdata``.
     """
     name = str(root or "").replace("\\", "/").strip("/").lower()
     if name == "nintendo 3ds":
-        return frozenset({"content"})
+        return frozenset({"content", "dbs", "backup", "backups"})
     return frozenset()
 
 
@@ -283,11 +284,13 @@ THREEDS_PRESET = FtpProfile(
     port=5000,
     path="/",
     description="Nintendo 3DS (FTPD · 默认端口 5000)",
+    # Plaintext exports first. ``Nintendo 3DS`` is the encrypted card and is
+    # large; the puller publishes the exports before touching it.
     target_paths=(
-        "Nintendo 3DS",
         "3ds/Checkpoint/saves",
         "JKSV",
         "roms/nds/saves",
+        "Nintendo 3DS",
     ),
 )
 

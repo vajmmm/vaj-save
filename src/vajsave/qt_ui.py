@@ -21,9 +21,12 @@ import qtawesome as qta
 from PySide6.QtCore import QByteArray, QEasingCurve, QObject, QPoint, QPropertyAnimation, QRectF, QSize, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import (
     QActionGroup,
+    QBrush,
     QColor,
     QFont,
+    QFontMetrics,
     QIcon,
+    QImage,
     QImageReader,
     QKeyEvent,
     QKeySequence,
@@ -66,7 +69,7 @@ from PySide6.QtSvg import QSvgRenderer
 
 from .app_state import PLATFORM_LABELS, PLATFORM_ORDER, AppState
 
-from .artwork import MAX_COVER_ASPECT_RATIO, ArtworkLoader
+from .artwork import MAX_COVER_ASPECT_RATIO, ArtworkLoader, max_cover_aspect_ratio
 from .identity import STATUS_AMBIGUOUS, STATUS_PARTIAL, STATUS_RESOLVED
 from .library import Snapshot
 from .models import SaveEntry
@@ -240,11 +243,90 @@ def _fmt_time(value: Optional[str]) -> str:
     return str(value or "—").replace("T", " ")[:16]
 
 
-def _short_path(value: object, length: int = 45) -> str:
-    text = str(value or "—")
-    if len(text) <= length:
-        return text
-    return "…" + text[-(length - 1) :]
+class _WrapValue(QLabel):
+    """Definition-list value that wraps inside the drawer instead of clipping."""
+
+    def __init__(self, text: str = "", parent: Optional[QWidget] = None) -> None:
+        super().__init__(text, parent)
+        self.setWordWrap(True)
+        self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        height = super().minimumSizeHint().height()
+        if self.width() > 0:
+            height = max(height, self.heightForWidth(self.width()))
+        return QSize(0, height)
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        width = self.width() if self.width() > 40 else 160
+        return QSize(width, max(self.heightForWidth(width), self.fontMetrics().lineSpacing()))
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        super().setText(text)
+        self._fit_height()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._fit_height()
+
+    def _fit_height(self) -> None:
+        width = self.width()
+        if width <= 0:
+            return
+        needed = self.heightForWidth(width)
+        if needed > 0 and abs(self.minimumHeight() - needed) > 1:
+            self.setMinimumHeight(needed)
+            self.updateGeometry()
+
+
+class _SourceCombo(QComboBox):
+    """Arrow-sized source picker whose popup stays readable beside a wrapping label."""
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = self.rect().adjusted(1, 1, -2, -2)
+        painter.setPen(QPen(QColor(SWITCH["border_soft"])))
+        painter.setBrush(QColor(CONTROL_WHITE))
+        painter.drawRoundedRect(rect, 6, 6)
+        painter.setPen(QPen(QColor(SWITCH["muted_strong"]), 1.7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        center = rect.center()
+        path = QPainterPath()
+        path.moveTo(center.x() - 4, center.y() - 2)
+        path.lineTo(center.x(), center.y() + 3)
+        path.lineTo(center.x() + 4, center.y() - 2)
+        painter.drawPath(path)
+
+    def showPopup(self) -> None:  # noqa: N802
+        metrics = self.fontMetrics()
+        text_width = 0
+        for index in range(self.count()):
+            text_width = max(text_width, metrics.horizontalAdvance(self.itemText(index)))
+        screen = self.screen().availableGeometry() if self.screen() else None
+        limit = (screen.width() - 32) if screen is not None else 720
+        popup_width = min(max(text_width + 36, 220), max(limit, 220))
+        self.view().setMinimumWidth(popup_width)
+        self.view().setTextElideMode(Qt.TextElideMode.ElideNone)
+        super().showPopup()
+        container = self.view().window()
+        if container is None or container is self.window():
+            return
+        host = self.parentWidget() or self
+        geo = container.geometry()
+        geo.setWidth(max(geo.width(), popup_width))
+        anchor = host.mapToGlobal(QPoint(host.width(), host.height()))
+        geo.moveTopRight(anchor)
+        screen = self.screen().availableGeometry() if self.screen() else None
+        if screen is not None:
+            if geo.right() > screen.right():
+                geo.moveRight(screen.right())
+            if geo.left() < screen.left():
+                geo.moveLeft(screen.left())
+            if geo.bottom() > screen.bottom():
+                geo.moveBottom(self.mapToGlobal(QPoint(0, 0)).y() - 4)
+        container.setGeometry(geo)
 
 
 def _artwork_size_of(path: Path) -> Optional[int]:
@@ -425,6 +507,7 @@ class GalleryCanvas(QWidget):
         self._pixmaps: "OrderedDict[tuple, QPixmap]" = OrderedDict()
         self._cover_paths: dict[str, str] = {}
         self._cover_aspects: dict[str, Optional[float]] = {}
+        self._bloom_cache: dict[tuple[int, int], QImage] = {}
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -439,7 +522,8 @@ class GalleryCanvas(QWidget):
         sz = reader.size()
         if sz.isValid() and sz.height() > 0:
             aspect = sz.width() / sz.height()
-            if 0.35 <= aspect <= MAX_COVER_ASPECT_RATIO:
+            plat = getattr(entry, "platform", None)
+            if 0.35 <= aspect <= max_cover_aspect_ratio(plat):
                 self._cover_aspects[entry.path] = aspect
                 return aspect
         self._cover_aspects[entry.path] = None
@@ -453,7 +537,9 @@ class GalleryCanvas(QWidget):
         self._update_geometry()
         self.update()
 
-    def set_cover_path(self, entry_path: str, cover_path: Optional[str]) -> None:
+    def set_cover_path(
+        self, entry_path: str, cover_path: Optional[str], platform: Optional[str] = None
+    ) -> None:
         """替换一个条目的封面路径，并让下一帧重新读取高清资源。"""
         path = str(cover_path or "")
         previous = self._cover_paths.get(entry_path, "")
@@ -465,7 +551,12 @@ class GalleryCanvas(QWidget):
             sz = reader.size()
             if sz.isValid() and sz.height() > 0:
                 aspect = sz.width() / sz.height()
-                if 0.35 <= aspect <= MAX_COVER_ASPECT_RATIO:
+                plat = platform
+                if not plat:
+                    entry = next((e for e in self.entries if e.path == entry_path), None)
+                    if entry:
+                        plat = getattr(entry, "platform", None)
+                if 0.35 <= aspect <= max_cover_aspect_ratio(plat):
                     self._cover_aspects[entry_path] = aspect
                 else:
                     self._cover_aspects[entry_path] = None
@@ -545,6 +636,7 @@ class GalleryCanvas(QWidget):
         if cover_rect is None:
             cover_rect = self._default_cover_rect(entry)
         path = self._cover_paths.get(entry.path)
+        platform = str(getattr(entry, "platform", "") or "").strip().lower()
         if path is None:
             resolution = self.state.resolve_save_cover(entry)
             path = str(resolution.path or "")
@@ -553,12 +645,11 @@ class GalleryCanvas(QWidget):
                 sz = QImageReader(path).size()
                 if sz.isValid() and sz.height() > 0:
                     aspect = sz.width() / sz.height()
-                    if 0.35 <= aspect <= MAX_COVER_ASPECT_RATIO:
+                    if 0.35 <= aspect <= max_cover_aspect_ratio(platform):
                         self._cover_aspects[entry.path] = aspect
         if not path:
             return None
         dpr = float(self.devicePixelRatioF()) or 1.0
-        platform = str(getattr(entry, "platform", "") or "").strip().lower()
         key = (
             path,
             max(1, int(round(cover_rect.width()))),
@@ -570,7 +661,7 @@ class GalleryCanvas(QWidget):
             self._pixmaps.move_to_end(key)
             return cached
         pixmap = QPixmap(path)
-        if pixmap.isNull() or pixmap.width() > pixmap.height() * MAX_COVER_ASPECT_RATIO:
+        if pixmap.isNull() or pixmap.width() > pixmap.height() * max_cover_aspect_ratio(platform):
             # PSP ICON0.PNG is normally a 144×80 banner. Keep it on the
             # mounted save, but never let it become a gallery cover.
             self._cover_paths[entry.path] = ""
@@ -642,7 +733,8 @@ class GalleryCanvas(QWidget):
         for index, entry in enumerate(self.entries):
             # Shelves are full width, so only the vertical span of a case plus
             # its shadow/glow can matter for the dirty rectangle.
-            if not self._case_rect(index).adjusted(-14, -14, 14, 22).intersects(dirty):
+            # The pad covers the cleared halo and the contact shadow.
+            if not self._case_rect(index).adjusted(-20, -20, 20, 24).intersects(dirty):
                 continue
             self._paint_case(painter, index, entry)
 
@@ -685,6 +777,8 @@ class GalleryCanvas(QWidget):
         shadow.setColorAt(0, QColor(65, 75, 86, 25))
         shadow.setColorAt(1, QColor(45, 54, 66, 90))
         painter.fillPath(self._rounded_path(shadow_rect, 6), shadow)
+        # Bloom first so the case face stays clean. The crisp rim is drawn last.
+        self._paint_cleared_mark(painter, rect, entry, rim=False)
         if selected:
             for spread, alpha in ((8, 32), (5, 58), (2, 115)):
                 glow_rect = rect.adjusted(-spread, -spread, spread, spread)
@@ -697,16 +791,21 @@ class GalleryCanvas(QWidget):
             painter.setClipPath(self._rounded_path(rect, 5))
             painter.drawPixmap(rect.topLeft(), pixmap)
             painter.restore()
-            border_color = QColor(SWITCH["accent"]) if selected else QColor(mix(SWITCH["line"], SWITCH["shadow_deep"], 0.28))
-            painter.setPen(QPen(border_color, 2 if selected else 1))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(rect, 5, 5)
+            # A cleared case wears the foil rim instead of the plain or blue border.
+            if not self.state.is_cleared(entry):
+                border_color = QColor(SWITCH["accent"]) if selected else QColor(mix(SWITCH["line"], SWITCH["shadow_deep"], 0.28))
+                painter.setPen(QPen(border_color, 2 if selected else 1))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRoundedRect(rect, 5, 5)
         else:
             case_fill = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
             case_fill.setColorAt(0, QColor(SWITCH["card"]))
             case_fill.setColorAt(1, QColor(mix(SWITCH["card"], SWITCH["shadow_soft"], 0.52)))
-            border_color = QColor(SWITCH["accent"]) if selected else QColor(mix(SWITCH["line"], SWITCH["shadow_deep"], 0.32))
-            painter.setPen(QPen(border_color, 2 if selected else 1))
+            if self.state.is_cleared(entry):
+                painter.setPen(Qt.PenStyle.NoPen)
+            else:
+                border_color = QColor(SWITCH["accent"]) if selected else QColor(mix(SWITCH["line"], SWITCH["shadow_deep"], 0.32))
+                painter.setPen(QPen(border_color, 2 if selected else 1))
             painter.setBrush(case_fill)
             painter.drawRoundedRect(rect, 6, 6)
             painter.setPen(QPen(QColor(255, 255, 255, 180), 1))
@@ -718,6 +817,93 @@ class GalleryCanvas(QWidget):
         contact.setColorAt(0, QColor(52, 61, 72, 92))
         contact.setColorAt(1, QColor(52, 61, 72, 0))
         painter.fillRect(QRectF(rect.left() - 4, rect.bottom(), rect.width() + 8, 13), contact)
+        self._paint_cleared_mark(painter, rect, entry, rim=True, radius=5 if pixmap is not None else 6)
+
+    def _paint_cleared_mark(
+        self,
+        painter: QPainter,
+        rect: QRectF,
+        entry: SaveEntry,
+        *,
+        rim: bool,
+        radius: float = 5.5,
+    ) -> None:
+        """Wordless brass halo around a cleared case.
+
+        ``rim=False`` paints one soft bloom behind the artwork. ``rim=True``
+        paints a single foil edge in place of the case border.
+        """
+        if not self.state.is_cleared(entry):
+            return
+        if rim:
+            self._paint_cleared_rim(painter, rect, radius)
+        else:
+            self._paint_cleared_bloom(painter, rect)
+
+    def _paint_cleared_bloom(self, painter: QPainter, rect: QRectF) -> None:
+        """Scale a small silhouette up so the margin becomes one continuous falloff.
+
+        The stamp is outset past the case, then the case interior is cleared.
+        What remains is a soft brass atmosphere, not a stack of strokes.
+        """
+        pad = 18
+        outset = 6.0
+        width = max(1, int(rect.width() + pad * 2))
+        height = max(1, int(rect.height() + pad * 2))
+        cached = self._bloom_cache.get((width, height))
+        if cached is not None:
+            painter.drawImage(QRectF(rect.left() - pad, rect.top() - pad, width, height), cached)
+            return
+        small_w = max(6, width // 6)
+        small_h = max(6, height // 6)
+        small = QImage(small_w, small_h, QImage.Format.Format_ARGB32_Premultiplied)
+        small.fill(Qt.GlobalColor.transparent)
+        foil = QColor(SWITCH["cleared_foil"])
+        foil.setAlpha(188)
+        scale_x = small_w / width
+        scale_y = small_h / height
+        face = QRectF(
+            (pad - outset) * scale_x,
+            (pad - outset) * scale_y,
+            (rect.width() + outset * 2) * scale_x,
+            (rect.height() + outset * 2) * scale_y,
+        )
+        stamp = QPainter(small)
+        stamp.setRenderHint(QPainter.RenderHint.Antialiasing)
+        stamp.setPen(Qt.PenStyle.NoPen)
+        stamp.setBrush(foil)
+        stamp.drawRoundedRect(face, 2.4, 2.4)
+        stamp.end()
+        bloom = small.scaled(
+            width,
+            height,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        cut = QPainter(bloom)
+        cut.setRenderHint(QPainter.RenderHint.Antialiasing)
+        cut.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+        cut.setPen(Qt.PenStyle.NoPen)
+        cut.setBrush(Qt.GlobalColor.black)
+        cut.drawRoundedRect(QRectF(pad, pad, rect.width(), rect.height()), 5.5, 5.5)
+        cut.end()
+        self._bloom_cache[(width, height)] = bloom
+        painter.drawImage(QRectF(rect.left() - pad, rect.top() - pad, width, height), bloom)
+
+    def _paint_cleared_rim(self, painter: QPainter, rect: QRectF, radius: float) -> None:
+        foil = QColor(SWITCH["cleared_foil"])
+        highlight = QColor(mix(SWITCH["cleared_foil"], SWITCH["card"], 0.58))
+        shade = QColor(darken(SWITCH["cleared_foil"], 0.32))
+        gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
+        gradient.setColorAt(0.0, highlight)
+        gradient.setColorAt(0.42, foil)
+        gradient.setColorAt(1.0, shade)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QBrush(gradient), 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        painter.drawRoundedRect(rect, radius, radius)
+        painter.restore()
 
     def _index_at(self, point: QPoint) -> int:
         for index in range(len(self.entries)):
@@ -831,6 +1017,7 @@ class DetailDrawer(QFrame):
     diff_requested = Signal()
     note_version_requested = Signal()
     star_toggled = Signal()
+    cleared_toggled = Signal()
     version_changed = Signal(int)
     note_committed = Signal(str)
 
@@ -882,9 +1069,18 @@ class DetailDrawer(QFrame):
         self.star.setCursor(Qt.CursorShape.PointingHandCursor)
         self.star.setIconSize(QSize(20, 20))
         self.star.clicked.connect(self.star_toggled)
+        self.cleared = QToolButton()
+        self.cleared.setObjectName("clearedButton")
+        self.cleared.setCheckable(True)
+        self.cleared.setAutoRaise(True)
+        self.cleared.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cleared.setIconSize(QSize(20, 20))
+        self.cleared.clicked.connect(self.cleared_toggled)
+        self._sync_cleared_icon()
         name_row = QHBoxLayout()
         name_row.setContentsMargins(0, 0, 0, 0)
         name_row.addWidget(self.name, 1)
+        name_row.addWidget(self.cleared, 0, Qt.AlignmentFlag.AlignTop)
         name_row.addWidget(self.star, 0, Qt.AlignmentFlag.AlignTop)
         self.subtitle = QLabel("")
         self.subtitle.setObjectName("detailSubtitle")
@@ -903,14 +1099,26 @@ class DetailDrawer(QFrame):
 
         self.source_selector_label = QLabel("存档来源")
         self.source_selector_label.setObjectName("fieldKey")
-        self.source_selector = QComboBox()
+        self.source_selector_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.source_current = _WrapValue("—")
+        self.source_current.setObjectName("fieldValue")
+        self.source_current.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.source_selector = _SourceCombo()
         self.source_selector.setObjectName("sourceSelector")
-        self.source_selector.setFixedHeight(26)
+        self.source_selector.setFixedSize(28, 26)
+        self.source_selector.setCursor(Qt.CursorShape.PointingHandCursor)
         self.source_selector.currentIndexChanged.connect(self._on_source_changed)
+        self.source_selector.currentTextChanged.connect(self._sync_source_caption)
+        self.source_row = QWidget()
+        source_row_layout = QHBoxLayout(self.source_row)
+        source_row_layout.setContentsMargins(0, 0, 0, 0)
+        source_row_layout.setSpacing(6)
+        source_row_layout.addWidget(self.source_current, 1)
+        source_row_layout.addWidget(self.source_selector, 0, Qt.AlignmentFlag.AlignTop)
         self.source_selector_label.setVisible(False)
-        self.source_selector.setVisible(False)
-        field_grid.addWidget(self.source_selector_label, 0, 0)
-        field_grid.addWidget(self.source_selector, 0, 1)
+        self.source_row.setVisible(False)
+        field_grid.addWidget(self.source_selector_label, 0, 0, Qt.AlignmentFlag.AlignTop)
+        field_grid.addWidget(self.source_row, 0, 1)
 
         for row, (label, key) in enumerate((
             ("Title ID", "title_id"), ("进度", "progress"), ("游戏状态", "status"), ("版本数量", "versions"),
@@ -918,12 +1126,14 @@ class DetailDrawer(QFrame):
         ), start=1):
             key_label = QLabel(label)
             key_label.setObjectName("fieldKey")
-            value = QLabel("—")
+            key_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            value = _WrapValue("—")
             value.setObjectName("fieldValue")
             value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            field_grid.addWidget(key_label, row, 0)
+            field_grid.addWidget(key_label, row, 0, Qt.AlignmentFlag.AlignTop)
             field_grid.addWidget(value, row, 1)
             self.fields[key] = value
+        field_grid.setColumnStretch(0, 0)
         field_grid.setColumnStretch(1, 1)
         identity.addLayout(field_grid)
         identity.addStretch(1)
@@ -1075,7 +1285,10 @@ class DetailDrawer(QFrame):
         if platform is not None:
             self._platform = str(platform)
         pixmap = QPixmap(str(cover_path)) if cover_path else QPixmap()
-        valid = not pixmap.isNull() and pixmap.width() <= pixmap.height() * MAX_COVER_ASPECT_RATIO
+        valid = (
+            not pixmap.isNull()
+            and pixmap.width() <= pixmap.height() * max_cover_aspect_ratio(self._platform)
+        )
         cover_aspect = None
         if valid and pixmap.height() > 0:
             cover_aspect = pixmap.width() / pixmap.height()
@@ -1094,7 +1307,15 @@ class DetailDrawer(QFrame):
     def selected_entry(self) -> SaveEntry:
         return getattr(self, "_current_sub_entry", None) or getattr(self, "_entry", None)
 
+    def _sync_source_caption(self, text: str = "") -> None:
+        shown = text if text else self.source_selector.currentText()
+        self.source_current.setText(shown)
+        self.source_current.setToolTip(shown)
+        self.source_selector.setToolTip(shown)
+        self.source_selector.setAccessibleName(shown or "存档来源")
+
     def _on_source_changed(self, index: int) -> None:
+        self._sync_source_caption()
         if hasattr(self, "_sub_entries") and 0 <= index < len(self._sub_entries):
             sub = self._sub_entries[index]
             self._current_sub_entry = sub
@@ -1102,25 +1323,27 @@ class DetailDrawer(QFrame):
                 self._update_fields_for_entry(self._state, sub)
 
     def _update_fields_for_entry(self, state: AppState, entry: SaveEntry) -> list[Snapshot]:
-        result = state.resolve_save_identity(entry)
+        result = self._resolve_for_drawer(state, entry)
         identity = result.identity
         self.fields["title_id"].setText((identity.title_id if identity else None) or entry.title_id or "—")
         from .save_progress import progress_text
 
         progress = progress_text(entry)
         self.fields["progress"].setText(progress or "—")
+        self.fields["progress"].setToolTip(progress)
         shown = progress or getattr(self, "_identity_subtitle", "")
         self.subtitle.setText(shown)
         self.subtitle.setVisible(bool(shown))
-        status = state.save_status(entry)
+        status = state.save_status(entry, allow_hash=False)
         self.fields["status"].setText(status_label(status))
         versions = state.versions_for_entry(entry)
         ordered_versions = list(reversed(versions))
         self.fields["versions"].setText(f"{len(versions)} 个版本")
         self.fields["size"].setText(self._immediate_size(entry))
         self.fields["last_backup"].setText(_fmt_time(status.last_backup_at))
-        self.fields["path"].setText(_short_path(entry.path))
-        self.fields["path"].setToolTip(str(entry.path))
+        path_text = str(entry.path or "—")
+        self.fields["path"].setText(path_text)
+        self.fields["path"].setToolTip(path_text if entry.path else "")
 
         self.versions.setRowCount(len(ordered_versions))
         for row, snapshot in enumerate(ordered_versions):
@@ -1161,7 +1384,7 @@ class DetailDrawer(QFrame):
         self._sub_entries = subs
         self._current_sub_entry = subs[0] if subs else entry
 
-        result = state.resolve_save_identity(entry)
+        result = self._resolve_for_drawer(state, entry)
         identity = result.identity
         metadata = state.cached_save_metadata(identity)
         name = getattr(metadata, "canonical_title", "") or (identity.title if identity else "") or entry.display_name or Path(entry.path).name
@@ -1176,6 +1399,10 @@ class DetailDrawer(QFrame):
         self.star.setChecked(state.is_starred(entry))
         self.star.blockSignals(False)
         self._sync_star_icon()
+        self.cleared.blockSignals(True)
+        self.cleared.setChecked(state.is_cleared(entry))
+        self.cleared.blockSignals(False)
+        self._sync_cleared_icon()
         self.platform.setText(PLATFORM_LABELS.get(entry.platform, entry.platform))
 
         if len(subs) > 1:
@@ -1188,11 +1415,14 @@ class DetailDrawer(QFrame):
             self.source_selector.setCurrentIndex(curr_idx)
             self._current_sub_entry = subs[curr_idx]
             self.source_selector.blockSignals(False)
+            self._sync_source_caption()
             self.source_selector.setVisible(True)
             self.source_selector_label.setVisible(True)
+            self.source_row.setVisible(True)
         else:
             self.source_selector.setVisible(False)
             self.source_selector_label.setVisible(False)
+            self.source_row.setVisible(False)
 
         ordered_versions = self._update_fields_for_entry(state, self._current_sub_entry)
 
@@ -1266,15 +1496,35 @@ class DetailDrawer(QFrame):
 
         self._size_loader.submit(("detail-size", entry.path, request_id), task, completed)
 
+    def note_backup_status(self, state: AppState, entry: SaveEntry) -> None:
+        """Refresh the status line after background hashing, without re-reading the card."""
+        shown = getattr(self, "_entry", None)
+        if shown is None or shown.path != entry.path:
+            return
+        status = state.save_status(entry, allow_hash=False)
+        self.fields["status"].setText(status_label(status))
+        self.fields["last_backup"].setText(_fmt_time(status.last_backup_at))
+
     @staticmethod
-    def _immediate_size(entry: SaveEntry) -> str:
-        """One cheap ``stat`` for file saves; folders wait for the worker."""
-        path = Path(entry.path)
-        try:
-            if path.is_file():
-                return DetailDrawer._format_bytes(path.stat().st_size)
-        except OSError:
-            return "—"
+    def _resolve_for_drawer(state: AppState, entry: SaveEntry):
+        """Identity for the open drawer.
+
+        Vita and PSP resolvers otherwise re-read PARAM.SFO. That read sits on
+        the UI thread and waits behind backup verification on the same card.
+        The scanner already stored the title id and display name.
+        """
+        platform = (getattr(entry, "platform", "") or "").strip().lower()
+        return state.resolve_save_identity(entry, read_device=platform not in ("vita", "psp"))
+
+    @staticmethod
+    def _immediate_size(_entry: SaveEntry) -> str:
+        """Placeholder until the size worker returns.
+
+        Statting the save here runs on the UI thread. On a removable card that
+        ``stat`` blocks until the in-flight backup-verification read finishes,
+        and Windows marks the window not responding. Folders and files both
+        wait for the worker.
+        """
         return "…"
 
     def _sync_star_icon(self) -> None:
@@ -1283,6 +1533,13 @@ class DetailDrawer(QFrame):
         self.star.setIcon(_icon("fa6s.star" if filled else "mdi.star-outline", color, 0.95))
         self.star.setToolTip("取消收藏" if filled else "加入收藏")
         self.star.setAccessibleName(self.star.toolTip())
+
+    def _sync_cleared_icon(self) -> None:
+        filled = self.cleared.isChecked()
+        color = SWITCH["accent"] if filled else SWITCH["muted_strong"]
+        self.cleared.setIcon(_icon("fa6s.flag" if filled else "mdi.flag-outline", color, 0.95))
+        self.cleared.setToolTip("取消通关" if filled else "标记通关")
+        self.cleared.setAccessibleName(self.cleared.toolTip())
 
     @staticmethod
     def _entry_size(entry: SaveEntry) -> str:
@@ -1492,6 +1749,10 @@ class VajSaveWindow(QMainWindow):
         self.action_starred_only.setCheckable(True)
         self.action_starred_only.triggered.connect(self._toggle_starred)
 
+        self.action_cleared_only = self.filter_menu.addAction(_icon("fa6s.flag", SWITCH["muted_strong"]), "只看通关")
+        self.action_cleared_only.setCheckable(True)
+        self.action_cleared_only.triggered.connect(self._toggle_cleared_only)
+
         self.filter_menu.addSeparator()
 
         self.action_backup_updated = self.filter_menu.addAction(_icon("fa6s.cloud-arrow-up", SWITCH["accent"]), "备份有更新", self._backup_updated)
@@ -1504,9 +1765,11 @@ class VajSaveWindow(QMainWindow):
         self.sort = self.filter_button
         self.only_updates = self.action_only_updates
         self.starred_only = self.action_starred_only
+        self.cleared_only = self.action_cleared_only
         self.backup_updated = self.action_backup_updated
         self.action_only_updates.click = self.action_only_updates.trigger
         self.action_starred_only.click = self.action_starred_only.trigger
+        self.action_cleared_only.click = self.action_cleared_only.trigger
         self.action_backup_updated.click = self.action_backup_updated.trigger
 
         top.addStretch(1)
@@ -1599,6 +1862,7 @@ class VajSaveWindow(QMainWindow):
         self.drawer.diff_requested.connect(self._diff_snapshot)
         self.drawer.note_version_requested.connect(self._edit_version_note)
         self.drawer.star_toggled.connect(self._toggle_star)
+        self.drawer.cleared_toggled.connect(self._toggle_cleared)
         self.drawer.version_changed.connect(self._version_changed)
         self.drawer.note_committed.connect(self._save_note)
 
@@ -1643,14 +1907,15 @@ class VajSaveWindow(QMainWindow):
             #deviceName {{ font-size: 10px; }}
             #galleryView {{ background: {SWITCH['fog_canvas']}; }}
             #detailDrawer {{ background: {SWITCH['fog_panel']}; border: 1px solid {mix(SWITCH['border_soft'], SWITCH['shadow_soft'], 0.35)}; border-radius: 10px 0 0 10px; }}
-            #drawerClose, #starButton {{ background: transparent; border: 0; padding: 4px; }}
-            #drawerClose:hover, #starButton:hover {{ background: {SWITCH['surface_alt']}; border-radius: 6px; }}
+            #drawerClose, #starButton, #clearedButton {{ background: transparent; border: 0; padding: 4px; }}
+            #drawerClose:hover, #starButton:hover, #clearedButton:hover {{ background: {SWITCH['surface_alt']}; border-radius: 6px; }}
             #drawerTitle, #sectionTitle {{ font-size: 15px; font-weight: 700; }}
             #detailName {{ font-size: 17px; font-weight: 700; }}
             #detailSubtitle {{ font-size: 11px; }}
             #detailCover {{ background: {SWITCH['panel_alt']}; border: 1px solid {SWITCH['border_soft']}; border-radius: 6px; }}
             #platformChip {{ color: {SWITCH['accent']}; background: {SWITCH['selected_soft']}; border-radius: 6px; padding: 3px 12px; font-size: 11px; }}
             #fieldKey, #fieldValue {{ font-size: 11px; }}
+            #sourceSelector QAbstractItemView {{ color: {SWITCH['ink']}; background: {CONTROL_WHITE}; selection-background-color: {SWITCH['selected']}; selection-color: {SWITCH['ink']}; padding: 4px 8px; }}
             #romWarning {{ background: {WARNING_SURFACE}; border: 1px solid {WARNING_BORDER}; border-radius: 8px; }}
             #warningTitle {{ color: {WARNING_TEXT}; font-size: 13px; font-weight: 700; }}
             #warningHint {{ color: {SWITCH['muted_strong']}; font-size: 10px; }}
@@ -1718,7 +1983,10 @@ class VajSaveWindow(QMainWindow):
         elif self._sort_mode == "platform":
             saves.sort(key=lambda item: (item.platform, (item.display_name or "").casefold()))
         else:
-            saves.sort(key=lambda item: self.state.save_status(item).last_backup_at or "", reverse=True)
+            saves.sort(
+                key=lambda item: self.state.save_status(item, allow_hash=False).last_backup_at or "",
+                reverse=True,
+            )
         return saves
 
     def refresh_all(self, *, enrich: bool = True) -> None:
@@ -1746,7 +2014,10 @@ class VajSaveWindow(QMainWindow):
         self._sync_filter_button_state()
         self.backup_updated.setEnabled(not self.state.library_mode and self.state.job_idle())
         stats = self.state.collection_stats()
-        self.stats.setText(f"已备份 {stats.get('games', 0)} 款游戏 · {stats.get('versions', 0)} 个版本")
+        stats_text = f"已备份 {stats.get('games', 0)} 款游戏 · {stats.get('versions', 0)} 个版本"
+        if stats.get("cleared"):
+            stats_text += f" · {stats.get('cleared', 0)} 款通关"
+        self.stats.setText(stats_text)
         current = next((v for v in self.state.volumes if Path(v.mount_point) == self.state.current_mount), None)
         connected = current is not None and not self.state.library_mode
         name = "本地存档" if self.state.library_mode else (current.name if current else "未连接")
@@ -1910,6 +2181,8 @@ class VajSaveWindow(QMainWindow):
                 if backup_statuses is not None:
                     self.state.apply_backup_statuses(backup_statuses)
                     self.refresh_all(enrich=False)
+                    if self._drawer_open and self._selected is not None:
+                        self.drawer.note_backup_status(self.state, self._selected)
                     if auto:
                         self._maybe_auto_backup()
 
@@ -1954,11 +2227,18 @@ class VajSaveWindow(QMainWindow):
         self._sync_filter_button_state()
         self.refresh_all(enrich=False)
 
+    def _toggle_cleared_only(self) -> None:
+        self.state.toggle_cleared_only()
+        self._sync_filter_button_state()
+        self.refresh_all(enrich=False)
+
     def _reset_filters(self) -> None:
         if self.state.hide_unchanged:
             self.state.toggle_hide_unchanged()
         if self.state.starred_only:
             self.state.toggle_starred_only()
+        if self.state.cleared_only:
+            self.state.toggle_cleared_only()
         self._sort_mode = "recent"
         self._sync_filter_button_state()
         self.refresh_all(enrich=False)
@@ -1969,6 +2249,8 @@ class VajSaveWindow(QMainWindow):
             active_filters.append("仅更新")
         if self.state.starred_only:
             active_filters.append("仅收藏")
+        if self.state.cleared_only:
+            active_filters.append("仅通关")
         if active_filters:
             self.filter_button.setText(f"筛选 ({' · '.join(active_filters)})")
             self.filter_button.setProperty("activeFilter", True)
@@ -1979,6 +2261,7 @@ class VajSaveWindow(QMainWindow):
         self.filter_button.style().polish(self.filter_button)
         self.action_only_updates.setChecked(self.state.hide_unchanged)
         self.action_starred_only.setChecked(self.state.starred_only)
+        self.action_cleared_only.setChecked(self.state.cleared_only)
 
     def _update_filter_menu(self) -> None:
         self.action_sort_recent.setChecked(self._sort_mode == "recent")
@@ -1986,19 +2269,25 @@ class VajSaveWindow(QMainWindow):
         self.action_sort_platform.setChecked(self._sort_mode == "platform")
         self.action_only_updates.setChecked(self.state.hide_unchanged)
         self.action_starred_only.setChecked(self.state.starred_only)
+        self.action_cleared_only.setChecked(self.state.cleared_only)
         can_backup = not self.state.library_mode and self.state.job_idle()
         self.action_backup_updated.setEnabled(can_backup)
         updated_count = 0
         if not self.state.library_mode:
             updated_count = sum(
                 1 for s in self.state.visible_saves()
-                if self.state.save_status(s).status in ("new", "changed")
+                if self.state.save_status(s, allow_hash=False).status in ("new", "changed")
             )
         if updated_count > 0:
             self.action_backup_updated.setText(f"备份有更新 ({updated_count} 款)")
         else:
             self.action_backup_updated.setText("备份有更新")
-        has_active = self.state.hide_unchanged or self.state.starred_only or self._sort_mode != "recent"
+        has_active = (
+            self.state.hide_unchanged
+            or self.state.starred_only
+            or self.state.cleared_only
+            or self._sort_mode != "recent"
+        )
         self.action_reset_filters.setEnabled(has_active)
 
     def _on_view_mode_changed(self, library_mode: bool) -> None:
@@ -2016,6 +2305,14 @@ class VajSaveWindow(QMainWindow):
         self.status_text.setText(self.state.status_text)
         if self.state.starred_only:
             self.refresh_all()
+
+    def _toggle_cleared(self) -> None:
+        if self._selected is None:
+            return
+        self.state.toggle_cleared(self._selected)
+        self._versions = self.drawer.set_entry(self.state, self._selected)
+        self.status_text.setText(self.state.status_text)
+        self.refresh_all(enrich=False)
 
     def _backup_updated(self) -> None:
         self._run_backup_job(self.state.backup_updated_saves)
@@ -2283,7 +2580,7 @@ class VajSaveWindow(QMainWindow):
                 return
         else:
             message = (
-                "这是该游戏的最后一个版本，删除后整条游戏（封面、备注、收藏）也会一并删除。此操作不可撤销。"
+                "这是该游戏的最后一个版本，删除后整条游戏（封面、备注、收藏、通关标记）也会一并删除。此操作不可撤销。"
                 if last
                 else "确定删除此版本？此操作不可撤销。"
             )
@@ -2415,8 +2712,18 @@ class VajSaveWindow(QMainWindow):
             return
         dialog.configure()
 
+        self._start_ftp_pull()
+
+    def _start_ftp_pull(self) -> None:
+        """Pull the active FTP preset. Publish plaintext saves before the slow tree."""
+
         def task(token):
-            return self.state.pull_ftp_saves(token=token)
+            def on_ready(path):
+                self._callback_bridge.dispatch.emit(
+                    lambda p=Path(path): self._show_ftp_cache(p)
+                )
+
+            return self.state.pull_ftp_saves(token=token, on_ready=on_ready)
 
         def completed(result) -> None:
             if result is not None and not getattr(result, "ok", True):
@@ -2424,7 +2731,17 @@ class VajSaveWindow(QMainWindow):
                     self, "FTP 拉取失败", getattr(result, "error", None) or "未知错误"
                 )
 
-        self._run_device_task(("ftp-pull",), task, completed, error_title="FTP 拉取失败")
+        self._run_device_task(
+            ("ftp-pull",), task, completed, error_title="FTP 拉取失败"
+        )
+
+    def _show_ftp_cache(self, path: Path) -> None:
+        """Show a cache that is already safe to scan, while a pull may continue."""
+        profile = self.state.current_ftp_preset()
+        self.state.ftp._register_ftp_volume(profile, path)
+        if not self.state.library_mode:
+            self.state.select_mount(path)
+        self.refresh_all()
 
     def _show_settings(self) -> None:
         dialog = SettingsDialog(self.state, self)
@@ -2469,16 +2786,7 @@ class VajSaveWindow(QMainWindow):
         settings.apply()
         settings.accept()
 
-        def task(token):
-            return self.state.pull_ftp_saves(token=token)
-
-        def completed(result) -> None:
-            if result is not None and not getattr(result, "ok", True):
-                QMessageBox.warning(
-                    self, "FTP 拉取失败", getattr(result, "error", None) or "未知错误"
-                )
-
-        self._run_device_task(("ftp-pull",), task, completed, error_title="FTP 拉取失败")
+        self._start_ftp_pull()
 
     def _open_llm_from_settings(self, settings: SettingsDialog) -> None:
         if self._show_llm_settings(settings):

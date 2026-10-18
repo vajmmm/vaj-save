@@ -35,6 +35,7 @@ def test_switch_functional_tokens_match_palette():
     assert tokens["success"] == "#30d158"
     assert tokens["warning"] == "#ff9f0a"
     assert tokens["danger"] == "#ff453a"
+    assert tokens["cleared_foil"] == "#c4a15a"
     for key in ("hover", "line_strong", "accent_hover"):
         value = tokens[key]
         assert value.startswith("#") and len(value) == 7
@@ -154,6 +155,7 @@ def test_save_row_from_entry_and_status_string():
     assert row["status"] == "new"
     assert row["status_label"] == "新"
     assert row["starred"] is True
+    assert row["cleared"] is False
     assert row["subtitle"] == "ULJM05800 · 1"
 
 
@@ -162,8 +164,9 @@ def test_save_row_accepts_status_object():
         status = "changed"
 
     entry = SaveEntry(platform="vita", source_id="vita", display_name="Persona 4 Golden", path="/tmp/x")
-    row = ui_theme.save_row(entry, _Status())
+    row = ui_theme.save_row(entry, _Status(), cleared=True)
     assert row["status"] == "changed"
+    assert row["cleared"] is True
     assert row["status_label"] == "有变化"
     assert row["accent"] == ui_theme.PLATFORM_COLORS["vita"]
     assert row["subtitle"] == ""
@@ -250,3 +253,68 @@ def test_detail_cover_size_ignores_landscape_aspect():
         "nds", max_width=140, max_height=196, cover_aspect=1.80
     )
     assert fallback[0] <= fallback[1]
+
+
+def test_detail_cover_size_accepts_nds_near_square_aspect():
+    # libretro NDS box scans such as 512×458 (ratio ≈ 1.12) should frame as-is.
+    ratio = 512 / 458
+    size = ui_theme.detail_cover_size(
+        "nds", max_width=140, max_height=196, cover_aspect=ratio
+    )
+    assert size[0] == 140
+    assert size[0] > size[1]
+    assert abs(size[0] / size[1] - ratio) < 0.05
+    threeds = ui_theme.detail_cover_size(
+        "3ds", max_width=140, max_height=196, cover_aspect=400 / 352
+    )
+    assert threeds[0] > threeds[1]
+
+
+def test_gallery_case_size_accepts_nds_near_square_aspect():
+    ratio = 512 / 458
+    width, height = ui_theme.gallery_case_size(
+        "nds", cell_width=196, case_height=286, cover_aspect=ratio
+    )
+    assert width == 196 - 12
+    assert width > height
+    assert abs(width / height - ratio) < 0.05
+
+
+def test_detail_cover_size_accepts_3ds_title_card_aspect():
+    # libretro's My Nintendo Picross card is 500×300 (ratio 1.667).
+    ratio = 500 / 300
+    size = ui_theme.detail_cover_size(
+        "3ds", max_width=140, max_height=196, cover_aspect=ratio
+    )
+    assert size[0] == 140
+    assert abs(size[0] / size[1] - ratio) < 0.05
+    width, height = ui_theme.gallery_case_size(
+        "3ds", cell_width=196, case_height=286, cover_aspect=ratio
+    )
+    assert width == 196 - 12
+    assert abs(width / height - ratio) < 0.05
+    # 16:9 still falls back to the near-square 3DS case.
+    fallback = ui_theme.detail_cover_size(
+        "3ds", max_width=140, max_height=196, cover_aspect=1.78
+    )
+    assert fallback[0] <= fallback[1]
+
+
+def test_detail_cover_size_accepts_gba_landscape_aspect():
+    # Japanese GBA box arts are physically landscape (e.g. 500x306, aspect ~1.634)
+    size = ui_theme.detail_cover_size(
+        "gba", max_width=140, max_height=196, cover_aspect=500 / 306
+    )
+    assert size[0] == 140
+    assert abs(size[0] / size[1] - 500 / 306) < 0.05
+    assert size[0] > size[1]
+
+
+def test_gallery_case_size_accepts_gba_landscape_aspect():
+    width, height = ui_theme.gallery_case_size(
+        "gba", cell_width=196, case_height=286, cover_aspect=500 / 306
+    )
+    assert width == 196 - 12  # max_width is 184
+    assert width > height
+    assert abs(width / height - 500 / 306) < 0.05
+

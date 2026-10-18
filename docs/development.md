@@ -26,7 +26,7 @@ pytest
 - `identity/` + `metadata/`：ROM 摘要身份解析与离线元数据索引
 - `artwork/` + `covers.py`：封面解析、下载与缓存
 - `library*.py` / `backup_jobs.py` / `jobs.py`：备份库、版本、ZIP 导入导出、可取消任务
-- `ftp_*.py` / `mtp_*.py` / `baidu_*.py`：远程拉取与网盘同步
+- `ftp_*.py` / `mtp_*.py`：远程只读拉取
 - `qt_ui.py` / `qt_dialogs.py` / `ui_theme.py`：桌面界面，颜色与尺寸全部取自 `ui_theme` 的 Token
 - `threeds_sd.py`：3DS 加密 SD 直读的密钥校验、路径派生与解密
 

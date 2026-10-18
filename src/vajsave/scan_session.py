@@ -291,6 +291,27 @@ class ScanSession:
         app.status_text = prepared.status_text
         return prepared.result
 
+    def _status_hash_workers(self, count: int) -> int:
+        """How many saves to hash at once.
+
+        A removable card (PS Vita, flash cart) has one command queue. Two
+        concurrent walks make every other read on that volume wait, including
+        a ``stat`` the UI might still issue. Local caches keep two workers.
+        """
+        if count <= 1:
+            return 1
+        mount = self.app.current_mount
+        if mount is not None:
+            mount_path = Path(mount)
+            for volume in self.app.volumes:
+                try:
+                    same = Path(volume.mount_point) == mount_path
+                except (OSError, ValueError):
+                    same = False
+                if same and getattr(volume, "is_removable", False):
+                    return 1
+        return min(2, count)
+
     def _calculate_device_statuses(
         self, entries: List[SaveEntry]
     ) -> Tuple[Dict[str, SaveBackupStatus], List[str], Dict[str, int]]:
@@ -317,7 +338,7 @@ class ScanSession:
                 except (OSError, ValueError, FileNotFoundError, threeds_sd.ThreedsSdError) as exc:
                     return item.path, None, exc
 
-            workers = min(2, len(pending))
+            workers = self._status_hash_workers(len(pending))
             self.report_scan_progress(
                 ScanProgress(f"正在核对备份 0/{len(pending)}", 0, len(pending))
             )

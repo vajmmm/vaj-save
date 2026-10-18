@@ -77,7 +77,7 @@ def downloaded_cover_path(
             candidate
             if candidate is not None
             and _within_size_limit(candidate)
-            and is_portrait_image_file(candidate)
+            and is_portrait_image_file(candidate, platform=platform)
             else None
         )
     except Exception:  # noqa: BLE001

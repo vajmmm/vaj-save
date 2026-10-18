@@ -325,7 +325,9 @@ def resolve_rom_identity(entry, ctx, *, platform: str) -> GameIdentityResult:
         return resolved(bound, reason="手动绑定的游戏身份", save_path=entry.path)
 
     hint = save_hint(entry)
-    extra_dirs = sibling_dirs(entry)
+    # sibling_dirs stats the save. Skip that on the UI-thread drawer pass;
+    # configured ROM roots stay available from the in-memory index.
+    extra_dirs = sibling_dirs(entry) if getattr(ctx, "read_device", True) else ()
     cache = getattr(ctx, "rom_cache", None)
 
     # Stage 1: exact normalised-name match has the highest priority.

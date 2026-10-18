@@ -1387,6 +1387,91 @@ def test_pull_ftp_failure_never_leaks_password(tmp_path):
     assert secret not in state.status_text
 
 
+def _threeds_ftp_tree():
+    return {
+        "3ds": {
+            "Checkpoint": {
+                "saves": {
+                    "0x008B4 MARIO KART 7": {},
+                }
+            }
+        },
+        "Nintendo 3DS": {
+            "big.bin": b"NO",
+            "id0": {
+                "id1": {
+                    "title": {
+                        "00040000": {
+                            "000f7000": {"data": {"00000001.sav": b"ENC-SAVE"}}
+                        }
+                    }
+                }
+            },
+        },
+    }
+
+
+def test_pull_ftp_skips_encrypted_sd_without_keys(tmp_path):
+    factory = fake_client_factory(_threeds_ftp_tree())
+    state = AppState(
+        provider=FakeVolumeProvider([]),
+        library_root=tmp_path / "lib",
+        ftp_client_factory=factory,
+    )
+    state.configure_ftp(host="10.0.0.9", port=50000, preset_key="3ds")
+    called = []
+
+    result = state.pull_ftp_saves(on_ready=lambda path: called.append(path))
+
+    assert result.ok is True
+    assert called == []
+    assert state.threeds_keys is None
+    assert not (result.path / "Nintendo 3DS").exists()
+    assert (result.path / "3ds" / "Checkpoint" / "saves" / "0x008B4 MARIO KART 7").is_dir()
+    commands = factory.clients[0].commands
+    assert ("MLSD", "/") not in commands
+    assert not any("Nintendo 3DS" in str(command) for command in commands)
+    assert "加密" in state.status_text or "密钥" in state.status_text
+    assert any(save.display_name == "MARIO KART 7" for save in state.current_result.saves)
+
+
+def test_pull_ftp_downloads_encrypted_sav_when_keys_exist(tmp_path):
+    factory = fake_client_factory(_threeds_ftp_tree())
+    state = AppState(
+        provider=FakeVolumeProvider([]),
+        library_root=tmp_path / "lib",
+        ftp_client_factory=factory,
+    )
+    state.configure_ftp(host="10.0.0.9", port=50000, preset_key="3ds")
+    state._threeds_keys_loaded = True
+    state._threeds_keys = object()
+    ready = {}
+
+    def on_ready(path):
+        ready["path"] = Path(path)
+        assert (Path(path) / "3ds" / "Checkpoint" / "saves" / "0x008B4 MARIO KART 7").is_dir()
+        assert not (Path(path) / "Nintendo 3DS" / "id0").exists()
+
+    result = state.pull_ftp_saves(on_ready=on_ready)
+
+    sav = (
+        result.path
+        / "Nintendo 3DS"
+        / "id0"
+        / "id1"
+        / "title"
+        / "00040000"
+        / "000f7000"
+        / "data"
+        / "00000001.sav"
+    )
+    assert result.ok is True
+    assert ready["path"] == result.path
+    assert sav.read_bytes() == b"ENC-SAVE"
+    assert not (result.path / "Nintendo 3DS" / "big.bin").exists()
+    assert ("MLSD", "/") not in factory.clients[0].commands
+
+
 def test_pull_ftp_success_keeps_card_and_folder_behavior(tmp_path, psp_sfo_bytes):
     vol = _psp_volume(tmp_path, psp_sfo_bytes)
     lib = tmp_path / "lib"
@@ -1772,6 +1857,64 @@ def test_prepare_mount_scan_skips_hash_for_backed_up_saves(tmp_path: Path, psp_s
     assert status.status == "checking"
     assert status.sha256 is None
     assert status.last_backup_at is not None
+
+
+def test_ui_status_lookup_does_not_hash_or_stat_the_save(tmp_path: Path, monkeypatch):
+    save_dir = tmp_path / "savedata" / "PCSE00001"
+    save_dir.mkdir(parents=True)
+    (save_dir / "data.bin").write_bytes(b"vita")
+    entry = SaveEntry(
+        platform="vita",
+        source_id="vita",
+        display_name="PCSE00001",
+        path=str(save_dir),
+        title_id="PCSE00001",
+    )
+    lib = tmp_path / "lib"
+    backup_save(entry, lib, datetime(2026, 1, 1, 10, 0, 0))
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("UI status lookup touched the save")
+
+    monkeypatch.setattr("vajsave.library_status.hash_tree", boom)
+    monkeypatch.setattr("vajsave.library_status.path_mtime_iso", boom)
+    state = AppState(provider=FakeVolumeProvider([]), library_root=lib)
+    status = state.save_status(entry, allow_hash=False)
+    assert status.status == "checking"
+    assert status.sha256 is None
+    assert state._backup_statuses == {}
+
+
+def test_removable_card_is_hashed_one_save_at_a_time(tmp_path: Path, psp_sfo_bytes: bytes, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor as RealPool
+
+    root = tmp_path / "VITA"
+    first = _psp_save_tree(root, "ULJM05800", b"one", psp_sfo_bytes)
+    second = _psp_save_tree(root, "ULJM05500", b"two", psp_sfo_bytes)
+    lib = tmp_path / "lib"
+    entry1 = SaveEntry("psp", "psp", "Monster Hunter", str(first), "ULJM05800")
+    entry2 = SaveEntry("psp", "psp", "Monster Hunter 2nd", str(second), "ULJM05500")
+    backup_save(entry1, lib, datetime(2026, 1, 1, 10, 0, 0))
+    backup_save(entry2, lib, datetime(2026, 1, 1, 10, 0, 0))
+    state = AppState(provider=FakeVolumeProvider([]), library_root=lib)
+    state.current_mount = root
+    recorded: list[int] = []
+
+    class RecordingPool(RealPool):
+        def __init__(self, max_workers=None, *args, **kwargs):
+            recorded.append(max_workers)
+            super().__init__(max_workers, *args, **kwargs)
+
+    monkeypatch.setattr("vajsave.scan_session.ThreadPoolExecutor", RecordingPool)
+
+    state.volumes = [VolumeInfo("PS Vita", root, True)]
+    state.prepare_backup_statuses([entry1, entry2])
+    assert recorded == [1]
+
+    recorded.clear()
+    state.volumes = [VolumeInfo("本地缓存", root, False)]
+    state.prepare_backup_statuses([entry1, entry2])
+    assert recorded == [2]
 
 
 def test_prepare_and_apply_backup_statuses_refines_status(tmp_path: Path, psp_sfo_bytes: bytes):

@@ -681,6 +681,7 @@ def set_game_meta(
     entry: SaveEntry,
     starred: Optional[bool] = None,
     note: Optional[str] = None,
+    cleared: Optional[bool] = None,
 ) -> GameRecord:
     catalog = load_catalog(library_root)
     game = ensure_game(catalog, entry)
@@ -688,6 +689,8 @@ def set_game_meta(
         game.starred = starred
     if note is not None:
         game.note = note
+    if cleared is not None:
+        game.cleared = cleared
     if entry.display_name:
         game.display_name = entry.display_name
     save_catalog(library_root, catalog)
@@ -711,6 +714,7 @@ def collection_stats(library_root: Path) -> Dict[str, int]:
         "games": len(catalog.games),
         "versions": sum(len(game.versions) for game in catalog.games.values()),
         "starred": sum(1 for game in catalog.games.values() if game.starred),
+        "cleared": sum(1 for game in catalog.games.values() if game.cleared),
     }
 
 

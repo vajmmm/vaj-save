@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QRect, QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import QImage, QPainter, QPaintEvent, QPixmap
+from PySide6.QtGui import QColor, QImage, QPainter, QPaintEvent, QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
@@ -102,7 +102,10 @@ def test_qt_window_uses_reference_dimensions_and_overlay(qt_app, qt_state):
         window.gallery.canvas.selected = {0}
         window.gallery.canvas.active = 0
         window.gallery.canvas.selection_changed.emit(window.gallery.canvas.selected_entries())
-        QTest.qWait(240)
+        for _ in range(20):
+            if window.drawer.x() == window.body.width() - DRAWER_WIDTH:
+                break
+            QTest.qWait(50)
         assert window.size().width() == 1480
         assert window.size().height() == 900
         assert window.drawer.width() == DRAWER_WIDTH
@@ -342,6 +345,68 @@ def test_psp_gallery_adapts_to_cover_aspect_seamlessly(qt_app, qt_state, tmp_pat
     assert case_rect.height() == height
 
 
+def _warm_halo(color: QColor) -> bool:
+    return color.alpha() > 24 and color.red() > color.blue() + 12 and color.red() > 80
+
+
+def _ray_colors(image: QImage, origin_x: int, origin_y: int, step_x: int, step_y: int, count: int) -> list[QColor]:
+    colors = []
+    for index in range(count):
+        x = origin_x + step_x * index
+        y = origin_y + step_y * index
+        if 0 <= x < image.width() and 0 <= y < image.height():
+            colors.append(image.pixelColor(x, y))
+    return colors
+
+
+def test_gallery_paints_cleared_halo_around_the_case(qt_app, qt_state, tmp_path: Path):
+    path = tmp_path / "cleared-box.png"
+    cover = QPixmap(352, 570)
+    cover.fill(Qt.GlobalColor.blue)
+    assert cover.save(str(path), "PNG")
+    entry = SaveEntry(
+        platform="switch",
+        source_id="switch-demo",
+        display_name="已通关",
+        path=str(tmp_path / "cleared-save"),
+        title_id="0100CLEARED0001",
+    )
+    canvas = GalleryCanvas(qt_state)
+    canvas.resize(320, 440)
+    canvas.set_entries([entry])
+    canvas.set_cover_path(entry.path, str(path))
+
+    def paint():
+        image = QImage(320, 440, QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        canvas._paint_case(painter, 0, entry)
+        painter.end()
+        return image
+
+    def outside_rays(image: QImage) -> tuple[list[QColor], list[QColor]]:
+        case = canvas._case_rect(0)
+        left = _ray_colors(image, int(case.left()) - 1, int(case.center().y()), -1, 0, 14)
+        top = _ray_colors(image, int(case.center().x()), int(case.top()) - 1, 0, -1, 14)
+        return left, top
+
+    unmarked = paint()
+    case = canvas._case_rect(0)
+    cover_pixel = unmarked.pixelColor(int(case.left()) + 12, int(case.top()) + 12)
+    assert cover_pixel.blue() > 200 and cover_pixel.red() < 40
+    left, top = outside_rays(unmarked)
+    assert not any(_warm_halo(color) for color in left + top)
+
+    assert qt_state.toggle_cleared(entry) is True
+    marked = paint()
+    # The cover face stays bare: no corner chip, no ink text.
+    face = marked.pixelColor(int(case.left()) + 12, int(case.top()) + 12)
+    assert face.blue() > 200 and face.red() < 40
+    left, top = outside_rays(marked)
+    assert any(_warm_halo(color) for color in left)
+    assert any(_warm_halo(color) for color in top)
+
+
 def test_switch_gallery_adapts_to_cover_aspect_seamlessly(qt_app, qt_state, tmp_path: Path):
     path = tmp_path / "switch-boxart.png"
     cover = QPixmap(352, 570)
@@ -444,6 +509,23 @@ def test_detail_cover_uses_actual_near_square_aspect(qt_app, qt_state, tmp_path:
         assert (size.width(), size.height()) != (116, 196)
     finally:
         drawer.deleteLater()
+
+
+def test_detail_cover_uses_actual_gba_landscape_aspect(qt_app, qt_state, tmp_path: Path):
+    cover = tmp_path / "gba-cover.png"
+    image = QPixmap(500, 306)
+    image.fill(Qt.GlobalColor.red)
+    assert image.save(str(cover), "PNG")
+    drawer = DetailDrawer()
+    try:
+        drawer.set_cover_path(str(cover), "gba")
+        size = drawer.cover.size()
+        assert size.width() > size.height()
+        assert abs(size.width() / size.height() - 500 / 306) < 0.05
+        assert size.width() == 140
+    finally:
+        drawer.deleteLater()
+
 
 
 def test_detail_cover_background_uses_theme_token(qt_app, qt_state):
@@ -819,6 +901,7 @@ def test_qt_help_names_plan_topics(qt_app, qt_state):
     assert "记住密码" in HELP_TEXT
     assert "卷序列号" in HELP_TEXT
     assert "插入后自动备份默认关闭" in HELP_TEXT
+    assert "标记通关" in HELP_TEXT
 
 
 def test_drawer_omits_dead_view_all_link(qt_app, qt_state):
@@ -828,6 +911,26 @@ def test_drawer_omits_dead_view_all_link(qt_app, qt_state):
         assert "查看全部" not in labels
         assert window.drawer.delete_version.text() == "删除此版本"
         assert window.drawer.star.objectName() == "starButton"
+        assert window.drawer.cleared.objectName() == "clearedButton"
+        assert window.drawer.cleared.toolTip() == "标记通关"
+    finally:
+        window.close()
+
+
+def test_drawer_cleared_toggle_updates_mark_and_stats(qt_app, qt_state):
+    window = VajSaveWindow(qt_state)
+    try:
+        entry = qt_state.visible_saves()[0]
+        window._selected = entry
+        window._toggle_cleared()
+        assert qt_state.is_cleared(entry) is True
+        assert window.drawer.cleared.isChecked() is True
+        assert window.drawer.cleared.toolTip() == "取消通关"
+        assert "1 款通关" in window.stats.text()
+        assert window.status_text.text() == "已标记通关"
+        window.drawer.cleared.click()
+        assert qt_state.is_cleared(entry) is False
+        assert "款通关" not in window.stats.text()
     finally:
         window.close()
 
@@ -847,6 +950,14 @@ def test_topbar_exposes_starred_filter_and_backup_updated(qt_app, qt_state):
         window.starred_only.click()
         assert qt_state.starred_only is True
         assert "仅收藏" in window.filter_button.text()
+        assert window.cleared_only.text() == "只看通关"
+        window.cleared_only.click()
+        assert qt_state.cleared_only is True
+        assert "仅通关" in window.filter_button.text()
+        window._reset_filters()
+        assert qt_state.starred_only is False
+        assert qt_state.cleared_only is False
+        assert window.filter_button.text() == "筛选"
     finally:
         window.close()
 
@@ -944,7 +1055,7 @@ def test_ambiguous_rom_lists_candidates_and_keeps_manual_bind(qt_app, qt_state, 
         rom_path="/roms/Apotris (Japan).gba",
     )
     monkeypatch.setattr(
-        qt_state, "resolve_save_identity", lambda _entry: ambiguous((first, second))
+        qt_state, "resolve_save_identity", lambda _entry, **_kwargs: ambiguous((first, second))
     )
     window = VajSaveWindow(qt_state)
     try:
@@ -1107,6 +1218,75 @@ def test_detail_set_entry_never_rglobs_on_ui_thread(qt_app, qt_state, monkeypatc
         assert main_calls == []
         assert window.drawer.fields["size"].text() in ("…", "—") or window.drawer.fields["size"].text().endswith(("B", "KB", "MB"))
         assert versions is not None
+    finally:
+        window.close()
+
+
+def test_opening_the_drawer_does_not_touch_the_save(qt_app, tmp_path: Path, monkeypatch):
+    """Clicking a Vita save must not stat, list, or hash it on the UI thread.
+
+    Backup verification reads the card on a worker. A ``stat`` or PARAM.SFO
+    read from the click handler waits behind that transfer, and Windows marks
+    the window not responding until it returns.
+    """
+    save_dir = tmp_path / "user" / "00" / "savedata" / "PCSE00001"
+    (save_dir / "sce_sys").mkdir(parents=True)
+    (save_dir / "sce_sys" / "param.sfo").write_bytes(b"not-read-on-click")
+    (save_dir / "data.bin").write_bytes(b"save-bytes")
+    entry = SaveEntry(
+        platform="vita",
+        source_id="vita",
+        display_name="PCSE00001",
+        path=str(save_dir),
+        title_id="PCSE00001",
+    )
+    lib = tmp_path / "lib"
+    backup_save(entry, lib, datetime(2026, 1, 1, 10, 0, 0))
+    state = AppState(provider=FakeVolumeProvider([]), library_root=lib)
+    state.current_mount = tmp_path
+    state.current_result = ScanResult(root_path=str(tmp_path), platform="vita", saves=[entry])
+    monkeypatch.setattr(state, "start_watch", lambda *args, **kwargs: None)
+    monkeypatch.setattr(state, "stop_watch", lambda *args, **kwargs: None)
+
+    window = VajSaveWindow(state)
+    try:
+        state._backup_statuses.clear()
+        touched: list[tuple[str, str]] = []
+        original_is_file = Path.is_file
+        original_iterdir = Path.iterdir
+        original_open = Path.open
+
+        def under_save(path: object) -> bool:
+            try:
+                candidate = Path(path)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                return False
+            return candidate == save_dir or save_dir in candidate.parents
+
+        def wrap(label, original):
+            def inner(self, *args, **kwargs):
+                if threading.current_thread() is threading.main_thread() and under_save(self):
+                    touched.append((label, str(self)))
+                return original(self, *args, **kwargs)
+
+            return inner
+
+        monkeypatch.setattr(Path, "is_file", wrap("is_file", original_is_file))
+        monkeypatch.setattr(Path, "iterdir", wrap("iterdir", original_iterdir))
+        monkeypatch.setattr(Path, "open", wrap("open", original_open))
+
+        def boom(path):
+            touched.append(("hash", str(path)))
+            raise AssertionError(f"hash_tree called for {path}")
+
+        monkeypatch.setattr("vajsave.library_status.hash_tree", boom)
+        monkeypatch.setattr("vajsave.app_state.hash_tree", boom)
+
+        window.drawer.set_entry(state, entry)
+        assert touched == []
+        assert window.drawer.fields["size"].text() == "…"
+        assert window.drawer.fields["status"].text() == "核对中"
+        assert window.drawer.name.text() == "PCSE00001"
     finally:
         window.close()
 
@@ -1308,5 +1488,54 @@ def test_detail_drawer_source_selector_for_multi_entry_game(qt_app, qt_state):
         )
         drawer.set_entry(qt_state, single)
         assert drawer.source_selector.isHidden()
+    finally:
+        drawer.close()
+
+
+def test_detail_drawer_wraps_long_metadata(qt_app, qt_state):
+    progress = "Play time 03:15:04 / Red orbs 3897 / Health 100 / Magic 100 / Hero"
+    path_a = "F:/PSP/SAVEDATA/UCAS40198DATA00/very-long-folder-name"
+    path_b = "F:/PSP/SAVEDATA/UCAS40198DATA01"
+    first = SaveEntry(
+        platform="psp",
+        source_id="psp",
+        display_name="God of War",
+        title_id="UCAS40198",
+        path=path_a,
+        extra={"progress": progress},
+    )
+    second = SaveEntry(
+        platform="psp",
+        source_id="psp",
+        display_name="God of War",
+        title_id="UCAS40198",
+        path=path_b,
+        extra={"progress": "另一段进度说明"},
+    )
+    from vajsave.game_grouping import group_saves_by_game
+
+    grouped = group_saves_by_game([first, second], qt_state)
+    drawer = DetailDrawer()
+    try:
+        drawer.resize(DRAWER_WIDTH, 720)
+        drawer.show()
+        drawer.set_entry(qt_state, grouped[0])
+        drawer.layout().activate()
+        qt_app.processEvents()
+        value = drawer.fields["progress"]
+        assert value.wordWrap()
+        assert value.text() == progress
+        assert value.minimumSizeHint().width() == 0
+        assert value.width() < drawer.width() - 80
+        assert value.height() > value.fontMetrics().lineSpacing() + 2
+        assert progress in drawer.source_current.text()
+        assert drawer.source_current.wordWrap()
+        assert drawer.source_current.width() + drawer.source_selector.width() < drawer.width() - 40
+        assert drawer.fields["path"].text() == path_a
+        assert drawer.fields["path"].wordWrap()
+        drawer.source_selector.setCurrentIndex(1)
+        assert "另一段进度说明" in drawer.source_current.text()
+        assert drawer.fields["progress"].text() == "另一段进度说明"
+        assert drawer.fields["path"].text() == path_b
     finally:
         drawer.close()

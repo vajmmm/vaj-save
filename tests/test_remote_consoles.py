@@ -346,6 +346,34 @@ def test_unix_list_parsing_vitashell_and_psp():
     assert names["PARAM.SFO"].size == 12345
 
 
+def test_ftp_dialog_reports_plaintext_save_folders(qt_app, qt_state):
+    tree = {
+        "3ds": {
+            "Checkpoint": {
+                "saves": {
+                    "0x008B4 MARIO KART 7": {},
+                    "0x0089F SUPER MARIO 3D LAND": {},
+                }
+            }
+        }
+    }
+    qt_state._ftp_client_factory = fake_client_factory(tree)
+    qt_state.set_ftp_preset("3ds")
+    dialog = FtpDialog(qt_state)
+    try:
+        dialog.btn_test.click()
+        assert "2 个存档目录" in dialog.test_status.text()
+        listed = [
+            cmd
+            for cmd in dialog.state._ftp_client_factory.clients[0].commands
+            if isinstance(cmd, tuple) and cmd[0] == "MLSD"
+        ]
+        assert ("MLSD", "3ds/Checkpoint/saves") in listed
+        assert ("MLSD", "Nintendo 3DS") not in listed
+    finally:
+        dialog.reject()
+
+
 def test_ftp_dialog_test_connection_button(qt_app, qt_state):
     factory = fake_client_factory({})
     qt_state._ftp_client_factory = factory

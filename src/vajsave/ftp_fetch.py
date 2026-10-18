@@ -1,10 +1,10 @@
 """Pull handheld saves over FTP into a local, scannable cache directory.
 
-The pull is *atomic*: everything lands in a hidden staging directory first and
-the preset's cache directory is only swapped in once the whole tree is
-populated. Unchanged files are copied from the previous cache using the
-``.ftp-manifest.json`` skip-list. A failed or cancelled pull never turns into
-a half-populated "device", and a previously complete cache is left untouched.
+Plaintext export roots are published as soon as they finish, so the gallery
+can show them while a larger encrypted tree is still downloading. A failure
+before that publish removes the staging directory and leaves the previous
+cache in place. Unchanged files are copied from the previous cache using the
+``.ftp-manifest.json`` skip-list.
 
 The local layout mirrors the remote one, so the existing platform scanners
 recognise ``<cache>/<host>/<preset>/3ds/Checkpoint/saves/...`` as a normal card.
@@ -79,6 +79,7 @@ class FtpPullResult:
     files: int = 0
     total_bytes: int = 0
     error: str = ""
+    warning: str = ""
 
     def __bool__(self) -> bool:
         return self.ok
@@ -209,6 +210,34 @@ def _copy_or_download(
     return int(client.download(remote_child, target))
 
 
+def _short_remote(path: str) -> str:
+    text = str(path or "").replace("\\", "/").strip("/") or "/"
+    if len(text) > 56:
+        return "…" + text[-55:]
+    return text
+
+
+def _emit_progress(progress, message: str, files: int, total: int = 0) -> None:
+    if progress is None:
+        return
+    try:
+        progress(message, files, total)
+    except Exception:  # noqa: BLE001 - progress must not fail a pull
+        pass
+
+
+def _keep_n3ds_file(rel: str) -> bool:
+    """Encrypted-SD files the 3DS scanner can actually read."""
+    parts = [part.casefold() for part in str(rel or "").replace("\\", "/").split("/") if part]
+    if "extdata" in parts:
+        return True
+    return "data" in parts and bool(parts) and parts[-1].endswith(".sav")
+
+
+def _is_encrypted_sd_root(target: str) -> bool:
+    return str(target or "").replace("\\", "/").strip("/").lower() == "nintendo 3ds"
+
+
 def _mirror(
     client,
     remote_dir: str,
@@ -222,6 +251,9 @@ def _mirror(
     rel: str = "",
     skip_dir_names: frozenset = frozenset(),
     optional: bool = False,
+    progress=None,
+    counter: Optional[dict] = None,
+    keep_file: Optional[Callable[[str], bool]] = None,
 ) -> Tuple[int, int]:
     """Recursively download ``remote_dir`` into ``local_dir``.
 
@@ -234,6 +266,8 @@ def _mirror(
     _throw_if_cancelled(token)
     if depth > _MAX_DEPTH:
         return (0, 0)
+    seen = counter if counter is not None else {"files": 0}
+    _emit_progress(progress, f"正在读取 {_short_remote(remote_dir)}", int(seen.get("files", 0)))
     try:
         entries = list(client.list_dir(remote_dir))
     except (RemoteFtpError, KeyError, FileNotFoundError) as exc:
@@ -244,8 +278,8 @@ def _mirror(
     total = 0
     recorded_files = manifest if manifest is not None else {}
     collected = files_out if files_out is not None else {}
-    if entries:
-        local_dir.mkdir(parents=True, exist_ok=True)
+    # An empty game folder is still a Checkpoint entry. Keep the directory.
+    local_dir.mkdir(parents=True, exist_ok=True)
     for entry in entries:
         _throw_if_cancelled(token)
         clean = sanitize_component(entry.name)
@@ -272,10 +306,15 @@ def _mirror(
                 token=token,
                 rel=child_rel,
                 skip_dir_names=skip_dir_names,
+                progress=progress,
+                counter=seen,
+                keep_file=keep_file,
             )
             files += child_files
             total += child_bytes
         else:
+            if keep_file is not None and not keep_file(child_rel):
+                continue
             written = _copy_or_download(
                 client,
                 remote_child,
@@ -291,6 +330,12 @@ def _mirror(
             }
             total += written
             files += 1
+            seen["files"] = int(seen.get("files", 0)) + 1
+            _emit_progress(
+                progress,
+                f"正在拉取 {_short_remote(child_rel)} · {seen['files']} 个文件",
+                int(seen["files"]),
+            )
             _throw_if_cancelled(token)
     return files, total
 
@@ -308,6 +353,27 @@ def _remove_tree(path: Path) -> None:
         pass
 
 
+def _swap_cache(staging: Path, final: Path, cache_root: Path, host_part: str, key: str) -> Optional[Path]:
+    """Replace ``final`` with ``staging``. Return the displaced previous cache."""
+    cache_root.mkdir(parents=True, exist_ok=True)
+    final.parent.mkdir(parents=True, exist_ok=True)
+    displaced: Optional[Path] = None
+    try:
+        if final.exists():
+            displaced = cache_root / f".{host_part}.{key}.old-{uuid4().hex[:8]}"
+            os.replace(final, displaced)
+        os.replace(staging, final)
+    except OSError:
+        _remove_tree(staging)
+        if displaced is not None and displaced.exists() and not final.exists():
+            try:
+                os.replace(displaced, final)
+            except OSError:
+                pass
+        raise
+    return displaced
+
+
 def pull_preset(
     profile: FtpProfile,
     cache_root,
@@ -315,15 +381,16 @@ def pull_preset(
     timeout: float = DEFAULT_FTP_TIMEOUT,
     *,
     token: object = None,
+    progress: Optional[Callable[[str, int, int], None]] = None,
+    on_ready: Optional[Callable[[Path], None]] = None,
 ) -> FtpPullResult:
     """Download one preset into ``cache_root/<host>/<preset-key>``.
 
     A preset with ``target_paths`` pulls only those directories when its root
-    is ``/``. Otherwise the whole remote path is mirrored. The local layout
-    keeps the remote relative paths so the existing scanners still recognise
-    the cache as a card. Unchanged files are copied from the previous cache
-    when the skip-list matches. A failed or cancelled pull removes its staging
-    directory and leaves the previous cache in place.
+    is ``/``. Otherwise the whole remote path is mirrored. Plaintext export
+    roots are published before the encrypted ``Nintendo 3DS`` tree, so the
+    gallery can show Checkpoint saves while that larger tree is still coming
+    down. A failure before that publish leaves the previous cache untouched.
     """
     cache_root = Path(cache_root)
     key = sanitize_component(profile.key) or "default"
@@ -334,54 +401,77 @@ def pull_preset(
 
     client = None
     files_out: dict = {}
+    counter = {"files": 0}
+    files = 0
+    total = 0
+    published = False
+    kept_old: Optional[Path] = None
+
+    def _published_result(warning: str) -> FtpPullResult:
+        save_manifest(final, files_out)
+        if kept_old is not None:
+            _remove_tree(kept_old)
+        return FtpPullResult(
+            ok=True,
+            preset_key=key,
+            path=final,
+            files=files,
+            total_bytes=total,
+            warning=warning,
+        )
+
     try:
+        _emit_progress(progress, f"正在连接 {profile.host}:{profile.port}", 0)
         client = factory(profile).connect()
         staging.mkdir(parents=True, exist_ok=True)
         old_root = final if final.is_dir() else None
         manifest = load_manifest(final) if old_root is not None else {}
 
-        target_paths = getattr(profile, "target_paths", ())
-        used_target = False
-        files = 0
-        total = 0
-
-        # If preset specifies targeted save paths and default path was kept, try targeted sync
-        if target_paths and (not profile.path or profile.path == "/"):
-            for target in target_paths:
+        def _pull_into(dest: Path, targets, reuse_root: Optional[Path]) -> Tuple[bool, int, int]:
+            used = False
+            got_files = 0
+            got_bytes = 0
+            for target in targets:
                 _throw_if_cancelled(token)
                 try:
-                    entries = client.list_dir(target)
+                    client.list_dir(target)
                 except Exception:
                     continue
-                used_target = True
                 clean_parts = [
-                    sanitize_component(p)
-                    for p in target.replace("\\", "/").split("/")
-                    if p
+                    sanitize_component(part)
+                    for part in str(target).replace("\\", "/").split("/")
+                    if part
                 ]
-                clean_parts = [p for p in clean_parts if p is not None]
+                clean_parts = [part for part in clean_parts if part is not None]
                 if not clean_parts:
                     continue
-                sub_staging = staging
+                used = True
+                sub = dest
                 for part in clean_parts:
-                    sub_staging = _safe_local_join(sub_staging, part)
-                sub_staging.mkdir(parents=True, exist_ok=True)
-
+                    sub = _safe_local_join(sub, part)
+                sub.mkdir(parents=True, exist_ok=True)
+                encrypted = _is_encrypted_sd_root(target)
                 sub_files, sub_bytes = _mirror(
                     client,
                     target,
-                    sub_staging,
-                    old_root=old_root,
+                    sub,
+                    old_root=reuse_root,
                     manifest=manifest,
                     files_out=files_out,
                     token=token,
                     rel="/".join(clean_parts),
                     skip_dir_names=skip_dir_names_for(target),
+                    progress=progress,
+                    counter=counter,
+                    keep_file=_keep_n3ds_file if encrypted else None,
                 )
-                files += sub_files
-                total += sub_bytes
+                got_files += sub_files
+                got_bytes += sub_bytes
+            return used, got_files, got_bytes
 
-        if not used_target:
+        target_paths = tuple(getattr(profile, "target_paths", ()) or ())
+        targeted = bool(target_paths) and (not profile.path or profile.path == "/")
+        if not targeted:
             files, total = _mirror(
                 client,
                 profile.path or "/",
@@ -390,22 +480,62 @@ def pull_preset(
                 manifest=manifest,
                 files_out=files_out,
                 token=token,
+                progress=progress,
+                counter=counter,
             )
+        else:
+            fast = [target for target in target_paths if not _is_encrypted_sd_root(target)]
+            slow = [target for target in target_paths if _is_encrypted_sd_root(target)]
+            used_fast, files, total = _pull_into(staging, fast, old_root)
+            if used_fast and slow:
+                kept_old = _swap_cache(staging, final, cache_root, host_part, key)
+                published = True
+                _emit_progress(progress, f"存档目录已可读 · {files} 个文件，继续拉取加密 SD", files)
+                if on_ready is not None:
+                    try:
+                        on_ready(final)
+                    except Exception:  # noqa: BLE001 - the UI refresh must not abort the pull
+                        pass
+                _, slow_files, slow_bytes = _pull_into(final, slow, kept_old)
+                files += slow_files
+                total += slow_bytes
+            elif slow:
+                used_slow, slow_files, slow_bytes = _pull_into(staging, slow, old_root)
+                files += slow_files
+                total += slow_bytes
+                if not used_fast and not used_slow:
+                    files, total = _mirror(
+                        client,
+                        profile.path or "/",
+                        staging,
+                        old_root=old_root,
+                        manifest=manifest,
+                        files_out=files_out,
+                        token=token,
+                        progress=progress,
+                        counter=counter,
+                    )
+            elif not used_fast:
+                files, total = _mirror(
+                    client,
+                    profile.path or "/",
+                    staging,
+                    old_root=old_root,
+                    manifest=manifest,
+                    files_out=files_out,
+                    token=token,
+                    progress=progress,
+                    counter=counter,
+                )
     except _FtpPullCancelled:
+        if published:
+            return _published_result("已取消后续拉取")
         _remove_tree(staging)
-        if client is not None:
-            try:
-                client.close()
-            except Exception:  # noqa: BLE001
-                pass
         return FtpPullResult(ok=False, preset_key=key, error="已取消")
     except Exception as exc:  # noqa: BLE001 - surfaced as a failed result
+        if published:
+            return _published_result(_error_text(exc, profile))
         _remove_tree(staging)
-        if client is not None:
-            try:
-                client.close()
-            except Exception:  # noqa: BLE001
-                pass
         return FtpPullResult(ok=False, preset_key=key, error=_error_text(exc, profile))
     finally:
         if client is not None:
@@ -414,27 +544,14 @@ def pull_preset(
             except Exception:  # noqa: BLE001
                 pass
 
-    # Commit: replace any previous cache with the fully-populated staging tree.
-    old: Optional[Path] = None
-    try:
-        cache_root.mkdir(parents=True, exist_ok=True)
-        final.parent.mkdir(parents=True, exist_ok=True)
-        if final.exists():
-            old = cache_root / f".{host_part}.{key}.old-{uuid4().hex[:8]}"
-            os.replace(final, old)
-        os.replace(staging, final)
-    except OSError as exc:
-        _remove_tree(staging)
-        # Restore the previous cache if the swap failed midway.
-        if old is not None and old.exists() and not final.exists():
-            try:
-                os.replace(old, final)
-            except OSError:
-                pass
-        return FtpPullResult(ok=False, preset_key=key, error=_error_text(exc, profile))
-    if old is not None:
-        _remove_tree(old)
+    if not published:
+        try:
+            kept_old = _swap_cache(staging, final, cache_root, host_part, key)
+        except OSError as exc:
+            return FtpPullResult(ok=False, preset_key=key, error=_error_text(exc, profile))
     save_manifest(final, files_out)
+    if kept_old is not None:
+        _remove_tree(kept_old)
     return FtpPullResult(
         ok=True, preset_key=key, path=final, files=files, total_bytes=total
     )

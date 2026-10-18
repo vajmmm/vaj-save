@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Union
 
 from .ftp_fetch import FtpPullResult, cache_dir_for, ftp_cache_root, pull_preset
+from .jobs import JobProgress
 from .models import VolumeInfo
 from .remote_ftp import (
     DEFAULT_PRESET_KEY,
@@ -163,19 +164,40 @@ class FtpSession:
         app.volumes.append(volume)
         return volume
 
-    def pull_ftp_saves(self, token: object = None) -> FtpPullResult:
+    def pull_ftp_saves(self, token: object = None, on_ready=None) -> FtpPullResult:
         """Pull the active preset into its cache and scan it as a device.
 
         A failed pull is reported as a warning and leaves the current device
         selection alone, so a half-populated cache is never shown as a device.
+        Without 3DS direct-read keys, the encrypted ``Nintendo 3DS`` tree is
+        left on the card: it is hundreds of megabytes and does not become
+        gallery entries until those keys are set.
         """
         app = self.app
         profile = self.current_ftp_preset()
+        skipped_encrypted = False
+        if profile.key == "3ds" and app.threeds_keys is None:
+            kept = tuple(
+                path
+                for path in profile.target_paths
+                if str(path).replace("\\", "/").strip("/").lower() != "nintendo 3ds"
+            )
+            if kept != profile.target_paths:
+                profile = replace(profile, target_paths=kept)
+                skipped_encrypted = True
+
+        def progress(message: str, current: int, total: int) -> None:
+            app._report_job_progress(
+                JobProgress(message=message, current=current, total=total, cancellable=True)
+            )
+
         result = pull_preset(
             profile,
             ftp_cache_root(app.library_root),
             client_factory=app._ftp_client_factory,
             token=token,
+            progress=progress,
+            on_ready=on_ready,
         )
         if not result.ok or result.path is None:
             message = result.error or "未知错误"
@@ -184,7 +206,12 @@ class FtpSession:
             return result
         self._register_ftp_volume(profile, result.path)
         app.select_mount(result.path)
-        app.status_text = (
-            f"FTP 已拉取 · {profile.label} · {result.files} 个文件 | [只读]"
-        )
+        note = ""
+        if skipped_encrypted:
+            note += " · 已跳过加密 SD（未配置直读密钥）"
+        if result.warning:
+            app.warnings.append(result.warning)
+            note += f" · {result.warning}"
+        amount = f"{result.files} 个文件" if result.files else "存档目录已更新"
+        app.status_text = f"FTP 已拉取 · {profile.label} · {amount}{note} | [只读]"
         return result

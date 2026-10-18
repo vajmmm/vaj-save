@@ -38,6 +38,17 @@ def resolve(entry, ctx):
             source=SOURCE_METADATA,
             missing_reason="缺少 Vita title_id / PARAM.SFO",
         )
+    if not getattr(ctx, "read_device", True):
+        # The scanner already stored TITLE / TITLE_ID. Re-reading sce_sys on
+        # the UI thread stalls behind whatever else is reading the card.
+        return resolve_from_title_id(
+            entry,
+            platform=PLATFORM,
+            title_id=scanned_id or None,
+            title=display or None,
+            source=SOURCE_METADATA,
+            missing_reason="缺少 Vita title_id / PARAM.SFO",
+        )
     sfo_data = _read_param_sfo(entry.path) or {}
     title_id = sfo_data.get("TITLE_ID") or scanned_id or None
     title = sfo_data.get("TITLE") or display or title_id

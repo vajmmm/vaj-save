@@ -48,6 +48,9 @@ class GameRecord:
     display_name: str
     versions: List[Snapshot] = field(default_factory=list)
     starred: bool = False
+    # Completion mark for this local save. Missing on older catalogs, which
+    # load as not cleared.
+    cleared: bool = False
     note: str = ""
     # ROM identity key (``<platform>:sha1:<hex>`` / ``<platform>:<title_id>`` ...)
     # captured when the backup ran, so browsing the local library can hit the
@@ -150,6 +153,7 @@ class Catalog:
                 display_name=raw.get("display_name") or "",
                 versions=versions,
                 starred=bool(raw.get("starred")),
+                cleared=bool(raw.get("cleared")),
                 note=str(raw.get("note") or ""),
                 identity_key=(str(raw_key).strip() or None) if raw_key else None,
             )
