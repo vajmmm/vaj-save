@@ -35,7 +35,7 @@ def test_switch_functional_tokens_match_palette():
     assert tokens["success"] == "#30d158"
     assert tokens["warning"] == "#ff9f0a"
     assert tokens["danger"] == "#ff453a"
-    assert tokens["cleared_foil"] == "#c4a15a"
+    assert tokens["cleared_foil"] == "#e5b438"
     for key in ("hover", "line_strong", "accent_hover"):
         value = tokens[key]
         assert value.startswith("#") and len(value) == 7

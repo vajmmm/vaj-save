@@ -59,9 +59,9 @@ SWITCH: Dict[str, str] = {
     "shelf_edge": "#b9c1cc",
     "shelf_highlight": "#f9fafc",
     "dock_selected": "#dcecff",
-    # Brass foil for the wordless cleared halo around a gallery case.
-    # It is a rim, not a page fill; the blue backup button stays the only accent fill.
-    "cleared_foil": "#c4a15a",
+    # Sacred luminous gold for the ethereal cleared halo around a gallery case.
+    # It is a rim and delicate halo, not a page fill; the blue backup button stays the only accent fill.
+    "cleared_foil": "#e5b438",
 }
 
 # Module-level aliases keep the token names greppable from the UI code without

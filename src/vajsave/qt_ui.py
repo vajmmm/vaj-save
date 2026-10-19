@@ -828,10 +828,10 @@ class GalleryCanvas(QWidget):
         rim: bool,
         radius: float = 5.5,
     ) -> None:
-        """Wordless brass halo around a cleared case.
+        """Wordless sacred golden halo around a cleared case.
 
         ``rim=False`` paints one soft bloom behind the artwork. ``rim=True``
-        paints a single foil edge in place of the case border.
+        paints a delicate golden edge in place of the case border.
         """
         if not self.state.is_cleared(entry):
             return
@@ -841,13 +841,12 @@ class GalleryCanvas(QWidget):
             self._paint_cleared_bloom(painter, rect)
 
     def _paint_cleared_bloom(self, painter: QPainter, rect: QRectF) -> None:
-        """Scale a small silhouette up so the margin becomes one continuous falloff.
+        """Dual-phase celestial glow: an outer soft atmosphere plus an inner shimmer.
 
-        The stamp is outset past the case, then the case interior is cleared.
-        What remains is a soft brass atmosphere, not a stack of strokes.
+        The silhouette is softly outset and diffused so the falloff feels light,
+        ethereal, and sacred rather than a heavy muddy ring.
         """
-        pad = 18
-        outset = 6.0
+        pad = 20
         width = max(1, int(rect.width() + pad * 2))
         height = max(1, int(rect.height() + pad * 2))
         cached = self._bloom_cache.get((width, height))
@@ -858,22 +857,40 @@ class GalleryCanvas(QWidget):
         small_h = max(6, height // 6)
         small = QImage(small_w, small_h, QImage.Format.Format_ARGB32_Premultiplied)
         small.fill(Qt.GlobalColor.transparent)
-        foil = QColor(SWITCH["cleared_foil"])
-        foil.setAlpha(188)
         scale_x = small_w / width
         scale_y = small_h / height
-        face = QRectF(
-            (pad - outset) * scale_x,
-            (pad - outset) * scale_y,
-            (rect.width() + outset * 2) * scale_x,
-            (rect.height() + outset * 2) * scale_y,
-        )
+
         stamp = QPainter(small)
         stamp.setRenderHint(QPainter.RenderHint.Antialiasing)
         stamp.setPen(Qt.PenStyle.NoPen)
-        stamp.setBrush(foil)
-        stamp.drawRoundedRect(face, 2.4, 2.4)
+
+        # 1. Outer soft atmospheric aura
+        out_outset = 9.0
+        out_face = QRectF(
+            (pad - out_outset) * scale_x,
+            (pad - out_outset) * scale_y,
+            (rect.width() + out_outset * 2) * scale_x,
+            (rect.height() + out_outset * 2) * scale_y,
+        )
+        outer_foil = QColor(SWITCH["cleared_foil"])
+        outer_foil.setAlpha(46)
+        stamp.setBrush(outer_foil)
+        stamp.drawRoundedRect(out_face, 3.0, 3.0)
+
+        # 2. Inner delicate shimmer
+        in_outset = 4.0
+        in_face = QRectF(
+            (pad - in_outset) * scale_x,
+            (pad - in_outset) * scale_y,
+            (rect.width() + in_outset * 2) * scale_x,
+            (rect.height() + in_outset * 2) * scale_y,
+        )
+        inner_foil = QColor(SWITCH["cleared_foil"])
+        inner_foil.setAlpha(76)
+        stamp.setBrush(inner_foil)
+        stamp.drawRoundedRect(in_face, 2.2, 2.2)
         stamp.end()
+
         bloom = small.scaled(
             width,
             height,
@@ -892,16 +909,16 @@ class GalleryCanvas(QWidget):
 
     def _paint_cleared_rim(self, painter: QPainter, rect: QRectF, radius: float) -> None:
         foil = QColor(SWITCH["cleared_foil"])
-        highlight = QColor(mix(SWITCH["cleared_foil"], SWITCH["card"], 0.58))
-        shade = QColor(darken(SWITCH["cleared_foil"], 0.32))
+        highlight = QColor(mix(SWITCH["cleared_foil"], SWITCH["card"], 0.62))
+        shade = QColor(darken(SWITCH["cleared_foil"], 0.08))
         gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
         gradient.setColorAt(0.0, highlight)
-        gradient.setColorAt(0.42, foil)
+        gradient.setColorAt(0.38, foil)
         gradient.setColorAt(1.0, shade)
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(QBrush(gradient), 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        painter.setPen(QPen(QBrush(gradient), 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
         painter.drawRoundedRect(rect, radius, radius)
         painter.restore()
 
