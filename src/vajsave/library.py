@@ -158,6 +158,28 @@ def _catalog_cache_store(path: Path, catalog: Catalog) -> None:
         _catalog_cache[key] = snapshot
 
 
+def peek_game_attr(library_root: Path, game_id: str, attr: str, default: Any) -> Any:
+    """Read one catalog field without copying the catalog.
+
+    Gallery painting asks this for every visible case. ``load_catalog`` deep-copies
+    the whole library on each call, which stalls the UI once a large Vita card has
+    filled the catalog. The cached snapshot is treated as immutable; only the
+    requested field is returned.
+    """
+    path = catalog_path(library_root)
+    key = _catalog_cache_key(path)
+    catalog: Optional[Catalog] = None
+    if key is not None:
+        with _catalog_cache_lock:
+            catalog = _catalog_cache.get(key)
+    if catalog is None:
+        catalog = load_catalog(library_root)
+    game = catalog.games.get(game_id) if catalog is not None else None
+    if game is None:
+        return default
+    return getattr(game, attr, default)
+
+
 def load_catalog(library_root: Path) -> Catalog:
     path = catalog_path(library_root)
     key = _catalog_cache_key(path)
@@ -760,6 +782,7 @@ __all__ = [
     "load_keep_last",
     "parse_keep_last",
     "path_mtime_iso",
+    "peek_game_attr",
     "prune_game_versions",
     "restore_snapshot",
     "sanitize_name",

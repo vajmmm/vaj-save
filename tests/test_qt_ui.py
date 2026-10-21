@@ -1291,6 +1291,74 @@ def test_opening_the_drawer_does_not_touch_the_save(qt_app, tmp_path: Path, monk
         window.close()
 
 
+def test_backup_starts_before_the_rest_of_the_card_is_hashed(
+    qt_app, tmp_path: Path, monkeypatch
+):
+    """A backup click must not wait until every previously backed-up save is hashed."""
+    from vajsave.library import hash_tree as real_hash
+
+    root = tmp_path / "VITA"
+    first = root / "SAVE_ONE"
+    second = root / "SAVE_TWO"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    (first / "data.bin").write_bytes(b"one")
+    (second / "data.bin").write_bytes(b"two")
+    lib = tmp_path / "lib"
+    entry1 = SaveEntry("vita", "vita", "Game One", str(first), "PCSE00001")
+    entry2 = SaveEntry("vita", "vita", "Game Two", str(second), "PCSE00002")
+    backup_save(entry1, lib)
+    backup_save(entry2, lib)
+    state = AppState(provider=FakeVolumeProvider([]), library_root=lib)
+    state.current_mount = root
+    state.volumes = [VolumeInfo("PS Vita", root, True)]
+    state.current_result = ScanResult(
+        root_path=str(root), platform="vita", saves=[entry1, entry2]
+    )
+    monkeypatch.setattr(state, "start_watch", lambda *args, **kwargs: None)
+    monkeypatch.setattr(state, "stop_watch", lambda *args, **kwargs: None)
+    window = VajSaveWindow(state)
+    entered = threading.Event()
+    stop = threading.Event()
+    hashed: list[str] = []
+    seen_at_backup: list[list[str]] = []
+    order: list[str] = []
+
+    def blocking_hash(path):
+        hashed.append(Path(path).name)
+        if len(hashed) == 1:
+            entered.set()
+            while not stop.is_set() and not window._backup_jump.is_set():
+                window._backup_jump.wait(0.05)
+        return real_hash(path)
+
+    monkeypatch.setattr("vajsave.app_state.hash_tree", blocking_hash)
+    try:
+        window._start_status_hash(window._device_scan_generation, [entry1, entry2])
+        for _ in range(50):
+            QTest.qWait(20)
+            if entered.is_set():
+                break
+        assert entered.is_set()
+        window._run_backup_job(
+            lambda: seen_at_backup.append(list(hashed)) or order.append("backup")
+        )
+        window._sync_scan_progress()
+        assert window.status_text.text() == "正在结束当前核对，随后开始备份…"
+        assert window.backup_updated.isEnabled() is False
+        for _ in range(80):
+            QTest.qWait(25)
+            if order:
+                break
+        assert seen_at_backup == [["SAVE_ONE"]]
+        assert order == ["backup"]
+    finally:
+        stop.set()
+        window._backup_jump.set()
+        window.close()
+        QTest.qWait(50)
+
+
 def test_detail_size_is_filled_in_background(qt_app, qt_state):
     entry = qt_state.visible_saves()[0]
     expected = sum(

@@ -609,8 +609,12 @@ class AppState:
     def import_visible_saves(self) -> List[Path]:
         return self.import_selected_saves(list(self.visible_saves()))
 
-    def backup_updated_saves(self, token: Optional[CancelToken] = None) -> List[Path]:
-        return run_backup_updated_saves(self, token)
+    def backup_updated_saves(
+        self, token: Optional[CancelToken] = None, *, include_unverified: bool = False
+    ) -> List[Path]:
+        return run_backup_updated_saves(
+            self, token, include_unverified=include_unverified
+        )
 
     def cancel_job(self) -> None:
         self._job_slot.cancel()
@@ -684,9 +688,12 @@ class AppState:
         return self.scans.apply_prepared_mount_scan(prepared)
 
     def prepare_backup_statuses(
-        self, entries: Optional[Sequence[SaveEntry]] = None
+        self,
+        entries: Optional[Sequence[SaveEntry]] = None,
+        *,
+        should_yield: Optional[Callable[[], bool]] = None,
     ) -> PreparedBackupStatuses:
-        return self.scans.prepare_backup_statuses(entries)
+        return self.scans.prepare_backup_statuses(entries, should_yield=should_yield)
 
     def apply_backup_statuses(self, prepared: PreparedBackupStatuses) -> bool:
         return self.scans.apply_backup_statuses(prepared)

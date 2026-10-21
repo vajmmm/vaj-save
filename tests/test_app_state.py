@@ -2080,6 +2080,101 @@ def test_prepare_mount_scan_records_progress(tmp_path: Path, psp_sfo_bytes: byte
     assert progress.total >= 1
 
 
+def test_prepare_backup_statuses_yields_before_the_next_save(
+    tmp_path: Path, psp_sfo_bytes: bytes, monkeypatch
+):
+    """A backup request stops the card hash after the save already in flight."""
+    from vajsave.library import hash_tree as real_hash
+
+    root = tmp_path / "VITA"
+    first = _psp_save_tree(root, "ULJM05800", b"one", psp_sfo_bytes)
+    second = _psp_save_tree(root, "ULJM05500", b"two", psp_sfo_bytes)
+    lib = tmp_path / "lib"
+    entry1 = SaveEntry("psp", "psp", "Monster Hunter", str(first), "ULJM05800")
+    entry2 = SaveEntry("psp", "psp", "Monster Hunter 2nd", str(second), "ULJM05500")
+    backup_save(entry1, lib, datetime(2026, 1, 1, 10, 0, 0))
+    backup_save(entry2, lib, datetime(2026, 1, 1, 10, 0, 0))
+    state = AppState(library_root=lib)
+    state.current_mount = root
+    state.volumes = [VolumeInfo("PS Vita", root, True)]
+    state.current_result = ScanResult(root_path=str(root), platform="psp", saves=[entry1, entry2])
+
+    hashed: list[str] = []
+    pause_after_first = {"ready": False}
+
+    def wrapped(path):
+        hashed.append(Path(path).name)
+        pause_after_first["ready"] = True
+        return real_hash(path)
+
+    monkeypatch.setattr("vajsave.app_state.hash_tree", wrapped)
+    prepared = state.prepare_backup_statuses(
+        [entry1, entry2], should_yield=lambda: pause_after_first["ready"]
+    )
+    assert prepared.paused is True
+    assert hashed == ["ULJM05800"]
+    assert [item.title_id for item in prepared.remaining] == ["ULJM05500"]
+    assert prepared.statuses[entry1.path].status == "unchanged"
+    assert entry2.path not in prepared.statuses
+
+
+def test_apply_backup_statuses_accepts_a_resumed_subset(
+    tmp_path: Path, psp_sfo_bytes: bytes
+):
+    """The hash that continues after a backup only carries the saves left to check."""
+    root = tmp_path / "VITA"
+    first = _psp_save_tree(root, "ULJM05800", b"one", psp_sfo_bytes)
+    second = _psp_save_tree(root, "ULJM05500", b"two", psp_sfo_bytes)
+    lib = tmp_path / "lib"
+    entry1 = SaveEntry("psp", "psp", "Monster Hunter", str(first), "ULJM05800")
+    entry2 = SaveEntry("psp", "psp", "Monster Hunter 2nd", str(second), "ULJM05500")
+    backup_save(entry1, lib, datetime(2026, 1, 1, 10, 0, 0))
+    backup_save(entry2, lib, datetime(2026, 1, 1, 10, 0, 0))
+    state = AppState(library_root=lib)
+    state.current_mount = root
+    state.current_result = ScanResult(
+        root_path=str(root), platform="psp", saves=[entry1, entry2]
+    )
+    prepared = state.prepare_backup_statuses([entry2])
+    assert state.apply_backup_statuses(prepared) is True
+    assert state.save_status(entry2).status == "unchanged"
+    assert entry1.path not in state._backup_statuses
+
+
+def test_manual_backup_includes_saves_still_being_checked(
+    tmp_path: Path, psp_sfo_bytes: bytes, monkeypatch
+):
+    """The backup button must not no-op while the card hash is still running."""
+    root = tmp_path / "PSP_VOL"
+    backed_dir = _psp_save_tree(root, "ULJM05800", b"same-data", psp_sfo_bytes)
+    lib = tmp_path / "lib"
+    entry = SaveEntry(
+        platform="psp",
+        source_id="psp",
+        display_name="Monster Hunter Portable 3rd",
+        path=str(backed_dir),
+        title_id="ULJM05800",
+    )
+    backup_save(entry, lib, datetime(2026, 1, 1, 10, 0, 0))
+
+    def boom(_path):
+        raise AssertionError("listing updated saves must not hash the card")
+
+    monkeypatch.setattr("vajsave.app_state.hash_tree", boom)
+    state = AppState(library_root=lib)
+    state.begin_mount_scan(root)
+    prepared = state.prepare_mount_scan(root)
+    state.apply_prepared_mount_scan(prepared)
+    save = prepared.result.saves[0]
+    assert state.save_status(save, allow_hash=False).status == "checking"
+    assert state.backup_updated_saves() == []
+
+    monkeypatch.setattr("vajsave.app_state.hash_tree", __import__("vajsave.library", fromlist=["hash_tree"]).hash_tree)
+    copied = state.backup_updated_saves(include_unverified=True)
+    assert copied
+    assert state.save_status(save).status == "unchanged"
+
+
 def test_prepare_backup_statuses_reports_hash_progress(
     tmp_path: Path, psp_sfo_bytes: bytes
 ):

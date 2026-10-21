@@ -82,6 +82,93 @@ def test_switch_multi_user_grouped():
     assert any("user2" in lbl for lbl in labels)
 
 
+def test_vita_grouping_does_not_reread_param_sfo(tmp_path: Path, monkeypatch):
+    """A gallery refresh must not open sce_sys while the card is being hashed."""
+    save = tmp_path / "user" / "00" / "savedata" / "PCSE00001"
+    (save / "sce_sys").mkdir(parents=True)
+    (save / "sce_sys" / "param.sfo").write_bytes(b"unread")
+    entry = SaveEntry(
+        platform="vita",
+        source_id="vita",
+        display_name="PCSE00001",
+        title_id="PCSE00001",
+        path=str(save),
+    )
+
+    def boom(_directory):
+        raise AssertionError("grouping re-read Vita param.sfo")
+
+    monkeypatch.setattr("vajsave.identity.vita._read_param_sfo", boom)
+    app = AppState()
+    app.current_result = ScanResult(root_path=str(tmp_path), platform="vita", saves=[entry])
+    grouped = app.visible_saves()
+    assert len(grouped) == 1
+    assert grouped[0].title_id == "PCSE00001"
+
+
+def test_vita_cover_lookup_does_not_reread_param_sfo(tmp_path: Path, monkeypatch):
+    """Painting a case must not open the save while verification owns the card."""
+    save = tmp_path / "user" / "00" / "savedata" / "PCSE00001"
+    (save / "sce_sys").mkdir(parents=True)
+    (save / "sce_sys" / "param.sfo").write_bytes(b"unread")
+    (save / "data.bin").write_bytes(b"save")
+    entry = SaveEntry(
+        platform="vita",
+        source_id="vita",
+        display_name="PCSE00001",
+        title_id="PCSE00001",
+        path=str(save),
+    )
+
+    def boom(_directory):
+        raise AssertionError("cover lookup re-read Vita param.sfo")
+
+    monkeypatch.setattr("vajsave.identity.vita._read_param_sfo", boom)
+    listed: list[str] = []
+    original_iterdir = Path.iterdir
+
+    def tracking_iterdir(self, *args, **kwargs):
+        if self == save or save in self.parents:
+            listed.append(str(self))
+        return original_iterdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "iterdir", tracking_iterdir)
+    app = AppState(library_root=tmp_path / "lib")
+    app.resolve_save_cover(entry)
+    assert listed == []
+
+
+def test_multi_slot_grouping_does_not_stat_the_card(tmp_path: Path):
+    """Choosing a representative slot must not stat saves on the UI thread."""
+    first = tmp_path / "SAVEDATA" / "SLOT0"
+    second = tmp_path / "SAVEDATA" / "SLOT1"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    (first / "data.bin").write_bytes(b"a")
+    (second / "data.bin").write_bytes(b"b")
+    lib = tmp_path / "lib"
+    older = SaveEntry("psp", "psp", "Monster Hunter", str(first), "ULJM05800", slot="0")
+    newer = SaveEntry("psp", "psp", "Monster Hunter", str(second), "ULJM05800", slot="1")
+    backup_save(older, lib)
+    backup_save(newer, lib)
+    app = AppState(library_root=lib)
+    touched: list[str] = []
+    original_stat = Path.stat
+
+    def tracking_stat(self, *args, **kwargs):
+        if self == first or self == second or first in self.parents or second in self.parents:
+            touched.append(str(self))
+        return original_stat(self, *args, **kwargs)
+
+    Path.stat = tracking_stat
+    try:
+        grouped = group_saves_by_game([older, newer], app)
+    finally:
+        Path.stat = original_stat
+    assert len(grouped) == 1
+    assert touched == []
+
+
 def test_psp_multi_slot_grouped(tmp_path: Path, psp_sfo_bytes: bytes):
     save1 = tmp_path / "PSP" / "SAVEDATA" / "ULJM05800000"
     save1.mkdir(parents=True)

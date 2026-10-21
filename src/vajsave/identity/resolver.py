@@ -101,11 +101,13 @@ class GameIdentityResolver:
             )
         return module.resolve(entry, self._context(read_device=read_device))
 
-    def resolve_many(self, entries: Iterable) -> List[GameIdentityResult]:
+    def resolve_many(
+        self, entries: Iterable, *, read_device: bool = True
+    ) -> List[GameIdentityResult]:
         results: List[GameIdentityResult] = []
         for entry in entries:
             try:
-                results.append(self._resolve_entry(entry))
+                results.append(self._resolve_entry(entry, read_device=read_device))
             except Exception as exc:  # noqa: BLE001 - one bad save must not stop the batch
                 results.append(
                     unresolved(

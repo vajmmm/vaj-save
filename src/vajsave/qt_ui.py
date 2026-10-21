@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from collections import OrderedDict
 from importlib import resources
 from pathlib import Path
@@ -1640,6 +1641,76 @@ class ViewSwitcher(QFrame):
         self.btn_library.blockSignals(False)
 
 
+# Vita and PSP identity is already on the scanned entry. Re-reading the card
+# from the cover pass contends with the post-scan hash on a single USB queue.
+_CARD_IDENTITY_PLATFORMS = frozenset({"vita", "psp"})
+
+
+def _resolve_pending_identities(state: AppState, pending: list[SaveEntry]) -> list:
+    """Resolve covers' identities without re-reading a Vita or PSP card."""
+
+    def platform_of(save: SaveEntry) -> str:
+        return (getattr(save, "platform", None) or "").strip().lower()
+
+    if not pending:
+        return []
+    if all(platform_of(save) in _CARD_IDENTITY_PLATFORMS for save in pending):
+        return state.resolve_identities(pending, read_device=False)
+    if not any(platform_of(save) in _CARD_IDENTITY_PLATFORMS for save in pending):
+        return state.resolve_identities(pending)
+    results: list = [None] * len(pending)
+    local = [
+        index
+        for index, save in enumerate(pending)
+        if platform_of(save) in _CARD_IDENTITY_PLATFORMS
+    ]
+    local_set = set(local)
+    device = [index for index in range(len(pending)) if index not in local_set]
+    for index, result in zip(
+        local,
+        state.resolve_identities(
+            [pending[index] for index in local], read_device=False
+        ),
+    ):
+        results[index] = result
+    for index, result in zip(
+        device,
+        state.resolve_identities([pending[index] for index in device]),
+    ):
+        results[index] = result
+    return results
+
+
+class _DeferredCardLoader:
+    """Hold folder-size walks while the card is already being read.
+
+    A Vita TF card has one USB command queue. Walking a save for its size at
+    the same time as backup verification makes every other read, including the
+    ones the UI still has to do, wait for both.
+    """
+
+    def __init__(self, loader, busy) -> None:
+        self._loader = loader
+        self._busy = busy
+        self._deferred = None
+
+    def submit(self, key, task, callback) -> bool:
+        if self._busy():
+            self._deferred = (key, task, callback)
+            return True
+        return self._loader.submit(key, task, callback)
+
+    def flush(self) -> None:
+        deferred = self._deferred
+        if deferred is None:
+            return
+        if self._busy():
+            return
+        self._deferred = None
+        key, task, callback = deferred
+        self._loader.submit(key, task, callback)
+
+
 class VajSaveWindow(QMainWindow):
     """参考图对应的雾银收藏架主窗口。"""
 
@@ -1659,6 +1730,10 @@ class VajSaveWindow(QMainWindow):
         self._device_loader = ArtworkLoader(
             self._callback_bridge.dispatch.emit, max_workers=1
         )
+        self._backup_jump = threading.Event()
+        self._queued_backup = None
+        self._resume_hash: Optional[tuple] = None
+        self._size_gate = _DeferredCardLoader(self._artwork_loader, self._card_read_busy)
         self._device_scan_generation = 0
         self._device_scan_target: Optional[Path] = None
         self._enrichment_attempted: set[str] = set()
@@ -1813,7 +1888,7 @@ class VajSaveWindow(QMainWindow):
         base_row.addWidget(self.dock)
         base_row.addWidget(self.gallery, 1)
         self.drawer = DetailDrawer(self.body)
-        self.drawer.set_size_loader(self._artwork_loader)
+        self.drawer.set_size_loader(self._size_gate)
         self.drawer.hide()
         outer.addWidget(self.body, 1)
         status = QFrame()
@@ -2047,9 +2122,23 @@ class VajSaveWindow(QMainWindow):
         job = self.state.job_progress()
         scan = self.state.scan_progress()
         running = not self.state.job_idle()
+        waiting_for_card = self._queued_backup is not None
         self.cancel_job.setVisible(job.cancellable)
-        self.backup_updated.setEnabled(not self.state.library_mode and not running)
-        self.drawer.primary.setEnabled(not running)
+        self.backup_updated.setEnabled(
+            not self.state.library_mode and not running and not waiting_for_card
+        )
+        self.drawer.primary.setEnabled(not running and not waiting_for_card)
+        if waiting_for_card:
+            # The 250ms poll would otherwise replace the yield notice with the
+            # hash progress line, so a backup click looks like it did nothing.
+            self.scan_progress.show()
+            if scan.total <= 0:
+                self.scan_progress.setRange(0, 0)
+            else:
+                self.scan_progress.setRange(0, scan.total)
+                self.scan_progress.setValue(max(0, min(scan.current, scan.total)))
+            self.status_text.setText("正在结束当前核对，随后开始备份…")
+            return
         progress = job if (job.cancellable or job.message) else scan
         if not progress.message and not job.cancellable:
             self.scan_progress.hide()
@@ -2074,7 +2163,7 @@ class VajSaveWindow(QMainWindow):
             return
 
         def task():
-            return self.state.resolve_identities(pending)
+            return _resolve_pending_identities(self.state, pending)
 
         def completed(results) -> None:
             if self.state.library_mode:
@@ -2148,6 +2237,17 @@ class VajSaveWindow(QMainWindow):
         """使已在后台运行的扫描结果失效；文件系统调用本身不强制中断。"""
         self._device_scan_generation += 1
         self._device_scan_target = None
+        self._queued_backup = None
+        self._resume_hash = None
+        self._backup_jump.clear()
+
+    def _card_read_busy(self) -> bool:
+        """True while this device's hash or a backup still owns the card."""
+        generation = self._device_scan_generation
+        loader = self._device_loader
+        return loader.is_inflight(("device-hash", generation)) or loader.is_inflight(
+            ("library-job",)
+        )
 
     def _request_mount_scan(
         self, mount_point, *, auto: bool = False, force: bool = False
@@ -2187,27 +2287,7 @@ class VajSaveWindow(QMainWindow):
                 return
             self.state.apply_prepared_mount_scan(prepared)
             self.refresh_all()
-
-            def hash_task():
-                return self.state.prepare_backup_statuses(prepared.result.saves)
-
-            def hash_completed(backup_statuses) -> None:
-                if generation != self._device_scan_generation:
-                    return
-                self._device_scan_target = None
-                if backup_statuses is not None:
-                    self.state.apply_backup_statuses(backup_statuses)
-                    self.refresh_all(enrich=False)
-                    if self._drawer_open and self._selected is not None:
-                        self.drawer.note_backup_status(self.state, self._selected)
-                    if auto:
-                        self._maybe_auto_backup()
-
-            hash_started = self._device_loader.submit(
-                ("device-hash", generation), hash_task, hash_completed
-            )
-            if not hash_started:
-                self._device_scan_target = None
+            self._start_status_hash(generation, list(prepared.result.saves), auto=auto)
 
         started = self._device_loader.submit(
             ("device-scan", generation), scan_task, scan_completed
@@ -2332,7 +2412,90 @@ class VajSaveWindow(QMainWindow):
         self.refresh_all(enrich=False)
 
     def _backup_updated(self) -> None:
-        self._run_backup_job(self.state.backup_updated_saves)
+        # Saves still marked "checking" have not been byte-compared yet. A manual
+        # backup includes them; identical content is deduped and does not add a
+        # version. Leaving them out made the button a no-op for the whole time a
+        # large Vita card was being hashed.
+        self._run_backup_job(
+            lambda: self.state.backup_updated_saves(include_unverified=True)
+        )
+
+    def _start_status_hash(self, generation: int, saves: list, *, auto: bool = False) -> None:
+        """Hash previously backed-up saves, stopping between saves if a backup is waiting."""
+        if not saves:
+            self._device_scan_target = None
+            self._size_gate.flush()
+            if auto:
+                self._maybe_auto_backup()
+            return
+
+        def hash_task():
+            return self.state.prepare_backup_statuses(
+                saves, should_yield=self._backup_jump.is_set
+            )
+
+        def hash_completed(backup_statuses) -> None:
+            if generation != self._device_scan_generation:
+                return
+            if backup_statuses is not None:
+                self.state.apply_backup_statuses(backup_statuses)
+                self.refresh_all(enrich=False)
+                if self._drawer_open and self._selected is not None:
+                    self.drawer.note_backup_status(self.state, self._selected)
+            paused = bool(getattr(backup_statuses, "paused", False))
+            remaining = tuple(getattr(backup_statuses, "remaining", ()) or ())
+            runner = self._queued_backup
+            # A click that lands on the last save never sets ``paused``: the
+            # yield flag is only checked before the next save. Still run the
+            # backup. Dropping it here made the button look dead.
+            if runner is not None:
+                self._queued_backup = None
+                self._backup_jump.clear()
+                self._resume_hash = (
+                    (generation, remaining) if paused and remaining else None
+                )
+                if not (paused and remaining):
+                    self._device_scan_target = None
+                self._submit_backup(runner)
+                return
+            if paused and remaining:
+                self._backup_jump.clear()
+                self._start_status_hash(generation, list(remaining), auto=auto)
+                return
+            self._device_scan_target = None
+            self._backup_jump.clear()
+            self._queued_backup = None
+            self._size_gate.flush()
+            if backup_statuses is not None and auto:
+                self._maybe_auto_backup()
+
+        started = self._device_loader.submit(
+            ("device-hash", generation), hash_task, hash_completed
+        )
+        if not started:
+            self._device_scan_target = None
+            self._size_gate.flush()
+
+    def _submit_backup(self, runner) -> None:
+        def completed(_result) -> None:
+            self.refresh_all()
+            if self._selected is not None and self._drawer_open:
+                self._versions = self.drawer.set_entry(self.state, self._selected)
+                self._selected_snapshot = self._versions[0] if self._versions else None
+            resume = self._resume_hash
+            self._resume_hash = None
+            if resume is None:
+                self._size_gate.flush()
+                return
+            generation, remaining = resume
+            if generation != self._device_scan_generation or not remaining:
+                self._device_scan_target = None
+                self._size_gate.flush()
+                return
+            self._start_status_hash(generation, list(remaining))
+
+        self._device_loader.submit(("library-job",), runner, completed)
+        self._sync_scan_progress()
 
     def _maybe_auto_backup(self) -> None:
         if not self.state.auto_backup_on_insert:
@@ -2344,18 +2507,16 @@ class VajSaveWindow(QMainWindow):
     def _run_backup_job(self, runner) -> None:
         if not self.state.job_idle():
             return
-
-        def task():
-            return runner()
-
-        def completed(_result) -> None:
-            self.refresh_all()
-            if self._selected is not None:
-                self._versions = self.drawer.set_entry(self.state, self._selected)
-                self._selected_snapshot = self._versions[0] if self._versions else None
-
-        self._device_loader.submit(("library-job",), task, completed)
-        self._sync_scan_progress()
+        generation = self._device_scan_generation
+        if self._device_loader.is_inflight(("device-hash", generation)):
+            # The hash owns the only device worker and the card. Ask it to stop
+            # after the current save instead of queueing the backup behind every
+            # previously backed-up game on a 128GB card.
+            self._queued_backup = runner
+            self._backup_jump.set()
+            self.status_text.setText("正在结束当前核对，随后开始备份…")
+            return
+        self._submit_backup(runner)
 
     def _run_device_task(
         self, key, task, completed, *, error_title: Optional[str] = None

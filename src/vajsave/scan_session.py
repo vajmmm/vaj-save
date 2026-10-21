@@ -6,7 +6,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 logger = logging.getLogger("vajsave.scan_session")
 
@@ -87,6 +87,9 @@ class PreparedBackupStatuses:
     status_text: Optional[str] = None
     entries: Tuple[SaveEntry, ...] = ()
     mount_point: Optional[Path] = None
+    # Set when a backup request asked this pass to stop between saves.
+    paused: bool = False
+    remaining: Tuple[SaveEntry, ...] = ()
 
 
 class ScanSession:
@@ -313,9 +316,16 @@ class ScanSession:
         return min(2, count)
 
     def _calculate_device_statuses(
-        self, entries: List[SaveEntry]
-    ) -> Tuple[Dict[str, SaveBackupStatus], List[str], Dict[str, int]]:
-        """计算设备存档状态，不修改 AppState，供后台扫描安全调用。"""
+        self,
+        entries: List[SaveEntry],
+        should_yield: Optional[Callable[[], bool]] = None,
+    ) -> Tuple[Dict[str, SaveBackupStatus], List[str], Dict[str, int], bool, Tuple[SaveEntry, ...]]:
+        """计算设备存档状态，不修改 AppState，供后台扫描安全调用。
+
+        ``should_yield`` is checked between saves. A removable card has one
+        command queue, so a backup requested while this pass is reading must
+        be able to start after the current save instead of after the whole card.
+        """
         statuses: Dict[str, SaveBackupStatus] = {}
         status_warnings: List[str] = []
         catalog = load_catalog(self.app.library_root)
@@ -326,6 +336,8 @@ class ScanSession:
                 statuses[entry.path] = classify_save_status(entry, catalog, digest=None)
             else:
                 pending.append(entry)
+        paused = False
+        remaining: Tuple[SaveEntry, ...] = ()
         if pending:
             logger.info("开始深度核对 %d 个已建库存档的完整性哈希与版本变更...", len(pending))
             # Resolve the key material once on this thread: encrypted 3DS SD
@@ -343,19 +355,44 @@ class ScanSession:
                 ScanProgress(f"正在核对备份 0/{len(pending)}", 0, len(pending))
             )
             hashed: List[Tuple[str, Optional[str], Optional[BaseException]]] = []
+            finished: List[SaveEntry] = []
             with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = [pool.submit(_hash_one, item) for item in pending]
-                done = 0
-                for future in as_completed(futures):
-                    hashed.append(future.result())
-                    done += 1
-                    self.report_scan_progress(
-                        ScanProgress(
-                            f"正在核对备份 {done}/{len(pending)}", done, len(pending)
+                if workers == 1:
+                    # One save at a time so a backup can start after the current
+                    # read. Submitting the whole list first would ignore yield
+                    # until every future had already been queued.
+                    for index, item in enumerate(pending):
+                        if should_yield is not None and should_yield():
+                            paused = True
+                            remaining = tuple(pending[index:])
+                            break
+                        hashed.append(pool.submit(_hash_one, item).result())
+                        finished.append(item)
+                        done = index + 1
+                        self.report_scan_progress(
+                            ScanProgress(
+                                f"正在核对备份 {done}/{len(pending)}",
+                                done,
+                                len(pending),
+                            )
                         )
-                    )
+                elif should_yield is not None and should_yield():
+                    paused = True
+                    remaining = tuple(pending)
+                else:
+                    futures = [pool.submit(_hash_one, item) for item in pending]
+                    done = 0
+                    for future in as_completed(futures):
+                        hashed.append(future.result())
+                        done += 1
+                        self.report_scan_progress(
+                            ScanProgress(
+                                f"正在核对备份 {done}/{len(pending)}", done, len(pending)
+                            )
+                        )
+                    finished = list(pending)
             by_path = {path: (digest, err) for path, digest, err in hashed}
-            for entry in pending:
+            for entry in finished:
                 digest, err = by_path[entry.path]
                 if err is not None:
                     msg = f"计算存档哈希失败: {entry.display_name or entry.path}: {err}"
@@ -371,16 +408,22 @@ class ScanSession:
         counts = {"new": 0, "changed": 0, "unchanged": 0}
         for status in statuses.values():
             counts[status.status] = counts.get(status.status, 0) + 1
-        logger.info(
-            "存档状态深度核对完毕: 新增 %d, 发生变更 %d, 已备份 %d",
-            counts.get("new", 0),
-            counts.get("changed", 0),
-            counts.get("unchanged", 0),
-        )
-        return statuses, status_warnings, counts
+        if paused:
+            logger.info("存档核对让路给备份，剩余 %d 个未核对", len(remaining))
+        else:
+            logger.info(
+                "存档状态深度核对完毕: 新增 %d, 发生变更 %d, 已备份 %d",
+                counts.get("new", 0),
+                counts.get("changed", 0),
+                counts.get("unchanged", 0),
+            )
+        return statuses, status_warnings, counts, paused, remaining
 
     def prepare_backup_statuses(
-        self, entries: Optional[Sequence[SaveEntry]] = None
+        self,
+        entries: Optional[Sequence[SaveEntry]] = None,
+        *,
+        should_yield: Optional[Callable[[], bool]] = None,
     ) -> PreparedBackupStatuses:
         """计算设备存档真实哈希与状态；可在工作线程运行。最多 2 个工作线程。"""
         app = self.app
@@ -389,7 +432,9 @@ class ScanSession:
             if entries is not None
             else (list(app.current_result.saves) if app.current_result else [])
         )
-        statuses, status_warnings, counts = self._calculate_device_statuses(target)
+        statuses, status_warnings, counts, paused, remaining = self._calculate_device_statuses(
+            target, should_yield=should_yield
+        )
         status_text = None
         if app.current_result is not None:
             status_text = build_status_text(app.current_result, counts=counts)
@@ -400,6 +445,8 @@ class ScanSession:
             status_text=status_text,
             entries=tuple(target),
             mount_point=app.current_mount,
+            paused=paused,
+            remaining=remaining,
         )
 
     def apply_backup_statuses(self, prepared: PreparedBackupStatuses) -> bool:
@@ -409,14 +456,22 @@ class ScanSession:
             return False
         if prepared.mount_point is not None and app.current_mount != prepared.mount_point:
             return False
-        if prepared.entries and tuple(app.current_result.saves) != prepared.entries:
-            return False
+        if prepared.entries:
+            # A backup may pause the hash after a few saves. The resumed pass
+            # only carries the saves still unchecked; those paths still belong
+            # to this scan. An unrelated batch (different card) does not.
+            current_paths = {item.path for item in app.current_result.saves}
+            if any(item.path not in current_paths for item in prepared.entries):
+                return False
         app._backup_statuses.update(prepared.statuses)
         app.warnings.extend(prepared.status_warnings)
         app.status_text = build_status_text(
             app.current_result, counts=app.backup_status_counts()
         )
-        self.clear_scan_progress()
+        # A paused pass still has saves left. Keep the progress bar until the
+        # backup that asked us to yield replaces it.
+        if not prepared.paused:
+            self.clear_scan_progress()
         return True
 
     def select_mount(

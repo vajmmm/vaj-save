@@ -401,7 +401,10 @@ class Enrichment:
             if identity is None:
                 identity = result.identity if result else None
             if identity is None:
-                identity = self.resolve_save_identity(entry).identity
+                # Paint and the detail drawer call this on the UI thread. Vita
+                # and PSP resolvers would otherwise re-read the card while a
+                # backup-verification hash still owns the USB queue.
+                identity = self.resolve_save_identity(entry, read_device=False).identity
             key = identity.identity_key if identity is not None else None
             return self.artwork_service.resolve(
                 entry,
@@ -485,13 +488,13 @@ class Enrichment:
         return self.identity_resolver.resolve(entry, read_device=read_device)
 
     def resolve_identities(
-        self, entries: Optional[List[SaveEntry]] = None
+        self, entries: Optional[List[SaveEntry]] = None, *, read_device: bool = True
     ) -> List[GameIdentityResult]:
         app = self.app
         target = list(entries) if entries is not None else app.all_saves()
         if app.library_mode:
-            return [self.resolve_save_identity(entry) for entry in target]
-        return self.identity_resolver.resolve_many(target)
+            return [self.resolve_save_identity(entry, read_device=read_device) for entry in target]
+        return self.identity_resolver.resolve_many(target, read_device=read_device)
 
     def bind_save_identity(
         self,

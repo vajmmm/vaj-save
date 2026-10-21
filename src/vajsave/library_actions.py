@@ -22,6 +22,7 @@ from .library import (
     is_inside_library,
     load_catalog,
     latest_snapshot,
+    peek_game_attr,
     path_mtime_iso,
     parse_keep_last,
     restore_snapshot,
@@ -230,7 +231,13 @@ class LibraryActions:
         # row is already backed up, so the filter is not applied in library mode
         # (otherwise it would blank the whole browser).
         if app.hide_unchanged and not app.library_mode:
-            saves = [save for save in saves if self.save_status(save).status != "unchanged"]
+            # ``checking`` stays visible. Hashing here would read the card on
+            # the UI thread while backup verification is already reading it.
+            saves = [
+                save
+                for save in saves
+                if self.save_status(save, allow_hash=False).status != "unchanged"
+            ]
         return saves
 
     def save_status(self, entry: SaveEntry, *, allow_hash: bool = True) -> SaveBackupStatus:
@@ -292,7 +299,7 @@ class LibraryActions:
     def backup_status_counts(self) -> Dict[str, int]:
         counts = {"new": 0, "changed": 0, "unchanged": 0}
         for save in self.all_saves():
-            key = self.save_status(save).status
+            key = self.save_status(save, allow_hash=False).status
             if key not in counts:
                 counts[key] = 0
             counts[key] += 1
@@ -354,8 +361,9 @@ class LibraryActions:
         return game.starred
 
     def is_starred(self, entry: SaveEntry) -> bool:
-        game = load_catalog(self.app.library_root).games.get(self.game_id(entry))
-        return bool(game and game.starred)
+        return bool(
+            peek_game_attr(self.app.library_root, self.game_id(entry), "starred", False)
+        )
 
     def toggle_cleared(self, entry: SaveEntry) -> bool:
         app = self.app
@@ -367,12 +375,13 @@ class LibraryActions:
         return game.cleared
 
     def is_cleared(self, entry: SaveEntry) -> bool:
-        game = load_catalog(self.app.library_root).games.get(self.game_id(entry))
-        return bool(game and game.cleared)
+        return bool(
+            peek_game_attr(self.app.library_root, self.game_id(entry), "cleared", False)
+        )
 
     def game_note(self, entry: SaveEntry) -> str:
-        game = load_catalog(self.app.library_root).games.get(self.game_id(entry))
-        return game.note if game else ""
+        note = peek_game_attr(self.app.library_root, self.game_id(entry), "note", "")
+        return note or ""
 
     def set_note(self, entry: SaveEntry, note: str) -> None:
         set_game_meta(self.app.library_root, entry, note=note)
@@ -475,7 +484,12 @@ class LibraryActions:
         identity a previous backup already stored.
         """
         try:
-            return self.app.resolve_save_identity(entry).identity_key
+            platform = (getattr(entry, "platform", None) or "").strip().lower()
+            # Vita and PSP already carry TITLE / TITLE_ID from the scan. Reading
+            # PARAM.SFO again sits behind the save copy on the same card.
+            return self.app.resolve_save_identity(
+                entry, read_device=platform not in ("vita", "psp")
+            ).identity_key
         except Exception:  # noqa: BLE001 - identity is best-effort; backup proceeds
             return None
 

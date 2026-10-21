@@ -16,6 +16,9 @@ BackupOne = Callable[[SaveEntry], Optional[Path]]
 ProgressCb = Callable[[JobProgress], None]
 
 UPDATED_STATUSES = frozenset({"new", "changed"})
+# Shown after a scan, before the background hash has compared bytes. A manual
+# backup may include these: ``backup_save`` still dedupes identical content.
+UNVERIFIED_STATUS = "checking"
 
 
 def backup_entries(
@@ -69,11 +72,16 @@ def backup_entries(
     return copied
 
 
-def updated_visible_saves(app: AppState) -> list[SaveEntry]:
+def updated_visible_saves(
+    app: AppState, *, include_unverified: bool = False
+) -> list[SaveEntry]:
+    allowed = set(UPDATED_STATUSES)
+    if include_unverified:
+        allowed.add(UNVERIFIED_STATUS)
     return [
         entry
         for entry in app.visible_saves()
-        if app.save_status(entry).status in UPDATED_STATUSES
+        if app.save_status(entry, allow_hash=False).status in allowed
     ]
 
 
@@ -118,11 +126,13 @@ def run_selected_backups(
 def backup_updated_saves(
     app: AppState,
     token: CancelToken | None = None,
+    *,
+    include_unverified: bool = False,
 ) -> list[Path]:
     if app.library_mode:
         app.status_text = "本地存档库无需备份"
         return []
-    targets = updated_visible_saves(app)
+    targets = updated_visible_saves(app, include_unverified=include_unverified)
     if not targets:
         app.status_text = "当前没有可备份的存档"
         return []

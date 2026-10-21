@@ -1003,6 +1003,39 @@ def _catalog_game(game_id: str = "g", **kw) -> GameRecord:
     return GameRecord(**fields)
 
 
+def test_star_and_cleared_lookups_do_not_copy_the_catalog(tmp_path: Path, monkeypatch):
+    """Painting the gallery reads these flags once per case."""
+    import copy
+
+    lib = tmp_path / "lib"
+    save = tmp_path / "savedata"
+    save.mkdir()
+    (save / "data.bin").write_bytes(b"vita")
+    entry = SaveEntry(
+        platform="vita",
+        source_id="vita",
+        display_name="Game",
+        path=str(save),
+        title_id="PCSE00001",
+    )
+    backup_save(entry, lib)
+    state = AppState(library_root=lib)
+    state.is_starred(entry)
+    copies: list[str] = []
+    real_deepcopy = copy.deepcopy
+
+    def counting_deepcopy(obj, *args, **kwargs):
+        if obj.__class__.__name__ == "Catalog":
+            copies.append("catalog")
+        return real_deepcopy(obj, *args, **kwargs)
+
+    monkeypatch.setattr(copy, "deepcopy", counting_deepcopy)
+    assert state.is_starred(entry) is False
+    assert state.is_cleared(entry) is False
+    assert state.game_note(entry) == ""
+    assert copies == []
+
+
 def test_load_catalog_caches_when_mtime_and_size_unchanged(tmp_path: Path, monkeypatch):
     lib = tmp_path / "lib"
     lib.mkdir()

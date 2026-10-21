@@ -15,6 +15,17 @@ if TYPE_CHECKING:
     from .app_state import AppState
 
 
+def _identity_for_grouping(entry: SaveEntry, app: "AppState"):
+    """Resolve a gallery key without re-reading a Vita or PSP card.
+
+    Those resolvers otherwise open ``param.sfo`` or list the save directory.
+    The scanner already stored the title id and display name, and this function
+    runs on the UI thread for every save whenever the gallery refreshes.
+    """
+    platform = (getattr(entry, "platform", None) or "").strip().lower()
+    return app.resolve_save_identity(entry, read_device=platform not in ("vita", "psp"))
+
+
 def game_identity_key_for_entry(entry: SaveEntry, app: Optional[AppState] = None) -> str:
     """Determine the canonical game identity key for a SaveEntry.
 
@@ -32,7 +43,7 @@ def game_identity_key_for_entry(entry: SaveEntry, app: Optional[AppState] = None
     # Use the app's GameIdentityResolver if available
     if app is not None:
         try:
-            res = app.resolve_save_identity(entry)
+            res = _identity_for_grouping(entry, app)
             if res and res.identity and res.identity.identity_key:
                 return res.identity.identity_key
         except Exception:
@@ -194,24 +205,29 @@ def group_saves_by_game(
 
 
 def _pick_primary_entry(group: List[SaveEntry], app: Optional[AppState]) -> SaveEntry:
-    if app is not None:
-        # Prefer an entry that has updates (changed or new)
-        for entry in group:
-            try:
-                status = app.save_status(entry, allow_hash=False)
-                if status.status in ("changed", "new"):
-                    return entry
-            except Exception:
-                pass
+    """Pick the representative slot without stating the card.
 
-    # Fallback to newest mtime
-    def _mtime(entry: SaveEntry) -> float:
+    ``stat`` on a Vita TF card waits behind the in-flight verification read.
+    This runs on the UI thread for every multi-slot group whenever the gallery
+    refreshes, so the only recency signal used here is the catalog timestamp
+    already stored on the backup status.
+    """
+    if app is None or not group:
+        return group[0]
+    best = group[0]
+    best_stamp = ""
+    for entry in group:
         try:
-            return Path(entry.path).stat().st_mtime
-        except OSError:
-            return 0.0
-
-    return max(group, key=_mtime)
+            status = app.save_status(entry, allow_hash=False)
+        except Exception:
+            continue
+        if status.status in ("changed", "new"):
+            return entry
+        stamp = status.last_backup_at or ""
+        if stamp > best_stamp:
+            best = entry
+            best_stamp = stamp
+    return best
 
 
 def _pick_best_display_name(
@@ -222,7 +238,7 @@ def _pick_best_display_name(
     # If app can resolve identity with canonical title
     if app is not None:
         try:
-            res = app.resolve_save_identity(group[0])
+            res = _identity_for_grouping(group[0], app)
             if res and res.identity and res.identity.title:
                 t = res.identity.title.strip()
                 if not _clean_switch_title_id(t) and not t.startswith("0x"):
